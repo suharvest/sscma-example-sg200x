@@ -14,6 +14,8 @@ namespace ma::node {
 class ModelNode : public Node {
 
 public:
+    using BlurCallback = std::function<void(const std::vector<ma_bbox_t>&)>;
+
     ModelNode(std::string id);
     ~ModelNode();
 
@@ -23,6 +25,7 @@ public:
     ma_err_t onStop() override;
     ma_err_t onDestroy() override;
 
+    void setBlurCallback(BlurCallback cb) { blur_callback_ = cb; }
 
 protected:
     void threadEntry();
@@ -52,6 +55,7 @@ protected:
     int32_t preview_width_;   // Preview resolution width
     int32_t preview_height_;  // Preview resolution height
     int32_t preview_fps_;     // Preview FPS
+    BlurCallback blur_callback_;
 };
 
 
