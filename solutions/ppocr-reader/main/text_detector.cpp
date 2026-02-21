@@ -18,8 +18,8 @@ TextDetector::TextDetector()
       scale_(1.0f),
       pad_left_(0),
       pad_top_(0),
-      det_threshold_(0.3f),
-      box_threshold_(0.5f),
+      det_threshold_(0.2f),
+      box_threshold_(0.3f),
       unclip_ratio_(1.6f),
       min_box_size_(3),
       initialized_(false) {}
@@ -88,26 +88,17 @@ void TextDetector::preprocess(const ma_img_t* src) {
     // Fill with gray (128)
     std::memset(letterbox_buffer_.data(), 128, buffer_size);
 
-    // Nearest-neighbor resize into letterbox
-    uint32_t beta_w = (static_cast<uint32_t>(src->width) << 16) / new_width;
-    uint32_t beta_h = (static_cast<uint32_t>(src->height) << 16) / new_height;
+    // Use OpenCV resize (INTER_AREA for downscaling, INTER_LINEAR for upscaling)
+    cv::Mat src_mat(src->height, src->width, CV_8UC3, src->data);
+    cv::Mat resized;
+    int interp = (new_width < src->width) ? cv::INTER_AREA : cv::INTER_LINEAR;
+    cv::resize(src_mat, resized, cv::Size(new_width, new_height), 0, 0, interp);
 
-    const uint8_t* src_data = src->data;
+    // Copy resized image into letterbox buffer at correct offset
     uint8_t* dst_data = letterbox_buffer_.data();
-
     for (int i = 0; i < new_height; ++i) {
-        int src_y = (i * beta_h) >> 16;
-        int dst_row = (i + pad_top_) * input_width_;
-
-        for (int j = 0; j < new_width; ++j) {
-            int src_x = (j * beta_w) >> 16;
-            int src_idx = (src_y * src->width + src_x) * 3;
-            int dst_idx = (dst_row + j + pad_left_) * 3;
-
-            dst_data[dst_idx + 0] = src_data[src_idx + 0];
-            dst_data[dst_idx + 1] = src_data[src_idx + 1];
-            dst_data[dst_idx + 2] = src_data[src_idx + 2];
-        }
+        int dst_offset = ((i + pad_top_) * input_width_ + pad_left_) * 3;
+        std::memcpy(dst_data + dst_offset, resized.ptr<uint8_t>(i), new_width * 3);
     }
 
     // Copy to model input
@@ -185,6 +176,21 @@ void TextDetector::postprocess(std::vector<TextBox>& boxes) {
         std::memcpy(prob_map.data(), output.data.f32, map_size * sizeof(float));
     }
 
+    // Diagnostic: log prob map stats every 100 frames
+    static int diag_counter = 0;
+    if (diag_counter++ % 100 == 0) {
+        float max_val = 0, min_val = 1;
+        int above_thresh = 0;
+        for (int i = 0; i < map_size; ++i) {
+            if (prob_map[i] > max_val) max_val = prob_map[i];
+            if (prob_map[i] < min_val) min_val = prob_map[i];
+            if (prob_map[i] > det_threshold_) above_thresh++;
+        }
+        MA_LOGI(TAG, "ProbMap: %dx%d type=%d scale=%.6f zp=%d | min=%.4f max=%.4f above_thresh(%g)=%d",
+                out_w, out_h, output.type, output.quant_param.scale, output.quant_param.zero_point,
+                min_val, max_val, det_threshold_, above_thresh);
+    }
+
     // Create binary mask using threshold
     cv::Mat prob_mat(out_h, out_w, CV_32F, prob_map.data());
     cv::Mat binary_mat;
@@ -197,6 +203,11 @@ void TextDetector::postprocess(std::vector<TextBox>& boxes) {
     // Find contours
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary_u8, contours, cv::RETR_LIST, cv::CHAIN_APPROX_SIMPLE);
+
+    // Diagnostic: log contour stats
+    if ((diag_counter - 1) % 100 == 0) {
+        MA_LOGI(TAG, "Contours: %zu, box_thresh=%.2f", contours.size(), box_threshold_);
+    }
 
     // Process each contour
     for (const auto& contour : contours) {

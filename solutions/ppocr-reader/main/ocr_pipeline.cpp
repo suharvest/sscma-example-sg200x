@@ -10,7 +10,7 @@
 
 namespace ppocr {
 
-OcrPipeline::OcrPipeline() : initialized_(false) {}
+OcrPipeline::OcrPipeline() : initialized_(false), rec_available_(false) {}
 
 OcrPipeline::~OcrPipeline() {}
 
@@ -23,15 +23,18 @@ bool OcrPipeline::init(const std::string& det_model_path,
     }
 
     if (!recognizer_.init(rec_model_path, dict_path)) {
-        MA_LOGE(TAG, "Failed to initialize text recognizer");
-        return false;
+        MA_LOGW(TAG, "Text recognizer init failed - detection only mode");
+        rec_available_ = false;
+    } else {
+        rec_available_ = true;
     }
 
     // Pre-allocate crop buffer (max reasonable text region at 640x480 input)
     crop_buffer_.resize(640 * 480 * 3);
 
     initialized_ = true;
-    MA_LOGI(TAG, "OCR pipeline initialized");
+    MA_LOGI(TAG, "OCR pipeline initialized (recognition: %s)",
+            rec_available_ ? "enabled" : "disabled");
     return true;
 }
 
@@ -207,6 +210,17 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
 
     for (size_t bi = 0; bi < boxes.size(); ++bi) {
         const auto& box = boxes[bi];
+
+        if (!rec_available_) {
+            // Detection-only mode: return boxes without text
+            OcrResult ocr;
+            ocr.box = box;
+            ocr.det_confidence = box.score;
+            ocr.rec_confidence = 0.0f;
+            results.push_back(std::move(ocr));
+            continue;
+        }
+
         int crop_w = 0, crop_h = 0;
         if (!cropTextRegion(img, box, crop_buffer_, crop_w, crop_h)) {
             continue;

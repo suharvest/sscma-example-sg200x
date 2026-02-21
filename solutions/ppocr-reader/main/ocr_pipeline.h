@@ -49,6 +49,7 @@ private:
     std::vector<uint8_t> crop_buffer_;
 
     bool initialized_;
+    bool rec_available_;
 };
 
 }  // namespace ppocr
