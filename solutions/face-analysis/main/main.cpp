@@ -13,6 +13,7 @@
 #include "face_detector.h"
 #include "attribute_analyzer.h"
 #include "mqtt_publisher.h"
+#include "face_blur.h"
 
 using namespace ma;
 using namespace face_analysis;
@@ -45,6 +46,7 @@ static struct {
     // Runtime flags
     bool enable_rtsp = true;
     bool enable_mqtt = true;
+    bool enable_blur = false;
     bool verbose = false;
 } g_config;
 
@@ -53,6 +55,7 @@ static std::atomic<bool> g_running(true);
 static FaceDetector* g_face_detector = nullptr;
 static AttributeAnalyzer* g_attribute_analyzer = nullptr;
 static MqttPublisher* g_mqtt_publisher = nullptr;
+static FaceBlur* g_face_blur = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 
@@ -73,6 +76,7 @@ static void print_usage(const char* prog) {
     printf("  -p, --mqtt-port PORT      MQTT broker port (default: %d)\n", g_config.mqtt_port);
     printf("  --no-rtsp                 Disable RTSP streaming\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
+    printf("  --blur                    Enable face blur on RTSP stream\n");
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
 }
@@ -87,6 +91,7 @@ static bool parse_args(int argc, char** argv) {
         {"mqtt-port", required_argument, 0, 'p'},
         {"no-rtsp", no_argument, 0, 1},
         {"no-mqtt", no_argument, 0, 2},
+        {"blur", no_argument, 0, 3},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -118,6 +123,9 @@ static bool parse_args(int argc, char** argv) {
                 break;
             case 2:
                 g_config.enable_mqtt = false;
+                break;
+            case 3:
+                g_config.enable_blur = true;
                 break;
             case 'v':
                 g_config.verbose = true;
@@ -241,7 +249,36 @@ static bool init_mqtt() {
     return true;
 }
 
+static bool init_blur() {
+    if (!g_config.enable_blur) {
+        return true;
+    }
+
+    if (!g_config.enable_rtsp) {
+        MA_LOGW(TAG, "Face blur requires RTSP streaming, ignoring --blur");
+        g_config.enable_blur = false;
+        return true;
+    }
+
+    g_face_blur = new FaceBlur();
+    if (!g_face_blur->init(g_config.stream_width, g_config.stream_height)) {
+        MA_LOGE(TAG, "Failed to initialize face blur");
+        delete g_face_blur;
+        g_face_blur = nullptr;
+        return false;
+    }
+
+    MA_LOGI(TAG, "Face blur enabled");
+    return true;
+}
+
 static void cleanup() {
+    if (g_face_blur) {
+        g_face_blur->deinit();
+        delete g_face_blur;
+        g_face_blur = nullptr;
+    }
+
     if (g_camera) {
         g_camera->stopStream();
     }
@@ -288,7 +325,12 @@ static void process_frame() {
     auto detect_end = std::chrono::high_resolution_clock::now();
     auto detect_time = std::chrono::duration_cast<std::chrono::milliseconds>(detect_end - detect_start).count();
 
-    // Step 2: Attribute analysis for each face
+    // Step 2: Feed face detections to blur overlay
+    if (g_config.enable_blur && g_face_blur) {
+        g_face_blur->onDetection(faces);
+    }
+
+    // Step 3: Attribute analysis for each face
     auto analyze_start = std::chrono::high_resolution_clock::now();
     std::vector<AnalyzedFace> analyzed_faces = g_attribute_analyzer->analyzeAll(&frame, faces);
     auto analyze_end = std::chrono::high_resolution_clock::now();
@@ -300,7 +342,7 @@ static void process_frame() {
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
-    // Step 3: Publish results via MQTT
+    // Step 4: Publish results via MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
     }
@@ -360,6 +402,12 @@ int main(int argc, char** argv) {
 
     if (!init_mqtt()) {
         MA_LOGE(TAG, "MQTT initialization failed");
+        cleanup();
+        return 1;
+    }
+
+    if (!init_blur()) {
+        MA_LOGE(TAG, "Face blur initialization failed");
         cleanup();
         return 1;
     }
