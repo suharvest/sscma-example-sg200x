@@ -438,7 +438,7 @@ ma_err_t BlurNode::onCreate(const json& config) {
     if (config.contains("max_regions") && config["max_regions"].is_number_integer()) {
         max_regions_ = config["max_regions"].get<int>();
         if (max_regions_ < 1) max_regions_ = 1;
-        if (max_regions_ > 8) max_regions_ = 8;
+        if (max_regions_ > kMaxRegionsLimit) max_regions_ = kMaxRegionsLimit;
     }
 
     if (config.contains("vpss_grp") && config["vpss_grp"].is_number_integer()) {

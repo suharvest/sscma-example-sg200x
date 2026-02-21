@@ -64,6 +64,7 @@ private:
 private:
     static constexpr int kRgnHandleBase = 100;
     static constexpr int kDefaultMaxRegions = 8;
+    static constexpr int kMaxRegionsLimit = 16;  // SDK RGN_COVEREX_MAX_NUM per channel
 
     // RGN hardware overlay config
     int max_regions_;
