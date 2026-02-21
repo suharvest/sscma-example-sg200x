@@ -68,7 +68,7 @@ private:
 
 private:
     static constexpr int kRgnHandleBase = 100;
-    static constexpr int kDefaultMaxRegions = 8;
+    static constexpr int kDefaultMaxRegions = 12;
     static constexpr int kMaxRegionsLimit = 16;
 
     // RGN hardware overlay config

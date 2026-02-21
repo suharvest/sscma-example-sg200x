@@ -43,6 +43,9 @@ static struct {
     int stream_height = 720;
     int stream_fps = 15;
 
+    // Blur configuration
+    int max_regions = 12;
+
     // Runtime flags
     bool enable_rtsp = true;
     bool enable_mqtt = true;
@@ -77,6 +80,7 @@ static void print_usage(const char* prog) {
     printf("  --no-rtsp                 Disable RTSP streaming\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
     printf("  --no-blur                 Disable face blur on RTSP stream\n");
+    printf("  --max-regions N           Max blur regions (1-16, default: %d)\n", g_config.max_regions);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
 }
@@ -92,6 +96,7 @@ static bool parse_args(int argc, char** argv) {
         {"no-rtsp", no_argument, 0, 1},
         {"no-mqtt", no_argument, 0, 2},
         {"no-blur", no_argument, 0, 3},
+        {"max-regions", required_argument, 0, 4},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -126,6 +131,9 @@ static bool parse_args(int argc, char** argv) {
                 break;
             case 3:
                 g_config.enable_blur = false;
+                break;
+            case 4:
+                g_config.max_regions = std::stoi(optarg);
                 break;
             case 'v':
                 g_config.verbose = true;
@@ -261,6 +269,7 @@ static bool init_blur() {
     }
 
     g_face_blur = new FaceBlur();
+    g_face_blur->setMaxRegions(g_config.max_regions);
     if (!g_face_blur->init(g_config.stream_width, g_config.stream_height)) {
         MA_LOGE(TAG, "Failed to initialize face blur");
         delete g_face_blur;
