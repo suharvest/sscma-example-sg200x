@@ -4,3 +4,4 @@ install/
 *.a
 *.so
 .DS_Store
+*.onnx
