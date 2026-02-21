@@ -79,8 +79,7 @@ const Security = () => {
                     <div className="text-16 flex justify-between">
                       <span className="">{item.name}</span>
                       <DeleteOutlined
-                        className="font-bold cursor-pointer"
-                        style={{ fontSize: 18, color: "#D54941" }}
+                        className="font-bold cursor-pointer text-error"
                         onClick={() => onDelete(item)}
                       />
                     </div>
@@ -159,14 +158,15 @@ const Security = () => {
               label="Old Password"
               rules={[requiredTrimValidate()]}
             >
-              <Input placeholder="" allowClear maxLength={16} />
+              <Input.Password placeholder="" allowClear minLength={8} maxLength={32} />
             </Form.Item>
             <Form.Item
               name="newPassword"
               label="New Password"
               rules={passwordRules}
+              extra="Password must be 8-32 characters and include letters, numbers, and symbols"
             >
-              <Input placeholder="" allowClear maxLength={16} />
+              <Input.Password placeholder="" allowClear minLength={8} maxLength={32} />
             </Form.Item>
             <Form.Item>
               <Button type="primary" block htmlType="submit">

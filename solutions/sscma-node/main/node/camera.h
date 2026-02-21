@@ -91,6 +91,9 @@ public:
     ma_err_t attach(int chn, MessageBox* msgbox);
     ma_err_t detach(int chn, MessageBox* msgbox);
 
+    int32_t getChannelWidth(int chn) const { return (chn >= 0 && chn < CHN_MAX) ? channels_[chn].width : 0; }
+    int32_t getChannelHeight(int chn) const { return (chn >= 0 && chn < CHN_MAX) ? channels_[chn].height : 0; }
+
 protected:
     void threadEntry();
     void threadAudioEntry();

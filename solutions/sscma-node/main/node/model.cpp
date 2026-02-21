@@ -161,6 +161,9 @@ void ModelNode::threadEntry() {
                 reply["data"]["lines"]  = json::array();
                 reply["data"]["lines"].push_back(counter_.getSplitter());
             }
+            if (blur_callback_) {
+                blur_callback_(_bboxes);
+            }
         } else if (model_->getOutputType() == MA_OUTPUT_TYPE_CLASS) {
             Classifier* classifier   = static_cast<Classifier*>(model_);
             err                      = classifier->run(nullptr);
