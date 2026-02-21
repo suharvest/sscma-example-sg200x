@@ -177,20 +177,37 @@ void BlurNode::associateAndUpdate(const std::vector<ma_bbox_t>& boxes) {
         }
     }
 
-    // Create new trackers for unmatched detections
-    for (int d = 0; d < (int)filtered.size(); d++) {
-        if (!det_matched[d] && (int)trackers_.size() < max_regions_) {
-            TrackedRegion tr;
-            tr.init(filtered[d]);
-            trackers_.push_back(tr);
-        }
-    }
-
-    // Remove dead trackers (too many consecutive misses)
+    // Remove dead trackers first to free up slots
     trackers_.erase(
         std::remove_if(trackers_.begin(), trackers_.end(),
             [this](const TrackedRegion& t) { return t.miss_count > max_miss_; }),
         trackers_.end());
+
+    // Create new trackers for unmatched detections
+    for (int d = 0; d < (int)filtered.size(); d++) {
+        if (det_matched[d]) continue;
+
+        if ((int)trackers_.size() < max_regions_) {
+            // Slot available: create new tracker
+            TrackedRegion tr;
+            tr.init(filtered[d]);
+            trackers_.push_back(tr);
+        } else {
+            // All slots occupied: replace the tracker with highest miss_count
+            // (prefer evicting stale trackers for fresh detections)
+            int worst_idx = -1;
+            int worst_miss = 0;
+            for (int t = 0; t < (int)trackers_.size(); t++) {
+                if (trackers_[t].miss_count > worst_miss) {
+                    worst_miss = trackers_[t].miss_count;
+                    worst_idx  = t;
+                }
+            }
+            if (worst_idx >= 0 && worst_miss > 0) {
+                trackers_[worst_idx].init(filtered[d]);
+            }
+        }
+    }
 }
 
 // ============ Prediction thread ============
@@ -227,12 +244,18 @@ void BlurNode::predictThreadEntry() {
                 tracker.predict(dt, process_noise_);
             }
 
-            // Collect predicted boxes from active trackers
+            // Collect predicted boxes, prioritize actively tracked over missing
             for (const auto& tracker : trackers_) {
                 if (tracker.miss_count <= max_miss_) {
                     predicted_boxes.push_back(tracker.getBox());
                 }
             }
+
+            // Sort: actively matched first (lower miss via higher score), then by score
+            std::sort(predicted_boxes.begin(), predicted_boxes.end(),
+                [](const ma_bbox_t& a, const ma_bbox_t& b) {
+                    return a.score > b.score;
+                });
         }
 
         applyRegions(predicted_boxes);
