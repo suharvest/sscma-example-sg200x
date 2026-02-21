@@ -76,7 +76,6 @@ static void print_usage(const char* prog) {
     printf("  -p, --mqtt-port PORT      MQTT broker port (default: %d)\n", g_config.mqtt_port);
     printf("  --no-rtsp                 Disable RTSP streaming\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
-    printf("  --blur                    Enable face blur on RTSP stream (default: on)\n");
     printf("  --no-blur                 Disable face blur on RTSP stream\n");
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
@@ -92,8 +91,7 @@ static bool parse_args(int argc, char** argv) {
         {"mqtt-port", required_argument, 0, 'p'},
         {"no-rtsp", no_argument, 0, 1},
         {"no-mqtt", no_argument, 0, 2},
-        {"blur", no_argument, 0, 3},
-        {"no-blur", no_argument, 0, 4},
+        {"no-blur", no_argument, 0, 3},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -127,9 +125,6 @@ static bool parse_args(int argc, char** argv) {
                 g_config.enable_mqtt = false;
                 break;
             case 3:
-                g_config.enable_blur = true;
-                break;
-            case 4:
                 g_config.enable_blur = false;
                 break;
             case 'v':
