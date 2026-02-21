@@ -101,19 +101,62 @@ int deinitVideo(void) {
         APP_CHK_RET(app_ipcam_Sys_DeInit(), "System DeInit");
         is_started = false;
     }
+    return 0;
 }
 
 int startVideo() {
+    /* Guard against double initialization - causes VPSS crash */
+    if (is_started) {
+        APP_PROF_LOG_PRINT(LEVEL_WARN, "startVideo() already called, skipping\n");
+        return 0;
+    }
+
+    int ret = 0;
+
     /* init modules include <Peripheral; Sys; VI; VB; OSD; Venc; AI; Audio; etc.> */
-    APP_CHK_RET(app_ipcam_Sys_Init(), "init systerm");
-    APP_CHK_RET(app_ipcam_Vi_Init(), "init vi module");
-    APP_CHK_RET(app_ipcam_Vpss_Init(), "init vpss module");
-    APP_CHK_RET(app_ipcam_Venc_Init(APP_VENC_ALL), "init video encode");
+    ret = app_ipcam_Sys_Init();
+    if (ret != 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "init system failed with 0x%x\n", ret);
+        return ret;
+    }
+
+    ret = app_ipcam_Vi_Init();
+    if (ret != 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "init vi module failed with 0x%x\n", ret);
+        app_ipcam_Sys_DeInit();
+        return ret;
+    }
+
+    ret = app_ipcam_Vpss_Init();
+    if (ret != 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "init vpss module failed with 0x%x\n", ret);
+        app_ipcam_Vi_DeInit();
+        app_ipcam_Sys_DeInit();
+        return ret;
+    }
+
+    ret = app_ipcam_Venc_Init(APP_VENC_ALL);
+    if (ret != 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "init venc failed with 0x%x\n", ret);
+        app_ipcam_Vpss_DeInit();
+        app_ipcam_Vi_DeInit();
+        app_ipcam_Sys_DeInit();
+        return ret;
+    }
 
     /* start video encode */
-    APP_CHK_RET(app_ipcam_Venc_Start(APP_VENC_ALL), "start video processing");
+    ret = app_ipcam_Venc_Start(APP_VENC_ALL);
+    if (ret != 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "start venc failed with 0x%x\n", ret);
+        app_ipcam_Venc_Stop(APP_VENC_ALL);
+        app_ipcam_Vpss_DeInit();
+        app_ipcam_Vi_DeInit();
+        app_ipcam_Sys_DeInit();
+        return ret;
+    }
 
     is_started = true;
+    return 0;
 }
 
 int setupVideo(video_ch_index_t ch, const video_ch_param_t* param) {
