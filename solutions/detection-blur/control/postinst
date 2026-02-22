@@ -1,0 +1,26 @@
+#!/bin/sh
+
+# Post-installation script for detection-blur
+
+echo "Installing Detection Blur Application..."
+
+# Create models directory if not exists
+mkdir -p /userdata/local/models
+
+# Set permissions
+chmod +x /usr/bin/detection-blur
+
+echo "Detection Blur installed successfully!"
+echo ""
+echo "Usage: detection-blur [options]"
+echo "       detection-blur --help for more options"
+echo ""
+echo "Models should be placed in: /userdata/local/models/"
+echo "  - Any SSCMA-compatible detection model (.cvimodel)"
+echo ""
+echo "Configuration file: /etc/detection-blur.conf"
+echo ""
+echo "RTSP stream: rtsp://<device_ip>:554/live"
+echo "MQTT topic: recamera/detection-blur/results"
+
+exit 0
