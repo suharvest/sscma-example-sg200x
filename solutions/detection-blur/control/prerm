@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# Pre-removal script for detection-blur
+
+echo "Removing Detection Blur Application..."
+
+# Stop the service if running
+pkill -f detection-blur 2>/dev/null || true
+
+echo "Detection Blur removed."
+
+exit 0
