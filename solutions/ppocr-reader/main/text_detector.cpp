@@ -18,10 +18,11 @@ TextDetector::TextDetector()
       scale_(1.0f),
       pad_left_(0),
       pad_top_(0),
-      det_threshold_(0.2f),
-      box_threshold_(0.3f),
+      tensor_stride_(0),
+      det_threshold_(0.3f),
+      box_threshold_(0.5f),
       unclip_ratio_(1.6f),
-      min_box_size_(3),
+      min_box_size_(10),
       initialized_(false) {}
 
 TextDetector::~TextDetector() {}
@@ -57,8 +58,17 @@ bool TextDetector::init(const std::string& model_path) {
 
     int output_count = engine_->getOutputSize();
 
+    // Detect row alignment: if tensor size > W*H*3, model has aligned_input
+    size_t row_bytes = input_width_ * 3;
+    tensor_stride_ = input_tensor_.size / input_height_;
+
     MA_LOGI(TAG, "Text detector initialized");
-    MA_LOGI(TAG, "  Input: %dx%d", input_width_, input_height_);
+    MA_LOGI(TAG, "  Input: %dx%d, type=%d, size=%zu", input_width_, input_height_,
+            input_tensor_.type, input_tensor_.size);
+    if (tensor_stride_ != row_bytes) {
+        MA_LOGI(TAG, "  Aligned input: row=%zu stride=%zu pad=%zu",
+                row_bytes, tensor_stride_, tensor_stride_ - row_bytes);
+    }
     MA_LOGI(TAG, "  Outputs: %d", output_count);
 
     initialized_ = true;
@@ -101,8 +111,22 @@ void TextDetector::preprocess(const ma_img_t* src) {
         std::memcpy(dst_data + dst_offset, resized.ptr<uint8_t>(i), new_width * 3);
     }
 
-    // Copy to model input
-    std::memcpy(input_tensor_.data.u8, letterbox_buffer_.data(), buffer_size);
+    // Copy to model input — handle potential row alignment padding
+    // If model was compiled with --aligned_input, tensor stride > row_bytes
+    size_t row_bytes = input_width_ * 3;
+
+    if (tensor_stride_ == row_bytes) {
+        // No alignment padding, flat copy
+        std::memcpy(input_tensor_.data.u8, letterbox_buffer_.data(), buffer_size);
+    } else {
+        // Row-aligned: copy row by row with proper stride
+        uint8_t* dst = input_tensor_.data.u8;
+        const uint8_t* src_buf = letterbox_buffer_.data();
+        std::memset(dst, 128, input_tensor_.size);
+        for (int y = 0; y < input_height_; ++y) {
+            std::memcpy(dst + y * tensor_stride_, src_buf + y * row_bytes, row_bytes);
+        }
+    }
 }
 
 void TextDetector::unclipPolygon(float points[4][2], float unclip_ratio) {
@@ -176,21 +200,6 @@ void TextDetector::postprocess(std::vector<TextBox>& boxes) {
         std::memcpy(prob_map.data(), output.data.f32, map_size * sizeof(float));
     }
 
-    // Diagnostic: log prob map stats every 100 frames
-    static int diag_counter = 0;
-    if (diag_counter++ % 100 == 0) {
-        float max_val = 0, min_val = 1;
-        int above_thresh = 0;
-        for (int i = 0; i < map_size; ++i) {
-            if (prob_map[i] > max_val) max_val = prob_map[i];
-            if (prob_map[i] < min_val) min_val = prob_map[i];
-            if (prob_map[i] > det_threshold_) above_thresh++;
-        }
-        MA_LOGI(TAG, "ProbMap: %dx%d type=%d scale=%.6f zp=%d | min=%.4f max=%.4f above_thresh(%g)=%d",
-                out_w, out_h, output.type, output.quant_param.scale, output.quant_param.zero_point,
-                min_val, max_val, det_threshold_, above_thresh);
-    }
-
     // Create binary mask using threshold
     cv::Mat prob_mat(out_h, out_w, CV_32F, prob_map.data());
     cv::Mat binary_mat;
@@ -203,11 +212,6 @@ void TextDetector::postprocess(std::vector<TextBox>& boxes) {
     // Find contours
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary_u8, contours, cv::RETR_LIST, cv::CHAIN_APPROX_SIMPLE);
-
-    // Diagnostic: log contour stats
-    if ((diag_counter - 1) % 100 == 0) {
-        MA_LOGI(TAG, "Contours: %zu, box_thresh=%.2f", contours.size(), box_threshold_);
-    }
 
     // Process each contour
     for (const auto& contour : contours) {

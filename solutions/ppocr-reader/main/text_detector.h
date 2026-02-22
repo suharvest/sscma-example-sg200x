@@ -50,6 +50,7 @@ private:
     float scale_;
     int pad_left_;
     int pad_top_;
+    size_t tensor_stride_;  // Row stride in tensor (may differ from width*3 if aligned_input)
 
     float det_threshold_;   // Binary threshold for probability map (default: 0.3)
     float box_threshold_;   // Minimum box score (default: 0.5)

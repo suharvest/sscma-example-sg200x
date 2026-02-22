@@ -23,7 +23,7 @@ using namespace ppocr;
 // Default configuration
 static struct {
     // Model paths
-    std::string det_model_path = "/userdata/local/models/ppocr_det_cv181x_int8.cvimodel";
+    std::string det_model_path = "/userdata/local/models/ppocr_det_cv181x_mix.cvimodel";
     std::string rec_model_path = "/userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel";
     std::string dict_path = "/userdata/local/dict/ppocr_keys_v1.txt";
 
