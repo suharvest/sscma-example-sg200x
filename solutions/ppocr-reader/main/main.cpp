@@ -234,6 +234,23 @@ static void process_frame() {
         return;
     }
 
+    // Drain stale frames from camera queue — keep only the latest.
+    // The camera pushes at 15fps into a 15-slot FIFO, but OCR only
+    // consumes at ~2fps, so old frames accumulate and cause multi-second
+    // overlay lag vs the real-time RTSP video.
+    {
+        ma_img_t newer;
+        int skipped = 0;
+        while (g_camera->retrieveFrame(newer, MA_PIXEL_FORMAT_RGB888) == MA_OK) {
+            g_camera->returnFrame(frame);
+            frame = newer;
+            skipped++;
+        }
+        if (skipped > 0 && g_config.verbose) {
+            MA_LOGD(TAG, "Skipped %d stale frames", skipped);
+        }
+    }
+
     auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()
     ).count();

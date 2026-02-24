@@ -29,24 +29,30 @@ bool TextRecognizer::loadDictionary(const std::string& dict_path) {
 
     dictionary_.clear();
 
-    // PP-OCRv3 class layout: [blank, char1, char2, ..., charN, space]
-    // Index 0 = CTC blank
-    // Index 1..6623 = dictionary characters from file
-    // Index 6624 = space
+    // PP-OCRv3 CTC class layout: [blank, char1, char2, ..., charN, space]
+    // Index 0 = CTC blank (added here)
+    // Index 1..N = characters from dictionary file
+    // Index N+1 = space (from use_space_char=True in PP-OCR config)
+    //
+    // The dict file itself varies by language:
+    //   ch: ppocr_keys_v1.txt  - 6623 chars (no space line)
+    //   en: en_dict.txt        - 94 chars + space as last line
+    // PP-OCR Python only strips \n and \r\n (NOT spaces), so we match that.
     dictionary_.push_back("");  // index 0: CTC blank placeholder
 
     std::string line;
+    int file_lines = 0;
     while (std::getline(f, line)) {
-        // Remove trailing whitespace/CR
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) {
+        // Strip only \r and \n (matching PaddleOCR behavior, preserving spaces)
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
             line.pop_back();
         }
-        if (!line.empty()) {
-            dictionary_.push_back(line);  // indices 1..N
-        }
+        dictionary_.push_back(line);  // indices 1..N (include space if present)
+        file_lines++;
     }
 
-    dictionary_.push_back(" ");  // last index: space character
+    // PP-OCR always appends space (use_space_char=True in config)
+    dictionary_.push_back(" ");
 
     dict_size_ = static_cast<int>(dictionary_.size());
 
@@ -252,6 +258,23 @@ RecognitionResult TextRecognizer::recognize(const uint8_t* rgb_data, int width, 
     }
 
     ma_tensor_t output = engine_->getOutput(0);
+
+    // Debug: log output tensor info on first call
+    static bool logged_output_info = false;
+    if (!logged_output_info) {
+        MA_LOGI(TAG, "Rec output: type=%d, dims=%d, shape=[%d,%d,%d,%d]",
+                output.type, output.shape.size,
+                output.shape.size >= 1 ? output.shape.dims[0] : 0,
+                output.shape.size >= 2 ? output.shape.dims[1] : 0,
+                output.shape.size >= 3 ? output.shape.dims[2] : 0,
+                output.shape.size >= 4 ? output.shape.dims[3] : 0);
+        if (output.type == MA_TENSOR_TYPE_S8) {
+            MA_LOGI(TAG, "Rec output quant: scale=%.6f, zp=%d",
+                    output.quant_param.scale, output.quant_param.zero_point);
+        }
+        logged_output_info = true;
+    }
+
     result = ctcDecode(output);
 
     return result;

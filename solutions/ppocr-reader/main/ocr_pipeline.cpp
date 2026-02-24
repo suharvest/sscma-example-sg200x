@@ -228,16 +228,21 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
 
         RecognitionResult rec = recognizer_.recognize(crop_buffer_.data(), crop_w, crop_h);
 
-        // Filter: require non-empty text with minimum confidence
+        OcrResult ocr;
+        ocr.box = box;
+        ocr.det_confidence = box.score;
+
+        // Always include the detection box; attach text only if confidence is sufficient
         static constexpr float kMinRecConfidence = 0.3f;
         if (!rec.text.empty() && rec.confidence >= kMinRecConfidence) {
-            OcrResult ocr;
-            ocr.box = box;
             ocr.text = rec.text;
-            ocr.det_confidence = box.score;
             ocr.rec_confidence = rec.confidence;
-            results.push_back(std::move(ocr));
+        } else {
+            MA_LOGD(TAG, "Box[%zu] rec dropped: text='%s' conf=%.4f (threshold=%.2f)",
+                    bi, rec.text.c_str(), rec.confidence, kMinRecConfidence);
+            ocr.rec_confidence = rec.confidence;
         }
+        results.push_back(std::move(ocr));
     }
 
     auto t3 = std::chrono::high_resolution_clock::now();
