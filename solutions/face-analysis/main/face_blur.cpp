@@ -94,7 +94,6 @@ FaceBlur::FaceBlur()
     : max_regions_(kDefaultMaxRegions),
       vpss_grp_(0),
       vpss_chn_(2),
-      cover_color_(0x000000),
       regions_inited_(false),
       stream_width_(0),
       stream_height_(0),
@@ -116,9 +115,6 @@ void FaceBlur::setMaxRegions(int max_regions) {
     max_regions_ = max_regions;
 }
 
-void FaceBlur::setColor(uint32_t color) {
-    cover_color_ = color;
-}
 
 bool FaceBlur::init(int stream_width, int stream_height, int vpss_grp, int vpss_chn) {
     if (initialized_) return true;
@@ -138,11 +134,16 @@ bool FaceBlur::init(int stream_width, int stream_height, int vpss_grp, int vpss_
 
     initRegions();
 
+    if (!regions_inited_) {
+        MA_LOGW(TAG, "No RGN regions available, face blur disabled");
+        return false;
+    }
+
     predicting_.store(true);
     predict_thread_ = std::thread(&FaceBlur::predictThreadEntry, this);
 
     initialized_ = true;
-    MA_LOGI(TAG, "Face blur initialized");
+    MA_LOGI(TAG, "Face blur initialized with %d regions", (int)handles_.size());
     return true;
 }
 
@@ -292,7 +293,7 @@ void FaceBlur::onDetection(const std::vector<FaceInfo>& faces) {
 void FaceBlur::initRegions() {
     if (regions_inited_) return;
 
-    handles_.resize(max_regions_);
+    handles_.clear();
 
     MMF_CHN_S stChn;
     stChn.enModId  = CVI_ID_VPSS;
@@ -304,7 +305,7 @@ void FaceBlur::initRegions() {
 
         RGN_ATTR_S stRgnAttr;
         memset(&stRgnAttr, 0, sizeof(stRgnAttr));
-        stRgnAttr.enType = COVEREX_RGN;
+        stRgnAttr.enType = MOSAIC_RGN;
 
         CVI_S32 ret = CVI_RGN_Create(hRgn, &stRgnAttr);
         if (ret != CVI_SUCCESS) {
@@ -315,14 +316,13 @@ void FaceBlur::initRegions() {
         RGN_CHN_ATTR_S stChnAttr;
         memset(&stChnAttr, 0, sizeof(stChnAttr));
         stChnAttr.bShow  = CVI_FALSE;
-        stChnAttr.enType = COVEREX_RGN;
-        stChnAttr.unChnAttr.stCoverExChn.stRect.s32X      = 0;
-        stChnAttr.unChnAttr.stCoverExChn.stRect.s32Y      = 0;
-        stChnAttr.unChnAttr.stCoverExChn.stRect.u32Width   = 64;
-        stChnAttr.unChnAttr.stCoverExChn.stRect.u32Height  = 64;
-        stChnAttr.unChnAttr.stCoverExChn.u32Color          = cover_color_;
-        stChnAttr.unChnAttr.stCoverExChn.u32Layer          = i;
-        stChnAttr.unChnAttr.stCoverExChn.enCoverType       = AREA_RECT;
+        stChnAttr.enType = MOSAIC_RGN;
+        stChnAttr.unChnAttr.stMosaicChn.stRect.s32X      = 0;
+        stChnAttr.unChnAttr.stMosaicChn.stRect.s32Y      = 0;
+        stChnAttr.unChnAttr.stMosaicChn.stRect.u32Width   = 64;
+        stChnAttr.unChnAttr.stMosaicChn.stRect.u32Height  = 64;
+        stChnAttr.unChnAttr.stMosaicChn.enBlkSize         = MOSAIC_BLK_SIZE_16;
+        stChnAttr.unChnAttr.stMosaicChn.u32Layer          = i;
 
         ret = CVI_RGN_AttachToChn(hRgn, &stChn, &stChnAttr);
         if (ret != CVI_SUCCESS) {
@@ -331,24 +331,30 @@ void FaceBlur::initRegions() {
             continue;
         }
 
-        handles_[i] = hRgn;
+        handles_.push_back(hRgn);
+    }
+
+    if (handles_.empty()) {
+        MA_LOGE(TAG, "Failed to create any blur regions, disabling face blur");
+        return;
     }
 
     regions_inited_ = true;
-    MA_LOGI(TAG, "Initialized %d blur regions on VPSS(%d,%d)", max_regions_, vpss_grp_, vpss_chn_);
+    MA_LOGI(TAG, "Initialized %d/%d mosaic regions on VPSS(%d,%d)",
+            (int)handles_.size(), max_regions_, vpss_grp_, vpss_chn_);
 }
 
 void FaceBlur::deinitRegions() {
-    if (!regions_inited_) return;
+    if (!regions_inited_ && handles_.empty()) return;
 
     MMF_CHN_S stChn;
     stChn.enModId  = CVI_ID_VPSS;
     stChn.s32DevId = vpss_grp_;
     stChn.s32ChnId = vpss_chn_;
 
-    for (int i = 0; i < (int)handles_.size(); i++) {
-        CVI_RGN_DetachFromChn(handles_[i], &stChn);
-        CVI_RGN_Destroy(handles_[i]);
+    for (auto hRgn : handles_) {
+        CVI_RGN_DetachFromChn(hRgn, &stChn);
+        CVI_RGN_Destroy(hRgn);
     }
 
     handles_.clear();
@@ -382,15 +388,29 @@ void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
     stChn.s32DevId = vpss_grp_;
     stChn.s32ChnId = vpss_chn_;
 
-    int active_count = std::min((int)boxes.size(), max_regions_);
+    int num_handles = (int)handles_.size();
+    int active_count = std::min((int)boxes.size(), num_handles);
 
-    for (int i = 0; i < max_regions_; i++) {
+    for (int i = 0; i < num_handles; i++) {
         RGN_CHN_ATTR_S stChnAttr;
         memset(&stChnAttr, 0, sizeof(stChnAttr));
-        stChnAttr.enType = COVEREX_RGN;
+        stChnAttr.enType = MOSAIC_RGN;
 
         if (i < active_count) {
             const auto& box = boxes[i];
+
+            // Skip near-full-frame detections (noise frames during ISP init can crash VPSS)
+            if (box.w > 0.7f && box.h > 0.7f) {
+                stChnAttr.bShow = CVI_FALSE;
+                stChnAttr.unChnAttr.stMosaicChn.stRect.s32X      = 0;
+                stChnAttr.unChnAttr.stMosaicChn.stRect.s32Y      = 0;
+                stChnAttr.unChnAttr.stMosaicChn.stRect.u32Width   = 64;
+                stChnAttr.unChnAttr.stMosaicChn.stRect.u32Height  = 64;
+                stChnAttr.unChnAttr.stMosaicChn.enBlkSize         = MOSAIC_BLK_SIZE_16;
+                stChnAttr.unChnAttr.stMosaicChn.u32Layer          = i;
+                CVI_RGN_SetDisplayAttr(handles_[i], &stChn, &stChnAttr);
+                continue;
+            }
 
             int left = (int)((box.x - box.w / 2.0f) * target_w + offset_x);
             int top  = (int)((box.y - box.h / 2.0f) * target_h + offset_y);
@@ -403,35 +423,33 @@ void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
             w    = std::min(w, stream_width_ - left);
             h    = std::min(h, stream_height_ - top);
 
-            // Align to 2 pixels (hardware requirement)
-            left = left & ~1;
-            top  = top & ~1;
-            w    = std::max(4, (w + 1) & ~1);
-            h    = std::max(4, (h + 1) & ~1);
+            // Align to 8 pixels (MOSAIC hardware requirement)
+            left = left & ~7;
+            top  = top & ~7;
+            w    = std::max(8, (w + 7) & ~7);
+            h    = std::max(8, (h + 7) & ~7);
 
             // Re-check bounds after alignment
-            if (left + w > stream_width_) w = stream_width_ - left;
-            if (top + h > stream_height_) h = stream_height_ - top;
-            w = std::max(4, w & ~1);
-            h = std::max(4, h & ~1);
+            if (left + w > stream_width_) w = (stream_width_ - left) & ~7;
+            if (top + h > stream_height_) h = (stream_height_ - top) & ~7;
+            w = std::max(8, w);
+            h = std::max(8, h);
 
             stChnAttr.bShow = CVI_TRUE;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.s32X      = left;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.s32Y      = top;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.u32Width   = w;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.u32Height  = h;
-            stChnAttr.unChnAttr.stCoverExChn.u32Color          = cover_color_;
-            stChnAttr.unChnAttr.stCoverExChn.u32Layer          = i;
-            stChnAttr.unChnAttr.stCoverExChn.enCoverType       = AREA_RECT;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.s32X      = left;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.s32Y      = top;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.u32Width   = w;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.u32Height  = h;
+            stChnAttr.unChnAttr.stMosaicChn.enBlkSize         = MOSAIC_BLK_SIZE_16;
+            stChnAttr.unChnAttr.stMosaicChn.u32Layer          = i;
         } else {
             stChnAttr.bShow = CVI_FALSE;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.s32X      = 0;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.s32Y      = 0;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.u32Width   = 64;
-            stChnAttr.unChnAttr.stCoverExChn.stRect.u32Height  = 64;
-            stChnAttr.unChnAttr.stCoverExChn.u32Color          = cover_color_;
-            stChnAttr.unChnAttr.stCoverExChn.u32Layer          = i;
-            stChnAttr.unChnAttr.stCoverExChn.enCoverType       = AREA_RECT;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.s32X      = 0;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.s32Y      = 0;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.u32Width   = 64;
+            stChnAttr.unChnAttr.stMosaicChn.stRect.u32Height  = 64;
+            stChnAttr.unChnAttr.stMosaicChn.enBlkSize         = MOSAIC_BLK_SIZE_16;
+            stChnAttr.unChnAttr.stMosaicChn.u32Layer          = i;
         }
 
         CVI_S32 ret = CVI_RGN_SetDisplayAttr(handles_[i], &stChn, &stChnAttr);

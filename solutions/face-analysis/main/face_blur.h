@@ -6,7 +6,7 @@
 #include <thread>
 #include <atomic>
 
-#include <cvi_rgn.h>
+#include <cvi_region.h>
 
 #include "face_detector.h"
 
@@ -52,8 +52,7 @@ public:
     // Set max number of blur regions (1-16)
     void setMaxRegions(int max_regions);
 
-    // Set cover color (RGB, default black 0x000000)
-    void setColor(uint32_t color);
+
 
     // Feed detection results to update tracking
     void onDetection(const std::vector<FaceInfo>& faces);
@@ -68,14 +67,13 @@ private:
 
 private:
     static constexpr int kRgnHandleBase = 100;
-    static constexpr int kDefaultMaxRegions = 12;
-    static constexpr int kMaxRegionsLimit = 16;
+    static constexpr int kDefaultMaxRegions = 8;
+    static constexpr int kMaxRegionsLimit = 8;  // RGN_MOSAIC_MAX_NUM per channel on CV181x
 
     // RGN hardware overlay config
     int max_regions_;
     int vpss_grp_;
     int vpss_chn_;
-    uint32_t cover_color_;
     std::vector<RGN_HANDLE> handles_;
     bool regions_inited_;
 

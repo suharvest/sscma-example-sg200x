@@ -28,7 +28,7 @@ static struct {
     std::string emotion_model = "/userdata/local/models/emotion_int8.cvimodel";
 
     // Detection parameters
-    float face_threshold = 0.5f;
+    float face_threshold = 0.4f;
 
     // MQTT configuration
     std::string mqtt_host = "localhost";
@@ -192,8 +192,8 @@ static bool init_camera() {
             value.u16s[1] = g_config.inference_height;
             g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
 
-            // Enable physical address mode for faster processing
-            value.i32 = 1;
+            // Disable physical address mode - attribute analysis needs CPU access to frame data
+            value.i32 = 0;
             g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
 
             MA_LOGI(TAG, "Camera initialized (%dx%d @ %dfps for inference)",
@@ -415,18 +415,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!init_blur()) {
-        MA_LOGE(TAG, "Face blur initialization failed");
-        cleanup();
-        return 1;
-    }
-
     // Start camera streaming
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
     // Start video streaming if enabled
     if (g_config.enable_rtsp) {
         startVideo();
+    }
+
+    // Initialize blur AFTER video pipeline is started (RGN needs VPSS channel running)
+    if (!init_blur()) {
+        MA_LOGW(TAG, "Face blur initialization failed, continuing without blur");
+        g_config.enable_blur = false;
     }
 
     MA_LOGI(TAG, "Face analysis running...");
