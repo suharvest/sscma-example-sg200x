@@ -8,7 +8,7 @@ echo "Installing Detection Blur Application..."
 mkdir -p /userdata/local/models
 
 # Set permissions
-chmod +x /usr/bin/detection-blur
+chmod +x /usr/local/bin/detection-blur
 
 echo "Detection Blur installed successfully!"
 echo ""

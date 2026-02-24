@@ -8,7 +8,7 @@ echo "Installing Face Analysis Application..."
 mkdir -p /userdata/local/models
 
 # Set permissions
-chmod +x /usr/bin/face-analysis
+chmod +x /usr/local/bin/face-analysis
 
 echo "Face Analysis installed successfully!"
 echo ""
