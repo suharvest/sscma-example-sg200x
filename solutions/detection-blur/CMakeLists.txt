@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(detection-blur VERSION 1.0.0 C CXX)
+project(detection-blur VERSION 1.0.0 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 

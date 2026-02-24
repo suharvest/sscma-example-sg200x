@@ -43,8 +43,7 @@ static struct {
     int stream_fps = 15;
 
     // Blur configuration
-    int max_regions = 12;
-    uint32_t blur_color = 0x000000;
+    int max_regions = 8;
 
     // Runtime flags
     bool enable_rtsp = true;
@@ -80,8 +79,7 @@ static void print_usage(const char* prog) {
     printf("  --no-rtsp                 Disable RTSP streaming\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
     printf("  --no-blur                 Disable blur overlay (detection only)\n");
-    printf("  --max-regions N           Max blur regions (1-16, default: %d)\n", g_config.max_regions);
-    printf("  --color RRGGBB            Blur cover color in hex (default: 000000)\n");
+    printf("  --max-regions N           Max mosaic regions (1-8, default: %d)\n", g_config.max_regions);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
 }
@@ -114,7 +112,6 @@ static bool parse_args(int argc, char** argv) {
         {"no-mqtt", no_argument, 0, 6},
         {"no-blur", no_argument, 0, 7},
         {"max-regions", required_argument, 0, 8},
-        {"color", required_argument, 0, 9},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -152,9 +149,6 @@ static bool parse_args(int argc, char** argv) {
                 break;
             case 8:
                 g_config.max_regions = std::stoi(optarg);
-                break;
-            case 9:
-                g_config.blur_color = (uint32_t)strtoul(optarg, nullptr, 16);
                 break;
             case 'v':
                 g_config.verbose = true;
@@ -202,8 +196,8 @@ static bool init_camera() {
             value.u16s[1] = g_config.inference_height;
             g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
 
-            // Enable physical address mode for faster processing
-            value.i32 = 1;
+            // Disable physical address mode - CPU-based image processing needs virtual addresses
+            value.i32 = 0;
             g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
 
             MA_LOGI(TAG, "Camera initialized (%dx%d for inference)",
@@ -281,7 +275,6 @@ static bool init_blur() {
 
     g_region_blur = new RegionBlur();
     g_region_blur->setMaxRegions(g_config.max_regions);
-    g_region_blur->setColor(g_config.blur_color);
     if (!g_config.targets.empty()) {
         g_region_blur->setTargets(g_config.targets);
     }
@@ -423,12 +416,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!init_blur()) {
-        MA_LOGE(TAG, "Blur initialization failed");
-        cleanup();
-        return 1;
-    }
-
     // Start camera streaming
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
@@ -437,10 +424,16 @@ int main(int argc, char** argv) {
         startVideo();
     }
 
+    // Initialize blur AFTER video pipeline is started (RGN needs VPSS channel running)
+    if (!init_blur()) {
+        MA_LOGW(TAG, "Blur initialization failed, continuing without blur");
+        g_config.enable_blur = false;
+    }
+
     MA_LOGI(TAG, "Detection blur running...");
     MA_LOGI(TAG, "RTSP stream: rtsp://<device_ip>:554/live");
     MA_LOGI(TAG, "MQTT topic: %s", g_config.mqtt_topic.c_str());
-    MA_LOGI(TAG, "Blur: %s", g_config.enable_blur ? "ENABLED" : "DISABLED");
+    MA_LOGI(TAG, "Mosaic blur: %s (max %d regions)", g_config.enable_blur ? "ENABLED" : "DISABLED", g_config.max_regions);
 
     // Main processing loop
     while (g_running.load()) {

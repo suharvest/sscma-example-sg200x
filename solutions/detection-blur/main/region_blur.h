@@ -6,7 +6,7 @@
 #include <thread>
 #include <atomic>
 
-#include <cvi_rgn.h>
+#include <cvi_region.h>
 
 #include "detector.h"
 
@@ -33,10 +33,10 @@ struct TrackedRegion {
     float score;
     int miss_count;
 
-    void init(const BBoxInfo& box);
+    void init(const DetectionBox& box);
     void predict(float dt, float q);
-    void update(const BBoxInfo& box, float r);
-    BBoxInfo getBox() const;
+    void update(const DetectionBox& box, float r);
+    DetectionBox getBox() const;
 };
 
 class RegionBlur {
@@ -50,36 +50,32 @@ public:
     // Deinitialize and release RGN resources
     void deinit();
 
-    // Set max number of blur regions (1-16)
+    // Set max number of blur regions (1-8)
     void setMaxRegions(int max_regions);
-
-    // Set cover color (RGB, default black 0x000000)
-    void setColor(uint32_t color);
 
     // Set target class IDs to blur (empty = blur all classes)
     void setTargets(const std::vector<int>& targets);
 
     // Feed detection results to update tracking
-    void onDetection(const std::vector<BBoxInfo>& boxes);
+    void onDetection(const std::vector<DetectionBox>& boxes);
 
 private:
     void initRegions();
     void deinitRegions();
-    void applyRegions(const std::vector<BBoxInfo>& boxes);
-    void associateAndUpdate(const std::vector<BBoxInfo>& boxes);
-    float computeIoU(const BBoxInfo& a, const BBoxInfo& b);
+    void applyRegions(const std::vector<DetectionBox>& boxes);
+    void associateAndUpdate(const std::vector<DetectionBox>& boxes);
+    float computeIoU(const DetectionBox& a, const DetectionBox& b);
     void predictThreadEntry();
 
 private:
     static constexpr int kRgnHandleBase = 100;
-    static constexpr int kDefaultMaxRegions = 12;
-    static constexpr int kMaxRegionsLimit = 16;  // SDK RGN_COVEREX_MAX_NUM per channel
+    static constexpr int kDefaultMaxRegions = 8;
+    static constexpr int kMaxRegionsLimit = 8;  // RGN_MOSAIC_MAX_NUM per channel on CV181x
 
     // RGN hardware overlay config
     int max_regions_;
     int vpss_grp_;
     int vpss_chn_;
-    uint32_t cover_color_;
     std::vector<int> targets_;
     std::vector<RGN_HANDLE> handles_;
     bool regions_inited_;
