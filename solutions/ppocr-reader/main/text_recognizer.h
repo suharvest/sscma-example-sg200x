@@ -40,6 +40,7 @@ private:
     int input_width_;
     int input_height_;
     int dict_size_;  // Number of classes (dict + blank)
+    size_t tensor_stride_;  // Row stride in tensor (may differ from width*3 if aligned_input)
 
     bool initialized_;
 };

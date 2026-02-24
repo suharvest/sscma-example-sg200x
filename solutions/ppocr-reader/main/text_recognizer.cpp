@@ -15,6 +15,7 @@ TextRecognizer::TextRecognizer()
       input_width_(320),
       input_height_(48),
       dict_size_(0),
+      tensor_stride_(0),
       initialized_(false) {}
 
 TextRecognizer::~TextRecognizer() {}
@@ -87,8 +88,16 @@ bool TextRecognizer::init(const std::string& model_path, const std::string& dict
         input_width_ = input_shape.dims[3];
     }
 
-    MA_LOGI(TAG, "Text recognizer initialized (input: %dx%d, dict: %d)",
-            input_width_, input_height_, dict_size_);
+    // Detect row alignment: if tensor size > W*H*3, model has aligned_input
+    size_t row_bytes = input_width_ * 3;
+    tensor_stride_ = input_tensor_.size / input_height_;
+
+    MA_LOGI(TAG, "Text recognizer initialized (input: %dx%d, dict: %d, type=%d, size=%zu)",
+            input_width_, input_height_, dict_size_, input_tensor_.type, input_tensor_.size);
+    if (tensor_stride_ != row_bytes) {
+        MA_LOGI(TAG, "  Aligned input: row=%zu stride=%zu pad=%zu",
+                row_bytes, tensor_stride_, tensor_stride_ - row_bytes);
+    }
 
     initialized_ = true;
     return true;
@@ -125,8 +134,21 @@ void TextRecognizer::preprocess(const uint8_t* rgb_data, int width, int height) 
                     new_w * 3);
     }
 
-    // Copy to model input
-    std::memcpy(input_tensor_.data.u8, resize_buffer_.data(), buffer_size);
+    // Copy to model input — handle potential row alignment padding
+    size_t row_bytes = input_width_ * 3;
+
+    if (tensor_stride_ == row_bytes) {
+        // No alignment padding, flat copy
+        std::memcpy(input_tensor_.data.u8, resize_buffer_.data(), buffer_size);
+    } else {
+        // Row-aligned: copy row by row with proper stride
+        uint8_t* dst = input_tensor_.data.u8;
+        const uint8_t* src_buf = resize_buffer_.data();
+        std::memset(dst, 128, input_tensor_.size);
+        for (int y = 0; y < input_height_; ++y) {
+            std::memcpy(dst + y * tensor_stride_, src_buf + y * row_bytes, row_bytes);
+        }
+    }
 }
 
 RecognitionResult TextRecognizer::ctcDecode(const ma_tensor_t& output) {
