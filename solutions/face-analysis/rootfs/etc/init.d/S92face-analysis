@@ -17,19 +17,29 @@ LOGFILE=/var/log/$NAME.log
 # Library paths required for CVI SDK
 export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
 
-# Default options
-DAEMON_OPTS="-v"
-
 # Load config if exists
 [ -f /etc/face-analysis.conf ] && . /etc/face-analysis.conf
+
+# Build options from config
+DAEMON_OPTS=""
+[ -n "$FACE_MODEL" ] && DAEMON_OPTS="$DAEMON_OPTS -f $FACE_MODEL"
+[ -n "$GENDERAGE_MODEL" ] && DAEMON_OPTS="$DAEMON_OPTS -g $GENDERAGE_MODEL"
+[ -n "$EMOTION_MODEL" ] && DAEMON_OPTS="$DAEMON_OPTS -e $EMOTION_MODEL"
+[ -n "$FACE_THRESHOLD" ] && DAEMON_OPTS="$DAEMON_OPTS -t $FACE_THRESHOLD"
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS -m $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS -p $MQTT_PORT"
+[ "$RTSP_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-rtsp"
+[ "$BLUR_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-blur"
+[ -n "$MAX_REGIONS" ] && DAEMON_OPTS="$DAEMON_OPTS --max-regions $MAX_REGIONS"
+[ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
 
 # Stop conflicting services that use the camera
 stop_conflicting_services() {
     echo "Stopping conflicting services..."
-    for prefix in S K; do
-        [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
-        [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
-        [ -x /etc/init.d/${prefix}93sscma-supervisor ] && /etc/init.d/${prefix}93sscma-supervisor stop 2>/dev/null || true
+    for svc in sscma-node node-red sscma-supervisor ppocr-reader; do
+        for script in /etc/init.d/[SK]*${svc}; do
+            [ -x "$script" ] && "$script" stop 2>/dev/null || true
+        done
     done
     sleep 2
 }
