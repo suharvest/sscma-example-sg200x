@@ -38,7 +38,7 @@ bool FaceDetector::init(const std::string& model_path) {
         return false;
     }
 
-    // Diagnostic: log all tensor shapes
+    // Log tensor info
     int num_inputs = engine_->getInputSize();
     int num_outputs = engine_->getOutputSize();
     MA_LOGI(TAG, "Model loaded: %d inputs, %d outputs", num_inputs, num_outputs);
@@ -46,25 +46,21 @@ bool FaceDetector::init(const std::string& model_path) {
     for (int i = 0; i < num_inputs; i++) {
         auto shape = engine_->getInputShape(i);
         auto tensor = engine_->getInput(i);
-        auto quant = engine_->getInputQuantParam(i);
-        MA_LOGI(TAG, "  Input[%d]: ndim=%d dims=[%d,%d,%d,%d] type=%d scale=%.6f zp=%d",
-                i, shape.size, shape.dims[0], shape.dims[1], shape.dims[2], shape.dims[3],
-                tensor.type, quant.scale, quant.zero_point);
+        MA_LOGI(TAG, "  Input[%d]: dims=[%d,%d,%d,%d] type=%d",
+                i, shape.dims[0], shape.dims[1], shape.dims[2], shape.dims[3], tensor.type);
     }
-
     for (int i = 0; i < num_outputs; i++) {
         auto shape = engine_->getOutputShape(i);
         auto tensor = engine_->getOutput(i);
-        auto quant = engine_->getOutputQuantParam(i);
-        MA_LOGI(TAG, "  Output[%d]: ndim=%d dims=[%d,%d,%d,%d] type=%d size=%zu scale=%.6f zp=%d",
-                i, shape.size, shape.dims[0], shape.dims[1], shape.dims[2], shape.dims[3],
-                tensor.type, tensor.size, quant.scale, quant.zero_point);
+        MA_LOGI(TAG, "  Output[%d]: dims=[%d,%d,%d,%d] type=%d size=%zu",
+                i, shape.dims[0], shape.dims[1], shape.dims[2], shape.dims[3],
+                tensor.type, tensor.size);
     }
 
+    // ModelFactory handles SCRFD, YOLO multi-output, and YOLO single-output
     ma::Model* model = ma::ModelFactory::create(engine_.get());
     if (model == nullptr) {
         MA_LOGE(TAG, "ModelFactory::create returned nullptr - model format not recognized");
-        MA_LOGE(TAG, "SCRFD model needs to be added to ModelFactory");
         return false;
     }
 
@@ -102,14 +98,12 @@ std::vector<FaceInfo> FaceDetector::detect(ma_img_t* img) {
         return faces;
     }
 
-    // Run detection
     ma_err_t ret = detector_->run(img);
     if (ret != MA_OK) {
         MA_LOGE(TAG, "Detection failed with error: %d", ret);
         return faces;
     }
 
-    // Get results
     auto results = detector_->getResults();
     for (const auto& bbox : results) {
         if (bbox.score >= threshold_) {

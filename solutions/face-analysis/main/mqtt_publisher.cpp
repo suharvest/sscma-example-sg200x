@@ -141,10 +141,12 @@ bool MqttPublisher::publish(const std::string& topic, const std::string& payload
                                 payload.data(), config_.qos, config_.retain);
 
     if (rc != MOSQ_ERR_SUCCESS) {
-        MA_LOGE(TAG, "Publish failed: %d", rc);
+        MA_LOGE(TAG, "Publish failed: rc=%d, connected=%d, topic=%s, size=%d",
+                rc, connected_.load() ? 1 : 0, topic.c_str(), (int)payload.size());
         return false;
     }
 
+    MA_LOGD(TAG, "Published %d bytes to %s", (int)payload.size(), topic.c_str());
     return true;
 }
 
@@ -170,7 +172,7 @@ std::string MqttPublisher::buildResultJson(uint64_t timestamp_ms, uint32_t frame
         json << "{";
         json << "\"id\":" << face.face.id << ",";
 
-        // Bounding box (normalized coordinates, convert to percentage for readability)
+        // Bounding box (normalized coordinates)
         json << "\"bbox\":{";
         json << "\"x\":" << face.face.x << ",";
         json << "\"y\":" << face.face.y << ",";
@@ -180,28 +182,38 @@ std::string MqttPublisher::buildResultJson(uint64_t timestamp_ms, uint32_t frame
 
         json << "\"confidence\":" << face.face.score << ",";
 
-        // Age
-        json << "\"age\":" << attrs.age << ",";
+        // Age (format depends on model)
+        if (attrs.is_fairface) {
+            json << "\"age_bin\":" << attrs.age_bin << ",";
+        } else {
+            json << "\"age\":" << attrs.age_continuous << ",";
+        }
+        json << "\"age_label\":\"" << attrs.age_label << "\",";
         json << "\"age_confidence\":" << attrs.age_confidence << ",";
 
         // Gender
         json << "\"gender\":\"" << attrs.gender << "\",";
         json << "\"gender_confidence\":" << attrs.gender_confidence << ",";
 
+        // Race (FairFace only)
+        if (attrs.race_bin >= 0) {
+            json << "\"race\":\"" << attrs.race_label << "\",";
+            json << "\"race_confidence\":" << attrs.race_confidence << ",";
+        }
+
         // Emotion
         json << "\"emotion\":\"" << getEmotionName(attrs.emotion) << "\",";
         json << "\"emotion_confidence\":" << attrs.emotion_confidence << ",";
 
-        // All emotion probabilities
+        // All emotion probabilities (7 classes)
         json << "\"emotion_probs\":{";
-        json << "\"neutral\":" << attrs.emotion_probs[0] << ",";
-        json << "\"happiness\":" << attrs.emotion_probs[1] << ",";
-        json << "\"surprise\":" << attrs.emotion_probs[2] << ",";
-        json << "\"sadness\":" << attrs.emotion_probs[3] << ",";
-        json << "\"anger\":" << attrs.emotion_probs[4] << ",";
-        json << "\"disgust\":" << attrs.emotion_probs[5] << ",";
-        json << "\"fear\":" << attrs.emotion_probs[6] << ",";
-        json << "\"contempt\":" << attrs.emotion_probs[7];
+        json << "\"angry\":" << attrs.emotion_probs[0] << ",";
+        json << "\"disgust\":" << attrs.emotion_probs[1] << ",";
+        json << "\"fear\":" << attrs.emotion_probs[2] << ",";
+        json << "\"happy\":" << attrs.emotion_probs[3] << ",";
+        json << "\"sad\":" << attrs.emotion_probs[4] << ",";
+        json << "\"surprise\":" << attrs.emotion_probs[5] << ",";
+        json << "\"neutral\":" << attrs.emotion_probs[6];
         json << "}";
 
         json << "}";

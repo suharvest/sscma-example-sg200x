@@ -30,14 +30,12 @@ public:
     void setThreshold(float threshold);
 
     // Detect faces in the given image
-    // Returns list of detected faces
     std::vector<FaceInfo> detect(ma_img_t* img);
 
     // Get input dimensions required by the model
     int getInputWidth() const { return input_width_; }
     int getInputHeight() const { return input_height_; }
 
-    // Check if initialized
     bool isInitialized() const { return initialized_; }
 
 private:

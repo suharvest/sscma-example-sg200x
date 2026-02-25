@@ -22,10 +22,10 @@ using namespace face_analysis;
 
 // Default configuration
 static struct {
-    // Model paths
-    std::string face_model = "/userdata/local/models/scrfd_500m_int8.cvimodel";
+    // Model paths (auto-detects FairFace vs InsightFace format)
+    std::string face_model = "/userdata/local/models/yolo-face_mixfp16.cvimodel";
     std::string genderage_model = "/userdata/local/models/genderage_int8.cvimodel";
-    std::string emotion_model = "/userdata/local/models/emotion_int8.cvimodel";
+    std::string emotion_model = "/userdata/local/models/emotion_bf16.cvimodel";
 
     // Detection parameters
     float face_threshold = 0.4f;
@@ -362,13 +362,25 @@ static void process_frame() {
                 g_frame_id, analyzed_faces.size(), detect_time, analyze_time, total_time);
 
         for (const auto& face : analyzed_faces) {
-            MA_LOGI(TAG, "  Face[%d]: age=%d, gender=%s(%.2f), emotion=%s(%.2f)",
-                    face.face.id,
-                    face.attributes.age,
-                    face.attributes.gender.c_str(),
-                    face.attributes.gender_confidence,
-                    getEmotionName(face.attributes.emotion),
-                    face.attributes.emotion_confidence);
+            if (face.attributes.is_fairface) {
+                MA_LOGI(TAG, "  Face[%d]: age=%s, gender=%s(%.2f), race=%s(%.2f), emotion=%s(%.2f)",
+                        face.face.id,
+                        face.attributes.age_label.c_str(),
+                        face.attributes.gender.c_str(),
+                        face.attributes.gender_confidence,
+                        face.attributes.race_label.c_str(),
+                        face.attributes.race_confidence,
+                        getEmotionName(face.attributes.emotion),
+                        face.attributes.emotion_confidence);
+            } else {
+                MA_LOGI(TAG, "  Face[%d]: age=%s, gender=%s(%.2f), emotion=%s(%.2f)",
+                        face.face.id,
+                        face.attributes.age_label.c_str(),
+                        face.attributes.gender.c_str(),
+                        face.attributes.gender_confidence,
+                        getEmotionName(face.attributes.emotion),
+                        face.attributes.emotion_confidence);
+            }
         }
     }
 
