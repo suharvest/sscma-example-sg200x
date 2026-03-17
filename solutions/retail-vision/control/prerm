@@ -1,0 +1,9 @@
+#!/bin/sh
+
+echo "Removing Retail Vision Application..."
+
+pkill -f retail-vision 2>/dev/null || true
+
+echo "Retail Vision removed."
+
+exit 0

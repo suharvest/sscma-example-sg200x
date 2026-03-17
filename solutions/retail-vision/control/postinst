@@ -1,0 +1,25 @@
+#!/bin/sh
+
+echo "Installing Retail Vision Application..."
+
+mkdir -p /userdata/local/models
+
+chmod +x /usr/local/bin/retail-vision
+chmod +x /etc/init.d/S92retail-vision
+
+# Don't overwrite existing config
+if [ ! -f /etc/retail-vision.conf ]; then
+    echo "Installing default config to /etc/retail-vision.conf"
+fi
+
+echo "Retail Vision installed successfully!"
+echo ""
+echo "Usage: retail-vision [options]"
+echo "       retail-vision --help for more options"
+echo ""
+echo "Config:      /etc/retail-vision.conf"
+echo "Models:      /userdata/local/models/"
+echo "RTSP stream: rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:  recamera/retail-vision/vision"
+
+exit 0
