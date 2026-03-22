@@ -61,7 +61,6 @@ private:
 
     bool initialized_;
     bool rec_available_;
-    int dbg_dump_frame_;
 
     // Temporal smoothing: keep previous results for hysteresis
     std::vector<OcrResult> prev_results_;

@@ -47,7 +47,7 @@ static struct {
     bool verbose = false;
 
     // Enhancement mode
-    std::string enhance_mode = "adaptive";  // none, clahe, gray, adaptive
+    std::string enhance_mode = "none";  // none, clahe, gray, adaptive
 
     // Test mode
     std::string test_rec_image;  // If set, test recognizer with this image and exit

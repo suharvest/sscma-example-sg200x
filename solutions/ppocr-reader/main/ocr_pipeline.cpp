@@ -11,7 +11,7 @@
 namespace ppocr {
 
 OcrPipeline::OcrPipeline()
-    : max_boxes_(5), enhance_mode_(EnhanceMode::kAdaptive), initialized_(false), rec_available_(false), dbg_dump_frame_(0), prev_match_count_(0) {}
+    : max_boxes_(5), enhance_mode_(EnhanceMode::kNone), initialized_(false), rec_available_(false), prev_match_count_(0) {}
 
 OcrPipeline::~OcrPipeline() {}
 
@@ -278,18 +278,6 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
             continue;
         }
 
-        // Debug: save crop images for first 2 frames
-        if (dbg_dump_frame_ < 2) {
-            char path[128];
-            snprintf(path, sizeof(path), "/tmp/ppocr_crop_f%d_b%zu.ppm", dbg_dump_frame_, bi);
-            FILE* fp = fopen(path, "wb");
-            if (fp) {
-                fprintf(fp, "P6\n%d %d\n255\n", crop_w, crop_h);
-                fwrite(crop_buffer_.data(), 1, crop_w * crop_h * 3, fp);
-                fclose(fp);
-            }
-        }
-
         RecognitionResult rec = recognizer_.recognize(crop_buffer_.data(), crop_w, crop_h);
 
         OcrResult ocr;
@@ -308,8 +296,6 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
         }
         results.push_back(std::move(ocr));
     }
-
-    if (dbg_dump_frame_ < 2) dbg_dump_frame_++;
 
     // Text hysteresis: keep previous text unless new result wins for 2 consecutive frames
     // or has significantly higher confidence. This stabilizes flickering output.
