@@ -292,23 +292,6 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
 
         RecognitionResult rec = recognizer_.recognize(crop_buffer_.data(), crop_w, crop_h);
 
-        // Low-confidence retry: try inverted image for dark/colored backgrounds
-        static constexpr float kRetryThreshold = 0.45f;
-        if (rec.confidence < kRetryThreshold && crop_w > 0 && crop_h > 0) {
-            size_t crop_size = crop_w * crop_h * 3;
-            std::vector<uint8_t> inv_buffer(crop_size);
-            for (size_t j = 0; j < crop_size; ++j) {
-                inv_buffer[j] = 255 - crop_buffer_[j];
-            }
-            RecognitionResult rec_inv = recognizer_.recognize(inv_buffer.data(), crop_w, crop_h);
-            if (rec_inv.confidence > rec.confidence) {
-                MA_LOGD(TAG, "Box[%zu] invert improved: '%s'(%.3f) -> '%s'(%.3f)",
-                        bi, rec.text.c_str(), rec.confidence,
-                        rec_inv.text.c_str(), rec_inv.confidence);
-                rec = rec_inv;
-            }
-        }
-
         OcrResult ocr;
         ocr.box = box;
         ocr.det_confidence = box.score;
