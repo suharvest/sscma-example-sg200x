@@ -13,7 +13,9 @@ set -e
 # --- Defaults ---
 HOST="${RECAMERA_HOST:-192.168.42.1}"
 USER="${RECAMERA_USER:-recamera}"
-PASS="${RECAMERA_PASS:-recamera.2}"
+# Load credentials from ~/.recamera if exists
+[ -f ~/.recamera ] && . ~/.recamera
+PASS="${RECAMERA_PASS:-}"
 SKIP_BUILD=false
 MQTT_CHECK=true
 
@@ -58,6 +60,7 @@ run_sudo() {
 # --- Pre-flight ---
 command -v sshpass >/dev/null || err "sshpass not found. Install: brew install hudochenkov/sshpass/sshpass"
 ping -c 1 -t 2 "$HOST" >/dev/null 2>&1 || err "Device $HOST not reachable"
+[ -z "$PASS" ] && err "No password set. Create ~/.recamera with: RECAMERA_PASS=yourpassword"
 
 # --- Step 1: Build ---
 if [ "$SKIP_BUILD" = false ]; then

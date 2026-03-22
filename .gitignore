@@ -7,3 +7,4 @@ install/
 *.onnx
 solutions/retail-vision/
 *.deb
+CLAUDE.md
