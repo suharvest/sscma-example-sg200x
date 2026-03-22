@@ -76,7 +76,7 @@ TextDetector::TextDetector()
       tensor_stride_(0),
       det_threshold_(0.3f),
       box_threshold_(0.5f),
-      unclip_ratio_(1.6f),
+      unclip_ratio_(2.0f),
       min_box_size_(10),
       initialized_(false) {}
 
@@ -200,6 +200,10 @@ void TextDetector::preprocess(const ma_img_t* src) {
 }
 
 void TextDetector::unclipPolygon(float points[4][2], float unclip_ratio) {
+    // PaddleOCR-style polygon offset: move each edge outward along its normal
+    // by distance = area * unclip_ratio / perimeter, then intersect adjacent
+    // offset edges to find new corner points.
+
     // Calculate polygon area and perimeter
     float area = 0.0f;
     float perimeter = 0.0f;
@@ -217,24 +221,69 @@ void TextDetector::unclipPolygon(float points[4][2], float unclip_ratio) {
 
     float distance = area * unclip_ratio / perimeter;
 
-    // Expand each edge outward by distance
-    float cx = 0, cy = 0;
+    // For each edge, compute outward normal and offset line
+    // Edge i: points[i] → points[(i+1)%4]
+    // Outward normal for clockwise polygon: (dy, -dx) normalized
+    struct OffsetEdge {
+        float nx, ny;   // unit outward normal
+        float px, py;   // a point on the offset line
+    };
+    OffsetEdge edges[4];
+
+    // Determine polygon winding (sign of area from shoelace)
+    float signed_area = 0.0f;
     for (int i = 0; i < 4; ++i) {
-        cx += points[i][0];
-        cy += points[i][1];
+        int j = (i + 1) % 4;
+        signed_area += points[i][0] * points[j][1] - points[j][0] * points[i][1];
     }
-    cx /= 4.0f;
-    cy /= 4.0f;
+    float normal_sign = (signed_area > 0) ? 1.0f : -1.0f;  // flip for CCW
 
     for (int i = 0; i < 4; ++i) {
-        float dx = points[i][0] - cx;
-        float dy = points[i][1] - cy;
-        float d = std::sqrt(dx * dx + dy * dy);
-        if (d > 1e-6f) {
-            float expand = distance / d;
-            points[i][0] += dx * expand;
-            points[i][1] += dy * expand;
+        int j = (i + 1) % 4;
+        float ex = points[j][0] - points[i][0];
+        float ey = points[j][1] - points[i][1];
+        float elen = std::sqrt(ex * ex + ey * ey);
+        if (elen < 1e-6f) elen = 1e-6f;
+        // Outward normal
+        edges[i].nx = normal_sign * ey / elen;
+        edges[i].ny = normal_sign * (-ex) / elen;
+        // Offset the edge midpoint by distance along normal
+        float mx = (points[i][0] + points[j][0]) * 0.5f;
+        float my = (points[i][1] + points[j][1]) * 0.5f;
+        edges[i].px = mx + edges[i].nx * distance;
+        edges[i].py = my + edges[i].ny * distance;
+    }
+
+    // Find intersection of adjacent offset edges to get new corners
+    // New corner i = intersection of offset edge (i-1) and offset edge i
+    float new_points[4][2];
+    for (int i = 0; i < 4; ++i) {
+        int prev = (i + 3) % 4;
+        // Edge prev direction
+        float d1x = points[(prev + 1) % 4][0] - points[prev][0];
+        float d1y = points[(prev + 1) % 4][1] - points[prev][1];
+        // Edge i direction
+        float d2x = points[(i + 1) % 4][0] - points[i][0];
+        float d2y = points[(i + 1) % 4][1] - points[i][1];
+
+        // Intersect: edges[prev].p + t*d1 = edges[i].p + s*d2
+        float denom = d1x * d2y - d1y * d2x;
+        if (std::abs(denom) < 1e-6f) {
+            // Parallel edges, just offset the original point
+            new_points[i][0] = points[i][0] + edges[i].nx * distance;
+            new_points[i][1] = points[i][1] + edges[i].ny * distance;
+        } else {
+            float dpx = edges[i].px - edges[prev].px;
+            float dpy = edges[i].py - edges[prev].py;
+            float t = (dpx * d2y - dpy * d2x) / denom;
+            new_points[i][0] = edges[prev].px + t * d1x;
+            new_points[i][1] = edges[prev].py + t * d1y;
         }
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        points[i][0] = new_points[i][0];
+        points[i][1] = new_points[i][1];
     }
 }
 
