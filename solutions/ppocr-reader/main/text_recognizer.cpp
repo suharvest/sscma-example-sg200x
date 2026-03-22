@@ -187,15 +187,17 @@ RecognitionResult TextRecognizer::ctcDecode(const ma_tensor_t& output) {
         return result;
     }
 
-    // CTC greedy decode: blank is at index 0
+    // CTC greedy decode with top-2 tracking for confidence metrics
     int blank_idx = 0;
     int prev_idx = blank_idx;
     float total_conf = 0.0f;
+    float min_conf = 1.0f;
+    float total_margin = 0.0f;
     int char_count = 0;
 
     for (int t = 0; t < time_steps; ++t) {
-        int best_idx = 0;
-        float best_val = -1e30f;
+        int best_idx = 0, second_idx = 0;
+        float best_val = -1e30f, second_val = -1e30f;
 
         if (output.type == MA_TENSOR_TYPE_S8) {
             float scale = output.quant_param.scale;
@@ -203,17 +205,20 @@ RecognitionResult TextRecognizer::ctcDecode(const ma_tensor_t& output) {
             for (int c = 0; c < num_classes; ++c) {
                 float val = (static_cast<float>(output.data.s8[t * num_classes + c]) - zp) * scale;
                 if (val > best_val) {
-                    best_val = val;
-                    best_idx = c;
+                    second_val = best_val; second_idx = best_idx;
+                    best_val = val; best_idx = c;
+                } else if (val > second_val) {
+                    second_val = val; second_idx = c;
                 }
             }
         } else {
-            // F32 (BF16 models are auto-converted to F32 by CVI runtime)
             const float* row = output.data.f32 + t * num_classes;
             for (int c = 0; c < num_classes; ++c) {
                 if (row[c] > best_val) {
-                    best_val = row[c];
-                    best_idx = c;
+                    second_val = best_val; second_idx = best_idx;
+                    best_val = row[c]; best_idx = c;
+                } else if (row[c] > second_val) {
+                    second_val = row[c]; second_idx = c;
                 }
             }
         }
@@ -223,6 +228,8 @@ RecognitionResult TextRecognizer::ctcDecode(const ma_tensor_t& output) {
             if (best_idx >= 0 && best_idx < static_cast<int>(dictionary_.size())) {
                 result.text += dictionary_[best_idx];
                 total_conf += best_val;
+                if (best_val < min_conf) min_conf = best_val;
+                total_margin += (best_val - second_val);
                 char_count++;
             }
         }
@@ -231,7 +238,10 @@ RecognitionResult TextRecognizer::ctcDecode(const ma_tensor_t& output) {
     }
 
     if (char_count > 0) {
-        result.confidence = total_conf / char_count;
+        float mean_conf = total_conf / char_count;
+        float mean_margin = total_margin / char_count;
+        // Combined confidence: weighs average probability, worst character, and decisiveness
+        result.confidence = 0.5f * mean_conf + 0.3f * mean_margin + 0.2f * min_conf;
     }
 
     return result;
