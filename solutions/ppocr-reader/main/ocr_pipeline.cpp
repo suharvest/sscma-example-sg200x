@@ -120,9 +120,22 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
     src_pts[3].y += v_axis.y * pad_v - h_axis.y * pad_h;
 
     // Clip source points to image bounds
+    // Use detector's orig dimensions if img dimensions are invalid (width/height=1)
+    float clip_w = static_cast<float>(img->width);
+    float clip_h = static_cast<float>(img->height);
+    if (clip_w <= 1 || clip_h <= 1) {
+        // Estimate from data size (RGB888)
+        if (img->size > 0) {
+            int total_pixels = img->size / 3;
+            clip_h = std::sqrt(total_pixels * 3.0f / 4.0f);
+            clip_w = total_pixels / clip_h;
+        } else {
+            clip_w = 640; clip_h = 480;
+        }
+    }
     for (int i = 0; i < 4; ++i) {
-        src_pts[i].x = std::max(0.0f, std::min(static_cast<float>(img->width - 1), src_pts[i].x));
-        src_pts[i].y = std::max(0.0f, std::min(static_cast<float>(img->height - 1), src_pts[i].y));
+        src_pts[i].x = std::max(0.0f, std::min(clip_w - 1, src_pts[i].x));
+        src_pts[i].y = std::max(0.0f, std::min(clip_h - 1, src_pts[i].y));
     }
 
     // Update output dimensions to include padding
@@ -150,8 +163,8 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
 
     int roi_x = static_cast<int>(std::max(0.0f, std::floor(min_x)));
     int roi_y = static_cast<int>(std::max(0.0f, std::floor(min_y)));
-    int roi_x2 = static_cast<int>(std::min(static_cast<float>(img->width), std::ceil(max_x)));
-    int roi_y2 = static_cast<int>(std::min(static_cast<float>(img->height), std::ceil(max_y)));
+    int roi_x2 = static_cast<int>(std::min(clip_w, std::ceil(max_x)));
+    int roi_y2 = static_cast<int>(std::min(clip_h, std::ceil(max_y)));
     int roi_w = roi_x2 - roi_x;
     int roi_h = roi_y2 - roi_y;
 
@@ -163,7 +176,7 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
         roi_pts[i] = cv::Point2f(src_pts[i].x - roi_x, src_pts[i].y - roi_y);
     }
 
-    cv::Mat full_mat(img->height, img->width, CV_8UC3, img->data);
+    cv::Mat full_mat(static_cast<int>(clip_h), static_cast<int>(clip_w), CV_8UC3, img->data);
     cv::Mat roi_mat = full_mat(cv::Rect(roi_x, roi_y, roi_w, roi_h));
 
     cv::Mat M = cv::getPerspectiveTransform(roi_pts, dst_pts);
