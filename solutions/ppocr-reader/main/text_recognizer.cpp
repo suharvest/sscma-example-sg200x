@@ -127,10 +127,13 @@ void TextRecognizer::preprocess(const uint8_t* rgb_data, int width, int height) 
     if (new_w > input_width_) new_w = input_width_;
     int new_h = input_height_;
 
-    // Use OpenCV resize (INTER_AREA for downscaling, INTER_LINEAR for upscaling)
+    // Use OpenCV resize: INTER_AREA for downscaling, INTER_CUBIC for significant upscaling
     cv::Mat src(height, width, CV_8UC3, const_cast<uint8_t*>(rgb_data));
     cv::Mat resized;
-    int interp = (new_w < width) ? cv::INTER_AREA : cv::INTER_LINEAR;
+    float upscale_ratio = static_cast<float>(new_h) / height;
+    int interp = (new_w < width) ? cv::INTER_AREA
+               : (upscale_ratio > 1.2f) ? cv::INTER_CUBIC
+               : cv::INTER_LINEAR;
     cv::resize(src, resized, cv::Size(new_w, new_h), 0, 0, interp);
 
     // Copy resized data into buffer (left-aligned, gray padding on right)

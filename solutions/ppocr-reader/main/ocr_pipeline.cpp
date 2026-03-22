@@ -11,7 +11,7 @@
 namespace ppocr {
 
 OcrPipeline::OcrPipeline()
-    : max_boxes_(5), initialized_(false), rec_available_(false) {}
+    : max_boxes_(5), enhance_mode_(EnhanceMode::kAdaptive), initialized_(false), rec_available_(false), dbg_dump_frame_(0), prev_match_count_(0) {}
 
 OcrPipeline::~OcrPipeline() {}
 
@@ -41,6 +41,12 @@ bool OcrPipeline::init(const std::string& det_model_path,
 
 void OcrPipeline::setMaxBoxes(size_t max_boxes) {
     max_boxes_ = max_boxes;
+}
+
+void OcrPipeline::setEnhanceMode(EnhanceMode mode) {
+    enhance_mode_ = mode;
+    const char* names[] = {"none", "clahe", "gray", "adaptive"};
+    MA_LOGI(TAG, "Enhance mode: %s", names[static_cast<int>(mode)]);
 }
 
 void OcrPipeline::sortBoxes(std::vector<TextBox>& boxes) {
@@ -83,29 +89,35 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
 
     if (out_w < 2 || out_h < 2) return false;
 
-    // Add vertical padding (15% of height on each side) to ensure
-    // the recognition model has enough context around text edges.
-    float pad_ratio = 0.15f;
-    float pad_h = std::max(height_left, height_right) * pad_ratio;
+    // Pad the source quad to give the recognizer context around text edges.
+    // Use the text height axis (mid_top → mid_bottom) for vertical padding,
+    // and the text direction (TL→TR) for horizontal padding.
+    float text_h = std::max(height_left, height_right);
+    float pad_v = text_h * 0.12f;   // 12% vertical padding each side
+    float pad_h = std::max(width_top, width_bot) * 0.06f;  // 6% horizontal padding each side
 
-    // Compute perpendicular direction to the top edge
-    cv::Point2f top_dir(src_pts[1].x - src_pts[0].x, src_pts[1].y - src_pts[0].y);
-    float top_len = std::sqrt(top_dir.x * top_dir.x + top_dir.y * top_dir.y);
-    if (top_len > 1e-6f) {
-        top_dir.x /= top_len;
-        top_dir.y /= top_len;
-    }
-    cv::Point2f up_normal(-top_dir.y, top_dir.x);
+    // Vertical axis: midpoint of top edge → midpoint of bottom edge
+    cv::Point2f mid_top((src_pts[0].x + src_pts[1].x) * 0.5f, (src_pts[0].y + src_pts[1].y) * 0.5f);
+    cv::Point2f mid_bot((src_pts[2].x + src_pts[3].x) * 0.5f, (src_pts[2].y + src_pts[3].y) * 0.5f);
+    cv::Point2f v_axis(mid_bot.x - mid_top.x, mid_bot.y - mid_top.y);
+    float v_len = std::sqrt(v_axis.x * v_axis.x + v_axis.y * v_axis.y);
+    if (v_len > 1e-6f) { v_axis.x /= v_len; v_axis.y /= v_len; }
 
-    // Expand: move top points up, bottom points down
-    src_pts[0].x += up_normal.x * pad_h;
-    src_pts[0].y += up_normal.y * pad_h;
-    src_pts[1].x += up_normal.x * pad_h;
-    src_pts[1].y += up_normal.y * pad_h;
-    src_pts[2].x -= up_normal.x * pad_h;
-    src_pts[2].y -= up_normal.y * pad_h;
-    src_pts[3].x -= up_normal.x * pad_h;
-    src_pts[3].y -= up_normal.y * pad_h;
+    // Horizontal axis: TL → TR direction
+    cv::Point2f h_axis(src_pts[1].x - src_pts[0].x, src_pts[1].y - src_pts[0].y);
+    float h_len = std::sqrt(h_axis.x * h_axis.x + h_axis.y * h_axis.y);
+    if (h_len > 1e-6f) { h_axis.x /= h_len; h_axis.y /= h_len; }
+
+    // Expand: move top points up (against v_axis), bottom points down (along v_axis)
+    // and left points left (against h_axis), right points right (along h_axis)
+    src_pts[0].x += -v_axis.x * pad_v - h_axis.x * pad_h;  // TL: up + left
+    src_pts[0].y += -v_axis.y * pad_v - h_axis.y * pad_h;
+    src_pts[1].x += -v_axis.x * pad_v + h_axis.x * pad_h;  // TR: up + right
+    src_pts[1].y += -v_axis.y * pad_v + h_axis.y * pad_h;
+    src_pts[2].x += v_axis.x * pad_v + h_axis.x * pad_h;   // BR: down + right
+    src_pts[2].y += v_axis.y * pad_v + h_axis.y * pad_h;
+    src_pts[3].x += v_axis.x * pad_v - h_axis.x * pad_h;   // BL: down + left
+    src_pts[3].y += v_axis.y * pad_v - h_axis.y * pad_h;
 
     // Clip source points to image bounds
     for (int i = 0; i < 4; ++i) {
@@ -113,8 +125,9 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
         src_pts[i].y = std::max(0.0f, std::min(static_cast<float>(img->height - 1), src_pts[i].y));
     }
 
-    // Update output height to include padding
-    out_h = static_cast<int>(out_h + 2 * pad_h);
+    // Update output dimensions to include padding
+    out_h = static_cast<int>(out_h + 2 * pad_v);
+    out_w = static_cast<int>(out_w + 2 * pad_h);
 
     // Destination points (rectangle)
     cv::Point2f dst_pts[4] = {
@@ -155,7 +168,8 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
 
     cv::Mat M = cv::getPerspectiveTransform(roi_pts, dst_pts);
     cv::Mat warped;
-    cv::warpPerspective(roi_mat, warped, M, cv::Size(out_w, out_h));
+    cv::warpPerspective(roi_mat, warped, M, cv::Size(out_w, out_h),
+                        cv::INTER_CUBIC, cv::BORDER_REPLICATE);
 
     // If text is taller than wide, it's likely vertical - rotate
     if (static_cast<float>(out_h) > static_cast<float>(out_w) * 1.5f) {
@@ -165,21 +179,44 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
         std::swap(out_w, out_h);
     }
 
-    // Enhance text region for better recognition on blurry images:
-    // 1. CLAHE on luminance channel to boost contrast
-    cv::Mat lab;
-    cv::cvtColor(warped, lab, cv::COLOR_RGB2Lab);
-    std::vector<cv::Mat> lab_channels;
-    cv::split(lab, lab_channels);
-    auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-    clahe->apply(lab_channels[0], lab_channels[0]);
-    cv::merge(lab_channels, lab);
-    cv::cvtColor(lab, warped, cv::COLOR_Lab2RGB);
+    // Enhance text region for better recognition
+    EnhanceMode mode = enhance_mode_;
 
-    // 2. Unsharp mask to sharpen text edges
-    cv::Mat blurred;
-    cv::GaussianBlur(warped, blurred, cv::Size(0, 0), 1.5);
-    cv::addWeighted(warped, 2.0, blurred, -1.0, 0, warped);
+    // Adaptive: pick strategy based on crop color saturation
+    if (mode == EnhanceMode::kAdaptive) {
+        cv::Mat hsv;
+        cv::cvtColor(warped, hsv, cv::COLOR_RGB2HSV);
+        cv::Scalar mean_hsv = cv::mean(hsv);
+        // High saturation (>30) = colored background → use grayscale
+        mode = (mean_hsv[1] > 30.0) ? EnhanceMode::kGray : EnhanceMode::kClahe;
+    }
+
+    if (mode == EnhanceMode::kGray) {
+        // Grayscale CLAHE: remove color noise, then enhance contrast
+        cv::Mat gray;
+        cv::cvtColor(warped, gray, cv::COLOR_RGB2GRAY);
+        auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+        clahe->apply(gray, gray);
+        cv::cvtColor(gray, warped, cv::COLOR_GRAY2RGB);
+    } else if (mode == EnhanceMode::kClahe) {
+        // LAB CLAHE: enhance luminance while preserving color
+        cv::Mat lab;
+        cv::cvtColor(warped, lab, cv::COLOR_RGB2Lab);
+        std::vector<cv::Mat> lab_channels;
+        cv::split(lab, lab_channels);
+        auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+        clahe->apply(lab_channels[0], lab_channels[0]);
+        cv::merge(lab_channels, lab);
+        cv::cvtColor(lab, warped, cv::COLOR_Lab2RGB);
+    }
+    // kNone: skip enhancement
+
+    // Unsharp mask (skip for kNone)
+    if (mode != EnhanceMode::kNone) {
+        cv::Mat blurred;
+        cv::GaussianBlur(warped, blurred, cv::Size(0, 0), 1.5);
+        cv::addWeighted(warped, 1.5, blurred, -0.5, 0, warped);
+    }
 
     // Copy to output buffer
     size_t required = out_w * out_h * 3;
@@ -241,6 +278,18 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
             continue;
         }
 
+        // Debug: save crop images for first 2 frames
+        if (dbg_dump_frame_ < 2) {
+            char path[128];
+            snprintf(path, sizeof(path), "/tmp/ppocr_crop_f%d_b%zu.ppm", dbg_dump_frame_, bi);
+            FILE* fp = fopen(path, "wb");
+            if (fp) {
+                fprintf(fp, "P6\n%d %d\n255\n", crop_w, crop_h);
+                fwrite(crop_buffer_.data(), 1, crop_w * crop_h * 3, fp);
+                fclose(fp);
+            }
+        }
+
         RecognitionResult rec = recognizer_.recognize(crop_buffer_.data(), crop_w, crop_h);
 
         OcrResult ocr;
@@ -248,7 +297,7 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
         ocr.det_confidence = box.score;
 
         // Always include the detection box; attach text only if confidence is sufficient
-        static constexpr float kMinRecConfidence = 0.3f;
+        static constexpr float kMinRecConfidence = 0.25f;
         if (!rec.text.empty() && rec.confidence >= kMinRecConfidence) {
             ocr.text = rec.text;
             ocr.rec_confidence = rec.confidence;
@@ -259,6 +308,31 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
         }
         results.push_back(std::move(ocr));
     }
+
+    if (dbg_dump_frame_ < 2) dbg_dump_frame_++;
+
+    // Text hysteresis: keep previous text unless new result wins for 2 consecutive frames
+    // or has significantly higher confidence. This stabilizes flickering output.
+    if (!prev_results_.empty() && results.size() == prev_results_.size()) {
+        for (size_t i = 0; i < results.size(); ++i) {
+            auto& cur = results[i];
+            const auto& prev = prev_results_[i];
+            if (!prev.text.empty() && !cur.text.empty() && cur.text != prev.text) {
+                // New text differs from previous — only accept if significantly better
+                if (cur.rec_confidence < prev.rec_confidence + 0.1f) {
+                    cur.text = prev.text;
+                    cur.rec_confidence = prev.rec_confidence;
+                }
+            } else if (!prev.text.empty() && cur.text.empty()) {
+                // Previous had text, current doesn't — keep previous if it was decent
+                if (prev.rec_confidence >= 0.3f) {
+                    cur.text = prev.text;
+                    cur.rec_confidence = prev.rec_confidence * 0.95f;  // slight decay
+                }
+            }
+        }
+    }
+    prev_results_ = results;
 
     auto t3 = std::chrono::high_resolution_clock::now();
     timings.recognition_ms = std::chrono::duration<float, std::milli>(t3 - t2).count();

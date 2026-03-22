@@ -46,6 +46,9 @@ static struct {
     bool enable_mqtt = true;
     bool verbose = false;
 
+    // Enhancement mode
+    std::string enhance_mode = "adaptive";  // none, clahe, gray, adaptive
+
     // Test mode
     std::string test_rec_image;  // If set, test recognizer with this image and exit
 } g_config;
@@ -75,6 +78,7 @@ static void print_usage(const char* prog) {
     printf("  --mqtt-topic TOPIC   MQTT topic (default: %s)\n", g_config.mqtt_topic.c_str());
     printf("  --no-rtsp            Disable RTSP streaming\n");
     printf("  --no-mqtt            Disable MQTT publishing\n");
+    printf("  --enhance MODE       Image enhancement: none, clahe, gray, adaptive (default: %s)\n", g_config.enhance_mode.c_str());
     printf("  --test-rec PATH      Test recognizer with an image file and exit\n");
     printf("  -v, --verbose        Enable verbose logging\n");
     printf("  -h, --help           Show this help\n");
@@ -94,6 +98,7 @@ static bool parse_args(int argc, char** argv) {
         {"no-rtsp", no_argument, 0, 7},
         {"no-mqtt", no_argument, 0, 8},
         {"test-rec", required_argument, 0, 9},
+        {"enhance", required_argument, 0, 11},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -112,6 +117,7 @@ static bool parse_args(int argc, char** argv) {
             case 7: g_config.enable_rtsp = false; break;
             case 8: g_config.enable_mqtt = false; break;
             case 9: g_config.test_rec_image = optarg; break;
+            case 11: g_config.enhance_mode = optarg; break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
@@ -127,6 +133,12 @@ static bool init_pipeline() {
         return false;
     }
     g_pipeline->setMaxBoxes(g_config.kmax);
+
+    // Set enhance mode
+    if (g_config.enhance_mode == "none") g_pipeline->setEnhanceMode(ppocr::EnhanceMode::kNone);
+    else if (g_config.enhance_mode == "clahe") g_pipeline->setEnhanceMode(ppocr::EnhanceMode::kClahe);
+    else if (g_config.enhance_mode == "gray") g_pipeline->setEnhanceMode(ppocr::EnhanceMode::kGray);
+    else g_pipeline->setEnhanceMode(ppocr::EnhanceMode::kAdaptive);
     MA_LOGI(TAG, "OCR pipeline initialized");
     return true;
 }

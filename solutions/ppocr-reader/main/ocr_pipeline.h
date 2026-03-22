@@ -11,6 +11,13 @@
 
 namespace ppocr {
 
+enum class EnhanceMode {
+    kNone,      // No enhancement (baseline)
+    kClahe,     // CLAHE on LAB L-channel + sharpen (good for solid backgrounds)
+    kGray,      // Grayscale → CLAHE → 3-channel + sharpen (good for colored backgrounds)
+    kAdaptive,  // Auto-select clahe/gray based on crop saturation
+};
+
 struct OcrResult {
     TextBox box;
     std::string text;
@@ -33,6 +40,7 @@ public:
               const std::string& rec_model_path,
               const std::string& dict_path);
     void setMaxBoxes(size_t max_boxes);
+    void setEnhanceMode(EnhanceMode mode);
 
     // Run full OCR pipeline on a camera frame
     std::vector<OcrResult> process(ma_img_t* img, OcrTimings& timings);
@@ -49,9 +57,15 @@ private:
     TextRecognizer recognizer_;
     std::vector<uint8_t> crop_buffer_;
     size_t max_boxes_;
+    EnhanceMode enhance_mode_;
 
     bool initialized_;
     bool rec_available_;
+    int dbg_dump_frame_;
+
+    // Temporal smoothing: keep previous results for hysteresis
+    std::vector<OcrResult> prev_results_;
+    int prev_match_count_;  // how many consecutive frames the current text held
 };
 
 }  // namespace ppocr
