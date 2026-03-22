@@ -36,7 +36,13 @@ DAEMON_OPTS=""
 # Stop conflicting services that use the camera
 stop_conflicting_services() {
     echo "Stopping conflicting services..."
-    for svc in sscma-node node-red sscma-supervisor ppocr-reader; do
+    for prefix in S K; do
+        [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
+        [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
+        [ -x /etc/init.d/${prefix}93sscma-supervisor ] && /etc/init.d/${prefix}93sscma-supervisor stop 2>/dev/null || true
+    done
+    # Stop other camera-using solutions
+    for svc in ppocr-reader detection-blur retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
         for script in /etc/init.d/[SK]*${svc}; do
             [ -x "$script" ] && "$script" stop 2>/dev/null || true
         done

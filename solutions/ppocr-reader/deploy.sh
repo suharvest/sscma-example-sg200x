@@ -85,11 +85,13 @@ run_ssh 'for svc in /etc/init.d/S*sscma-node* /etc/init.d/K*sscma-node* \
                /etc/init.d/S*sscma-supervisor* /etc/init.d/K*sscma-supervisor* \
                /etc/init.d/S*yolo*detector* /etc/init.d/K*yolo*detector* \
                /etc/init.d/S*ppocr* /etc/init.d/K*ppocr* \
-               /etc/init.d/S*face-analysis* /etc/init.d/K*face-analysis*; do
+               /etc/init.d/S*face-analysis* /etc/init.d/K*face-analysis* \
+               /etc/init.d/S*detection-blur* /etc/init.d/K*detection-blur* \
+               /etc/init.d/S*retail-vision* /etc/init.d/K*retail-vision*; do
     [ -x "$svc" ] && "$svc" stop 2>/dev/null || true
 done' || warn "Some init scripts not found (OK)"
 
-run_sudo 'killall -q ppocr-reader yolo8-detector yolo11-detector yolo26-detector yolo11s-detector face-analysis sscma-node 2>/dev/null || true'
+run_sudo 'killall -q ppocr-reader face-analysis detection-blur retail-vision yolo8-detector yolo11-detector yolo26-detector yolo11s-detector sscma-node 2>/dev/null || true'
 sleep 2
 ok "Services stopped"
 

@@ -31,6 +31,12 @@ stop_conflicting_services() {
         [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
         [ -x /etc/init.d/${prefix}93sscma-supervisor ] && /etc/init.d/${prefix}93sscma-supervisor stop 2>/dev/null || true
     done
+    # Stop other camera-using solutions
+    for svc in face-analysis ppocr-reader retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
+        for script in /etc/init.d/[SK]*${svc}; do
+            [ -x "$script" ] && "$script" stop 2>/dev/null || true
+        done
+    done
     sleep 2
 }
 
