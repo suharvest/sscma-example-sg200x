@@ -131,8 +131,23 @@ bool TextDetector::init(const std::string& model_path) {
 }
 
 void TextDetector::preprocess(const ma_img_t* src) {
+    // Derive actual dimensions from data size if width/height are invalid
     orig_width_ = src->width;
     orig_height_ = src->height;
+    if (orig_width_ <= 1 || orig_height_ <= 1) {
+        // Estimate from buffer size: size = width * height * 3 (RGB888)
+        // Assume 4:3 aspect ratio as fallback
+        if (src->size > 0) {
+            int total_pixels = src->size / 3;
+            orig_height_ = static_cast<int>(std::sqrt(total_pixels * 3.0f / 4.0f));
+            orig_width_ = total_pixels / orig_height_;
+        } else {
+            orig_width_ = 640;
+            orig_height_ = 480;
+        }
+        MA_LOGW(TAG, "Frame w/h invalid (%d,%d), estimated %dx%d from size=%u",
+                src->width, src->height, orig_width_, orig_height_, src->size);
+    }
 
     // Calculate letterbox scale
     float scale_w = static_cast<float>(input_width_) / src->width;

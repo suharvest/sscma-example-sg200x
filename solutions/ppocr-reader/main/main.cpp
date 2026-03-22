@@ -272,11 +272,20 @@ static void process_frame() {
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
 
+    // Use configured inference resolution for MQTT box normalization.
+    // Note: frame.width/height may report 1 in some sscma-micro versions.
+    int frame_w = g_config.inference_width;
+    int frame_h = g_config.inference_height;
+    static bool logged_frame_dim = false;
+    if (!logged_frame_dim) {
+        MA_LOGI(TAG, "Frame dims: frame.w=%d frame.h=%d, using config %dx%d",
+                frame.width, frame.height, frame_w, frame_h);
+        logged_frame_dim = true;
+    }
+
     // Run OCR pipeline
     OcrTimings timings;
     std::vector<OcrResult> results = g_pipeline->process(&frame, timings);
-    int frame_w = frame.width;
-    int frame_h = frame.height;
 
     // Return frame to camera
     g_camera->returnFrame(frame);
