@@ -17,7 +17,10 @@ LOGFILE=/var/log/$NAME.log
 # Library paths required for CVI SDK
 export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
 
-# Load config if exists
+# Load global reCamera config (MQTT_HOST, MQTT_PORT, etc.)
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+
+# Load solution-specific config (can override global settings)
 [ -f /etc/face-analysis.conf ] && . /etc/face-analysis.conf
 
 # Build options from config

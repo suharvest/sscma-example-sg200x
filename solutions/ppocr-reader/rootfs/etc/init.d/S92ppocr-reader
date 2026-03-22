@@ -20,8 +20,15 @@ export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3
 # Default options
 DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_mix.cvimodel --rec-model /userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel --dict /userdata/local/dict/ppocr_keys_v1.txt"
 
-# Load config if exists
+# Load global reCamera config (MQTT_HOST, MQTT_PORT, etc.)
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+
+# Load solution-specific config (can override global settings)
 [ -f /etc/ppocr-reader.conf ] && . /etc/ppocr-reader.conf
+
+# Apply MQTT settings from config
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-host $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-port $MQTT_PORT"
 
 # Stop conflicting services that use the camera
 stop_conflicting_services() {
