@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FormInstance } from "antd-mobile/es/components/form";
 import useConfigStore from "@/store/config";
 import {
@@ -7,8 +7,9 @@ import {
   DeviceNeedRestart,
   SystemUpdateStatus,
   UpdateStatus,
+  PowerSourceMode,
 } from "@/enum";
-import { IChannelParams } from "@/api/device/device";
+import { IChannelParams, IBatteryInfo } from "@/api/device/device";
 import {
   queryDeviceInfoApi,
   changeChannleApi,
@@ -17,6 +18,7 @@ import {
   getUpdateSystemProgressApi,
   cancelUpdateApi,
   getSystemUpdateVesionInfoApi,
+  queryBatteryInfoApi,
 } from "@/api/device/index";
 import { ReloadOutlined } from "@ant-design/icons";
 import { message, Modal } from "antd";
@@ -37,9 +39,32 @@ export function useData() {
   const checkCountRef = useRef(0);
   const maxCheckCount = 10;
 
+  const [batteryInfo, setBatteryInfo] = useState<IBatteryInfo | null>(null);
+
   const onQueryDeviceInfo = async () => {
     const res = await queryDeviceInfoApi();
     updateDeviceInfo(res.data);
+  };
+
+  const onQueryBatteryInfo = async () => {
+    try {
+      const res = await queryBatteryInfoApi();
+      if (res.code === 0) {
+        // Success: battery data ready
+        setBatteryInfo(res.data);
+        setSystemUpdateState({ batteryAvailable: true });
+      } else if (res.code === -1 && res.msg?.includes("not available")) {
+        // ADC hardware not available
+        setSystemUpdateState({ batteryAvailable: false });
+        setBatteryInfo(null);
+      } else if (res.code === -2 || res.msg?.includes("not ready")) {
+        // ADC available but data not ready yet - mark as available and will retry
+        setSystemUpdateState({ batteryAvailable: true });
+      }
+      // Other errors: keep previous state
+    } catch (err) {
+      console.log("Failed to query battery info:", err);
+    }
   };
 
   const onCancel = () => {
@@ -262,8 +287,34 @@ export function useData() {
     }
   }, [deviceInfo.channel, deviceInfo.serverUrl, deviceInfo.needRestart]);
 
+  useEffect(() => {
+    // First time detection (batteryAvailable is undefined)
+    if (systemUpdateState.batteryAvailable === undefined) {
+      onQueryBatteryInfo();  // One-time call to detect availability
+      return;
+    }
+
+    // Only poll when battery is available AND battery mode is enabled (switch is ON)
+    if (systemUpdateState.batteryAvailable === true && systemUpdateState.powerSourceMode === PowerSourceMode.Battery) {
+      onQueryBatteryInfo();
+      const interval = setInterval(() => {
+        onQueryBatteryInfo();
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [systemUpdateState.batteryAvailable, systemUpdateState.powerSourceMode]);
+
+  const onPowerSourceChange = (mode: PowerSourceMode) => {
+    // Toggle between Battery and None
+    const newMode = systemUpdateState.powerSourceMode === PowerSourceMode.Battery
+      ? PowerSourceMode.None
+      : PowerSourceMode.Battery;
+    setSystemUpdateState({ powerSourceMode: newMode });
+  };
+
   return {
     deviceInfo,
+    batteryInfo,
     addressFormRef,
     onEditServerAddress,
     onCancel,
@@ -274,5 +325,6 @@ export function useData() {
     onConfirm,
     onUpdateRestart,
     onUpdateCheck,
+    onPowerSourceChange,
   };
 }

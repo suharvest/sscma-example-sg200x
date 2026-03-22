@@ -42,3 +42,7 @@ interface IIPDevice {
   ip: string;
   type: string;
 }
+
+interface IBatteryInfo {
+  voltage?: number;         // Battery voltage (mV), undefined when unavailable
+}

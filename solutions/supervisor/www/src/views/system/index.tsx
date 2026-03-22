@@ -10,7 +10,7 @@ import {
 import { Button } from "antd";
 import moment from "moment";
 import { useData } from "./hook";
-import { DeviceChannleMode, UpdateStatus } from "@/enum";
+import { DeviceChannleMode, UpdateStatus, PowerSourceMode } from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
 import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
@@ -25,10 +25,13 @@ const infoList = [
   { label: "NPU", key: "npu" },
   { label: "OS", key: "osVersion" },
   { label: "Device Info", key: "type" },
+  { label: "Battery", key: "powerSource", isPowerSource: true },
 ];
+
 function System() {
   const {
     deviceInfo,
+    batteryInfo,
     addressFormRef,
     onEditServerAddress,
     onCancel,
@@ -39,6 +42,7 @@ function System() {
     onChannelChange,
     onUpdateRestart,
     onUpdateCheck,
+    onPowerSourceChange,
   } = useData();
 
   const { systemUpdateState, setSystemUpdateState } = useConfigStore();
@@ -56,6 +60,13 @@ function System() {
     );
     return index > -1 && channelList[index].label;
   }, [systemUpdateState.channel]);
+
+  const displayInfoList = useMemo(() => {
+    // Only show Battery row if battery hardware is detected as available
+    return infoList.filter(
+      (item) => !(item as any).isPowerSource || systemUpdateState.batteryAvailable === true
+    );
+  }, [systemUpdateState.batteryAvailable]);
 
   return (
     <div className="my-8 p-16">
@@ -175,22 +186,55 @@ function System() {
         <div>
           <div className="font-bold text-18 mb-14 my-24"> System Info</div>
           <div className="bg-white rounded-20 px-24">
-            {infoList.map((item, index) => {
+            {displayInfoList.map((item, index) => {
+              const isPowerSource = (item as any).isPowerSource;
               return (
-                <div
-                  key={item.key}
-                  className={`flex justify-between py-24 ${
-                    index && "border-t"
-                  }`}
-                >
-                  <span className="opacity-60 text-black mr-20">
-                    {item.label}
-                  </span>
-                  <div className="flex-1 truncate text-right">
-                    {item.key == "osVersion"
-                      ? `${deviceInfo.osName} ${deviceInfo[item.key]}`
-                      : deviceInfo[item.key]}
+                <div key={item.key} className={isPowerSource && systemUpdateState.powerSourceMode === PowerSourceMode.Battery ? 'pb-20' : ''}>
+                  <div
+                    className={`flex justify-between items-center py-24 ${
+                      index && "border-t"
+                    }`}
+                  >
+                    <span className="opacity-60 text-black mr-20">
+                      {item.label}
+                    </span>
+                    <div className="flex-1 truncate text-right flex items-center justify-end">
+                      {isPowerSource ? (
+                        <div
+                          className={`cursor-pointer select-none w-28 h-15 rounded-full relative transition-colors shadow-sm ${
+                            systemUpdateState.powerSourceMode === PowerSourceMode.Battery
+                              ? 'bg-green-500'
+                              : 'bg-gray-300'
+                          }`}
+                          onClick={() => onPowerSourceChange(PowerSourceMode.Battery)}
+                        >
+                          <div
+                            className={`w-13 h-13 bg-white rounded-full absolute top-1 shadow-md transition-all duration-300 ${
+                              systemUpdateState.powerSourceMode === PowerSourceMode.Battery
+                                ? 'right-[1px]'
+                                : 'left-[1px]'
+                            }`}
+                          />
+                        </div>
+                      ) : item.key == "osVersion" ? (
+                        `${deviceInfo.osName} ${deviceInfo[item.key]}`
+                      ) : (
+                        deviceInfo[item.key]
+                      )}
+                    </div>
                   </div>
+                  {isPowerSource && systemUpdateState.powerSourceMode === PowerSourceMode.Battery && (
+                    <div className="flex items-center text-14 text-gray-600 relative h-10">
+                      {/* L-shaped arrow from Battery label */}
+                      <svg className="absolute left-8 -top-6 w-16 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 60 40">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 5 L5 35 L40 35" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M35 30 L40 35 L35 40" />
+                      </svg>
+                      <span className="ml-20 px-2" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        🔋{batteryInfo?.voltage ? (batteryInfo.voltage / 1000).toFixed(1) : '0.0'} V
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })}

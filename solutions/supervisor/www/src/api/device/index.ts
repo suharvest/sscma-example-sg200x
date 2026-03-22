@@ -5,6 +5,7 @@ import {
   IChannelParams,
   IServiceStatus,
   IIPDevice,
+  IBatteryInfo,
 } from "./device";
 
 // 获取设备信息
@@ -123,7 +124,8 @@ export const getModelInfoApi = async () =>
 // 上传模型（支持分片上传）
 export const uploadModelApi = async (
   data: FormData,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ) => {
   const CHUNK_SIZE = 512 * 1024; // 512KB
   
@@ -145,6 +147,7 @@ export const uploadModelApi = async (
       url: "api/deviceMgr/uploadModel",
       method: "post",
       data,
+      signal,
     });
   }
   
@@ -169,6 +172,7 @@ export const uploadModelApi = async (
       url: "api/deviceMgr/uploadModel",
       method: "post",
       data: chunkFormData,
+      signal,
     });
     
     offset += CHUNK_SIZE;
@@ -204,6 +208,18 @@ export const getPlatformInfoApi = async () =>
   }>(
     {
       url: "api/deviceMgr/getPlatformInfo",
+      method: "get",
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 获取电池信息
+export const queryBatteryInfoApi = async () =>
+  supervisorRequest<IBatteryInfo>(
+    {
+      url: "api/deviceMgr/queryBatteryInfo",
       method: "get",
     },
     {

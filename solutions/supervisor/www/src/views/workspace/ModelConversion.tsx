@@ -419,16 +419,14 @@ const ModelConversion = ({
 
   // 发送 flow 到 Node-RED
   const sendFlow = async (flows?: string) => {
-    try {
-      const revision = await saveFlows(flows);
-      if (revision) {
-        const response = await getFlowsState();
-        if (response?.state == "stop") {
-          await setFlowsState({ state: "start" });
-        }
-      }
-    } catch (error) {
-      console.error("Send flow error:", error);
+    const revision = await saveFlows(flows);
+    if (!revision) {
+      throw new Error("Node-RED did not accept flow deployment (empty revision)");
+    }
+
+    const response = await getFlowsState();
+    if (response?.state == "stop") {
+      await setFlowsState({ state: "start" });
     }
   };
 
@@ -509,7 +507,20 @@ const ModelConversion = ({
           }
         } catch (error) {
           console.error("Update flow error:", error);
-          // 不显示错误，因为模型已经上传成功
+          const confirmed = await modal.confirm({
+            title: "Flow deploy failed",
+            content:
+              "Model uploaded, but failed to deploy flow to Node-RED. Reload page and retry?",
+            okText: "Reload page",
+            cancelText: "Stay on current page",
+          });
+          if (confirmed) {
+            window.location.reload();
+          } else {
+            messageApi.warning(
+              "Model uploaded, but failed to deploy flow to Node-RED. Please retry."
+            );
+          }
         }
       } else {
         messageApi.error("Upload model to device failed");

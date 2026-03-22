@@ -24,12 +24,7 @@ import {
   uploadModelApi,
 } from "@/api/device";
 import { IIPDevice } from "@/api/device/device";
-import {
-  getFlows,
-  saveFlows,
-  getFlowsState,
-  setFlowsState,
-} from "@/api/nodered";
+import { getFlows } from "@/api/nodered";
 import {
   getAppListApi,
   createAppApi,
@@ -39,9 +34,15 @@ import {
   acquireFileUrlApi,
   applyModelApi,
 } from "@/api/sensecraft";
+import { getModelApi } from "@/api/model";
 import recamera_logo from "@/assets/images/recamera_logo.png";
 import { IAppInfo, IModelData, IActionInfo } from "@/api/sensecraft/sensecraft";
-import { sensecraftAuthorize, parseUrlParam, DefaultFlowData } from "@/utils";
+import {
+  sensecraftAuthorize,
+  parseUrlParam,
+  DefaultFlowData,
+  DefaultFlowDataWithDashboard,
+} from "@/utils";
 import usePlatformStore, {
   savePlatformInfo,
   initPlatformStore,
@@ -55,6 +56,13 @@ import NodeRed from "@/views/nodered";
 import ApplicationList from "./ApplicationList";
 import ModelConversion from "./ModelConversion";
 import styles from "./index.module.css";
+import {
+  deployFlowToNodeRed,
+  FLOW_DEPLOY_EMPTY_REVISION_ERROR,
+  summarizeFlow,
+  waitForDashboardReady,
+} from "./services/flowService";
+import { runTrainAction } from "./services/trainActionService";
 
 // 定义 type 优先级
 const typePriority = { eth: 1, usb: 2, wlan: 3 };
@@ -68,6 +76,18 @@ interface Node {
   type: string;
   label?: string;
 }
+
+interface ITrainFlowMeta {
+  source?: string;
+  train_model_id?: string;
+  task_id?: number | null;
+  device_type?: number | null;
+  model_name?: string;
+  model_md5?: string | null;
+  classes?: string[];
+}
+
+const TRAIN_META_NODE_NAME = "__train_meta__";
 
 const Workspace = () => {
   const { token, appInfo, nickname, updateAppInfo, updateNickname } =
@@ -96,30 +116,82 @@ const Workspace = () => {
 
   const [userInfoLoading, setUserInfoLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("application");
+  const uploadAbortRef = useRef<AbortController | null>(null);
+
+  const navigateToDashboardInTab = (ip: string) => {
+    if (window.location.hostname === ip) {
+      window.location.hash = "/dashboard";
+      return;
+    }
+    window.location.href = `http://${ip}/#/dashboard`;
+  };
+
+  const confirmPageReloadOnFlowFailed = async (reason: string) => {
+    const confirmed = await modal.confirm({
+      title: "Flow deploy failed",
+      content: reason,
+      okText: "Reload page",
+      cancelText: "Stay on current page",
+    });
+    if (confirmed) {
+      window.location.reload();
+    }
+    return confirmed;
+  };
+
   useEffect(() => {
     const initPlatform = async () => {
       const param = parseUrlParam(window.location.href);
+      console.info("initPlatform:params", param);
       const token_url = param.token;
       const refresh_token = param.refresh_token;
-      const action = param.action; //new / app / clone / model /normal  action为空默认为normal
+      const action = param.action; //new / app / clone / model / train /normal  action为空默认为normal
       const app_id = param.app_id; //type为app时才需要传
-      const model_id = param.model_id; //type为model时才需要传
+      const model_id = param.model_id; //type为model或train时才需要传
+      const model_name = param.model_name; //type为train时才需要传
 
+      if (action) {
+        sessionStorage.removeItem("sensecraft_action");
+      }
       let actionInfo;
       if (action) {
         actionInfo = {
           action: action,
           app_id: app_id,
           model_id: model_id,
+          model_name: model_name,
         };
       } else {
-        actionInfo = {
-          action: "normal",
-        };
+        const cachedAction = sessionStorage.getItem("sensecraft_action");
+        if (cachedAction) {
+          try {
+            actionInfo = JSON.parse(cachedAction);
+          } catch (error) {
+            actionInfo = {
+              action: "normal",
+            };
+          }
+          sessionStorage.removeItem("sensecraft_action");
+        } else {
+          actionInfo = {
+            action: "normal",
+          };
+        }
       }
 
       if (token_url && refresh_token) {
+        console.info("initPlatform:auth:with_tokens", {
+          actionInfo,
+          hasToken: Boolean(token_url),
+          hasRefreshToken: Boolean(refresh_token),
+        });
         await initPlatformStore(token_url, refresh_token);
+        if (actionInfo?.action && actionInfo.action !== "normal") {
+          sessionStorage.setItem(
+            "sensecraft_action",
+            JSON.stringify(actionInfo)
+          );
+        }
         setActionInfo(actionInfo);
         savePlatformInfo();
         const currentUrl = window.location.href;
@@ -127,9 +199,16 @@ const Workspace = () => {
         // 如果存在问号，截取问号之前的部分
         if (indexOfQuestionMark !== -1) {
           const newUrl = currentUrl.substring(0, indexOfQuestionMark);
-          window.location.href = newUrl;
+          console.info("initPlatform:redirect:strip_query", {
+            from: currentUrl,
+            to: newUrl,
+          });
+          window.history.replaceState(null, "", newUrl);
         }
       } else {
+        console.info("initPlatform:auth:cached_or_existing", {
+          actionInfo,
+        });
         await initPlatformStore();
         setActionInfo(actionInfo);
       }
@@ -209,9 +288,10 @@ const Workspace = () => {
   useEffect(() => {
     const initAction = async () => {
       if (actionInfo?.action && token) {
-        const action = actionInfo.action; //new / app / clone / model /normal  action为空默认为normal
+        const action = actionInfo.action; //new / app / clone / model / train /normal  action为空默认为normal
         const app_id = actionInfo.app_id; //type为app时才需要传
         const model_id = actionInfo.model_id; //type为model时才需要传
+        const model_name = actionInfo.model_name; //type为train时才需要传
         if (action == "app") {
           if (app_id) {
             //打开云端应用
@@ -231,6 +311,12 @@ const Workspace = () => {
           if (model_id) {
             //获取模型详情
             deployAndCreateAppForSensecraft(model_id);
+          }
+        } else if (action == "train") {
+          //训练模型
+          if (model_id) {
+            //获取模型文件并上传到设备
+            handleTrainModel(model_id, model_name);
           }
         } else if (action == "normal") {
           checkAndSyncAppData();
@@ -277,6 +363,78 @@ const Workspace = () => {
     }
   };
 
+  const extractTrainMetaFromFlow = (flowData?: string): ITrainFlowMeta | null => {
+    if (!flowData) return null;
+    try {
+      const nodes = JSON.parse(flowData);
+      if (!Array.isArray(nodes)) return null;
+      const metaNode = nodes.find(
+        (node: Record<string, unknown>) =>
+          node.type === "comment" && node.name === TRAIN_META_NODE_NAME
+      ) as { info?: string } | undefined;
+      if (!metaNode?.info) return null;
+      const meta = JSON.parse(metaNode.info);
+      if (meta && typeof meta === "object" && meta.train_model_id) {
+        return meta as ITrainFlowMeta;
+      }
+      return null;
+    } catch (error) {
+      console.warn("flow:train_meta_parse_failed", error);
+      return null;
+    }
+  };
+
+  const isPresetModelId = (modelId?: string) =>
+    modelId == "10001" ||
+    modelId == "10002" ||
+    modelId == "10003" ||
+    modelId == "10004";
+
+  const recoverTrainModelFromFlowMeta = async (meta: ITrainFlowMeta) => {
+    if (!meta.train_model_id) return false;
+    if (meta.model_md5) {
+      const { model_md5 } = await getModelInfo();
+      if (model_md5 && model_md5 === meta.model_md5) {
+        return true;
+      }
+    }
+
+    try {
+      setLoading(true);
+      setLoadingTip("Recovering model from train source");
+      const blob = await getModelApi(meta.train_model_id, {
+        task_id: meta.task_id ?? undefined,
+        device_type: meta.device_type ?? undefined,
+      });
+      const modelInfo = {
+        model_id: meta.train_model_id,
+        model_name: meta.model_name || meta.train_model_id,
+        ...(Array.isArray(meta.classes) ? { classes: meta.classes } : {}),
+      };
+      const formData = new FormData();
+      const fileName = (meta.model_name || meta.train_model_id)
+        .replace(/\.cvimodel$/i, "")
+        .concat(".cvimodel");
+      formData.append("model_file", blob, fileName);
+      formData.append("model_info", JSON.stringify(modelInfo));
+      const resp = await uploadModelApi(formData, (progress) => {
+        setLoadingTip(`Uploading model to reCamera: ${progress.toFixed(1)}%`);
+      });
+      const ret = resp.code == 0;
+      if (!ret) {
+        messageApi.error("Recover train model failed");
+      }
+      return ret;
+    } catch (error) {
+      console.error("Recover train model failed:", error);
+      messageApi.error("Recover train model failed");
+      return false;
+    } finally {
+      setLoading(false);
+      setLoadingTip("");
+    }
+  };
+
   //将云端模型上传到设备
   const uploadModel = async (model_data: IModelData) => {
     if (model_data) {
@@ -290,11 +448,7 @@ const Workspace = () => {
         }
       }
       //是否预置模型
-      const isPreset =
-        model_data.model_id == "10001" ||
-        model_data.model_id == "10002" ||
-        model_data.model_id == "10003" ||
-        model_data.model_id == "10004";
+      const isPreset = isPresetModelId(model_data.model_id);
 
       if (isPreset || url) {
         try {
@@ -310,12 +464,12 @@ const Workspace = () => {
             formData.append("model_file", blob); // 文件名可以根据需要修改
           }
           formData.append("model_info", JSON.stringify(model_data));
-          
+
           // 使用分片上传并显示进度
           const resp = await uploadModelApi(formData, (progress) => {
             setLoadingTip(`Uploading model to reCamera: ${progress.toFixed(1)}%`);
           });
-          
+
           setLoading(false);
           setLoadingTip("");
           const ret = resp.code == 0;
@@ -374,19 +528,12 @@ const Workspace = () => {
 
   //往nodered更新flow
   const sendFlow = async (flows?: string) => {
-    try {
-      const revision = await saveFlows(flows);
-      if (revision) {
-        revRef.current = revision;
-        const response = await getFlowsState();
-        if (response?.state == "stop") {
-          await setFlowsState({ state: "start" });
-        }
-        setTimestamp(new Date().getTime());
-      }
-    } catch (error) {
-      console.log(error);
-    }
+    console.info("sendFlow:start", summarizeFlow(flows));
+    const { revision, flowState } = await deployFlowToNodeRed(flows);
+    console.info("sendFlow:saveFlows:done", { revision });
+    revRef.current = revision;
+    console.info("sendFlow:flows_state", { state: flowState });
+    setTimestamp(new Date().getTime());
   };
 
   // 判断本地应用和云端应用是否一致
@@ -498,6 +645,7 @@ const Workspace = () => {
       setLoadingTip("Deploying model");
       // 获取模型下载地址
       const response = await applyModelApi(model_id);
+      console.info("model:apply_response", response);
       if (response.code == 0) {
         const data = response.data;
         const model_snapshot = data.model_snapshot;
@@ -505,11 +653,70 @@ const Workspace = () => {
           //上传设备本地
           const ret = await uploadModel(model_snapshot);
           if (ret) {
-            await createAppAndUpdateFlow({
-              flow_data: DefaultFlowData,
+            const taskType = model_snapshot?.arguments?.task;
+            const modelFormat = model_snapshot?.model_format?.toLowerCase();
+            const useDashboardFlow =
+              taskType === "classify" && modelFormat === "cvimodel";
+            let flowData = useDashboardFlow
+              ? DefaultFlowDataWithDashboard
+              : DefaultFlowData;
+            console.info("model:flow:select_default", {
+              useDashboardFlow,
+              flowLen: flowData?.length ?? 0,
+            });
+            try {
+              const flowObj = JSON.parse(flowData);
+              if (Array.isArray(flowObj)) {
+                const updated = flowObj.map((node: Record<string, unknown>) => {
+                  if (node.type === "model") {
+                    return {
+                      ...node,
+                      model: model_snapshot?.model_name || node.model,
+                      classes: Array.isArray(model_snapshot?.classes)
+                        ? model_snapshot.classes.join(",")
+                        : node.classes,
+                      uri: "",
+                    };
+                  }
+                  return node;
+                });
+                flowData = JSON.stringify(updated);
+              }
+            } catch (error) {
+              console.warn("model:update_flow_model_failed", error);
+            }
+            console.info("model:flow:final", {
+              flowLen: flowData?.length ?? 0,
+              hasUiTab: flowData?.includes('"ui-tab"') ?? false,
+              hasUiTemplate: flowData?.includes('"ui-template"') ?? false,
+            });
+            const ok = await createAppAndUpdateFlow({
+              flow_data: flowData,
               model_data: model_snapshot,
               needUpdateFlow: true,
             });
+            if (
+              ok &&
+              useDashboardFlow &&
+              deviceInfo?.ip
+            ) {
+              setLoadingTip("Waiting for dashboard");
+              const ready = await waitForDashboardReady(deviceInfo.ip);
+              if (ready) {
+                sessionStorage.removeItem("sensecraft_action");
+                const targetUrl =
+                  window.location.hostname === deviceInfo.ip
+                    ? `${window.location.origin}${window.location.pathname}#/dashboard`
+                    : `http://${deviceInfo.ip}/#/dashboard`;
+                console.info("model:redirect:dashboard", {
+                  from: window.location.href,
+                  to: targetUrl,
+                });
+                navigateToDashboardInTab(deviceInfo.ip);
+              } else {
+                messageApi.warning("Dashboard not ready yet");
+              }
+            }
           }
           return;
         }
@@ -523,6 +730,20 @@ const Workspace = () => {
       setLoadingTip("");
     }
   };
+
+  const handleTrainModel = async (model_id: string, model_name?: string) =>
+    runTrainAction({
+      modelId: model_id,
+      modelName: model_name,
+      deviceIp: deviceInfo?.ip,
+      setLoading,
+      setLoadingTip,
+      messageApi,
+      modal,
+      uploadAbortRef,
+      createAppAndUpdateFlow,
+      sendFlow,
+    });
 
   //检查提示用户当前应用是不是需要保存，如果需要就保存
   const checkAndSaveLocalApp = async () => {
@@ -689,8 +910,20 @@ const Workspace = () => {
         "Syncing SenseCraft Cloud application to Node-red. The flow will be automatically deploy on the device."
       );
       let ret = true;
+      const trainMeta = extractTrainMetaFromFlow(app?.flow_data);
       if (app?.model_data) {
-        ret = await uploadModel(app.model_data);
+        const hasCloudSource =
+          isPresetModelId(app.model_data.model_id) ||
+          Boolean(app.model_data.arguments?.url);
+        if (hasCloudSource) {
+          ret = await uploadModel(app.model_data);
+        } else if (trainMeta?.train_model_id) {
+          ret = await recoverTrainModelFromFlowMeta(trainMeta);
+        } else {
+          ret = false;
+        }
+      } else if (trainMeta?.train_model_id) {
+        ret = await recoverTrainModelFromFlowMeta(trainMeta);
       }
       if (ret) {
         await sendFlow(app?.flow_data);
@@ -701,6 +934,16 @@ const Workspace = () => {
       }
       setLoading(false);
     } catch (error) {
+      const isFlowDeployError =
+        error instanceof Error &&
+        error.message === FLOW_DEPLOY_EMPTY_REVISION_ERROR;
+      if (isFlowDeployError) {
+        await confirmPageReloadOnFlowFailed(
+          "Flow was not deployed to Node-RED. Reload page and retry?"
+        );
+      } else {
+        messageApi.error("Sync app to Node-RED failed");
+      }
       setLoading(false);
     }
   };
@@ -813,29 +1056,71 @@ const Workspace = () => {
     model_data,
     needUpdateFlow,
     needUpdateApp = true,
+    reloadOnFlowFail = true,
   }: {
     app_name?: string;
     flow_data?: string;
     model_data?: IModelData | null;
     needUpdateFlow?: boolean;
     needUpdateApp?: boolean;
+    reloadOnFlowFail?: boolean;
   }) => {
     try {
       setLoading(true);
       setLoadingTip("Creating App");
-      const res = await createAppApi({
-        app_name: app_name,
-        flow_data: flow_data,
-        model_data: model_data,
+      console.info("createAppAndUpdateFlow:create_app:request", {
+        app_name,
+        flowLen: flow_data?.length ?? 0,
+        model_id: model_data?.model_id ?? null,
+        model_name: model_data?.model_name ?? null,
+        needUpdateFlow,
+        needUpdateApp,
+      });
+      let res;
+      try {
+        res = await createAppApi({
+          app_name: app_name,
+          flow_data: flow_data,
+          model_data: model_data,
+        });
+        console.info("createAppAndUpdateFlow:create_app:done", {
+          code: res?.code,
+          app_id: res?.data?.app_id,
+        });
+      } catch (error) {
+        console.error("createAppAndUpdateFlow:create_app:error", error);
+        throw error;
+      }
+      console.info("createAppAndUpdateFlow:request", {
+        needUpdateFlow,
+        needUpdateApp,
+        flowLen: flow_data?.length ?? 0,
+        hasUiTab: flow_data?.includes('"ui-tab"') ?? false,
+        hasUiTemplate: flow_data?.includes('"ui-template"') ?? false,
       });
 
       if (res.code == 0) {
-        const response = await getAppListApi();
+        let response;
+        try {
+          response = await getAppListApi();
+          console.info("createAppAndUpdateFlow:list_app:done", {
+            code: response?.code,
+            listLength: response?.data?.list?.length ?? null,
+          });
+        } catch (error) {
+          console.error("createAppAndUpdateFlow:list_app:error", error);
+          throw error;
+        }
         if (response.code == 0) {
           const data = response.data;
           const list = data.list;
           if (needUpdateApp && list.length > 0) {
             const app = list[0];
+            console.info("createAppAndUpdateFlow:list_app:first", {
+              firstAppId: app?.app_id,
+              createdAppId: res?.data?.app_id,
+              sameAsCreated: app?.app_id === res?.data?.app_id,
+            });
             app.flow_data = flow_data;
             app.model_data = model_data;
             if (app) {
@@ -858,11 +1143,24 @@ const Workspace = () => {
           return true;
         }
       }
+      console.error("createAppAndUpdateFlow:create_app:failed", {
+        code: res?.code,
+        msg: (res as { msg?: string } | undefined)?.msg,
+      });
       messageApi.error("Create app failed");
       setLoading(false);
       setLoadingTip("");
       return false;
     } catch (error) {
+      console.error("createAppAndUpdateFlow:exception", error);
+      const isFlowDeployError =
+        error instanceof Error &&
+        error.message === FLOW_DEPLOY_EMPTY_REVISION_ERROR;
+      if (needUpdateFlow && reloadOnFlowFail && isFlowDeployError) {
+        await confirmPageReloadOnFlowFailed(
+          "Flow was not deployed to Node-RED. Reload page and retry?"
+        );
+      }
       messageApi.error("Create app failed");
       setLoading(false);
       setLoadingTip("");

@@ -628,6 +628,294 @@ function forgetWiFi() {
 ##################################################
 
 ##################################################
+# halow
+readonly CONF_HALOW="$CONFIG_DIR/halow"
+readonly CONF_COUNTRY="$CONFIG_DIR/halow_country"
+readonly CONF_ANTENNA="$CONFIG_DIR/antenna"
+readonly CONF_PING="$CONFIG_DIR/halow_ping"
+readonly WPA_CLI_S1G="wpa_cli_s1g -i halow0"
+readonly GPIO_ANTENNA=431
+
+_check_halow() { [ -z "$(ifconfig halow0 2>/dev/null)" ] && return 1 || return 0; }
+_halow_stop() { _stop_pidname "wpa_supplicant_s1g"; }
+
+_halow_start() {
+    _check_halow || return 0
+
+    local conf="/etc/wpa_supplicant_s1g.conf"
+    if [ -f "$conf" ] && ! grep -q "network={" "$conf"; then
+        printf '\nnetwork={\n    disabled=1\n}\n' >> "$conf"
+    fi
+
+    [ -z "$(pidof wpa_supplicant_s1g 2>/dev/null)" ] && {
+        ifconfig halow0 down
+        ifconfig halow0 up
+        wpa_supplicant_s1g -B -Dnl80211 -ihalow0 -c "$conf" >/dev/null 2>&1
+    }
+}
+
+_wait_halow() {
+    local timeout=6
+    local count=0
+    prev_count=$(ip -o link show | wc -l)
+    while true; do
+        sleep 0.5
+        count=$((count + 1))
+
+        curr_count=$(ip -o link show | wc -l)
+        if [ "$curr_count" -gt "$prev_count" ]; then
+            return 0
+        fi
+
+        if [ "$count" -ge "$timeout" ]; then
+            return 1
+        fi
+    done
+}
+
+_connect_halow() {
+	local id="$1"
+    $WPA_CLI_S1G enable_network "$id" >/dev/null 2>&1
+    $WPA_CLI_S1G save_config >/dev/null 2>&1
+    $WPA_CLI_S1G disconnect >/dev/null 2>&1
+    $WPA_CLI_S1G select_network "$id" >/dev/null 2>&1
+}
+
+function start_halow() {
+    local halow=-1 antenna=-1
+    _check_halow && {
+        [ ! -f "$CONF_HALOW" ] && echo 1 >"$CONF_HALOW"
+        halow=$(cat "$CONF_HALOW")
+        [ $((halow)) -eq 1 ] && { _halow_start >/dev/null 2>&1 & }
+
+        [ ! -f "$CONF_ANTENNA" ] && echo 1 >"$CONF_ANTENNA"
+        antenna=$(cat "$CONF_ANTENNA")
+        switchAntenna "$antenna" >/dev/null 2>&1
+        $WPA_CLI_S1G scan 2>/dev/null &
+    }
+    printf '{"halow": %d, "antenna": %d}' $((halow)) $((antenna))
+}
+
+function stop_halow() {
+    _halow_stop >/dev/null 2>&1 &
+    rm -f "$CONF_PING"
+}
+
+function switchHalow() {
+    echo $2 >"$CONF_HALOW"
+    [ "$2" = "0" ] && stop_halow || start_halow
+}
+
+function get_halow_current() {
+    local out=$WORK_DIR/${FUNCNAME[0]}
+    $WPA_CLI_S1G status 2>/dev/null > "$out"
+    echo "subnet_mask=$(_mask halow0)" >> "$out"
+    echo "$out"
+}
+
+function get_halow_connected() {
+    local out=$WORK_DIR/${FUNCNAME[0]}
+    >"$out"
+    [ -z "$1" ] && { $WPA_CLI_S1G reconfigure >/dev/null 2>&1; }
+    $WPA_CLI_S1G list_networks 2>/dev/null | while IFS= read -r line; do
+        printf "%b\n" "$line" >>"$out"
+    done
+    echo "$out"
+}
+
+function get_halow_scan_list() {
+    local out=$WORK_DIR/${FUNCNAME[0]}
+    local result="$out.tmp"
+
+    # Return cached result first (immediate return, non-blocking)
+    [ -s "$result" ] && {
+        cp "$result" "$out"
+        rm "$result"
+    }
+    [ -f "$out" ] || >"$out"
+    echo "$out"
+
+    # Use iw to trigger scan asynchronously (avoid radio work queue limitation)
+    [ -z "$(pidof iw 2>/dev/null)" ] && { iw dev halow0 scan >/dev/null 2>&1 & }
+
+    # Get wpa_cli scan_results (wpa_supplicant cache will be updated after iw scan completes)
+    $WPA_CLI_S1G scan_results >"$result" 2>/dev/null &
+
+    return 0
+}
+
+function setup_halow0()
+{
+    if [ ! -e /dev/morse_io ]; then
+        return
+    fi
+    if [ -z "$(ifconfig wlan1 2>/dev/null)" ]; then
+        ip link set wlan0 down
+        ip link set wlan0 name halow0
+        ip link set halow0 up
+        return
+    fi
+    ip link set wlan2 down
+    ip link set wlan2 name halow0
+    ip link set halow0 up
+}
+
+function connectHalow() {
+    local id="$2" ssid="$3" pwd="$4" country="$5" encryption="$6" mode="$7"
+
+	if [ "$id" != "-1" ]; then
+		_connect_halow "$id"
+		echo "$STR_OK"
+		return
+	fi
+
+    if [ "$country" != "$(cat /sys/module/morse/parameters/country)" ]; then
+        echo "$country" > "$CONF_COUNTRY"
+        $WPA_CLI_S1G save_config >/dev/null 2>&1
+        _halow_stop
+        rmmod morse && insmod /mnt/system/ko/morse.ko country=$country
+        _wait_halow
+        if [ $? -ne 0 ]; then
+            echo "$STR_FAILED"
+            return
+        fi
+        setup_halow0
+        sleep 1
+        sed -i "s/^country=.*/country=$country/" /etc/wpa_supplicant_s1g.conf
+        _halow_start
+    fi
+
+    $WPA_CLI_S1G reconfigure >/dev/null 2>&1
+    [ $((id)) -lt 0 ] && { # create new
+        id=$($WPA_CLI_S1G add_network)
+    }
+
+    local ret=$($WPA_CLI_S1G set_network "$id" ssid "\"$ssid\"")
+    [ "$ret" != "OK" ] && {
+        $WPA_CLI_S1G remove_network "$id" >/dev/null 2>&1
+        return
+    }
+
+    if [ "$pwd" == "" ]; then
+        if [ "$encryption" == "OWE" ]; then
+            $WPA_CLI_S1G set_network "$id" key_mgmt OWE  >/dev/null 2>&1
+            $WPA_CLI_S1G set_network "$id" ieee80211w 2 >/dev/null 2>&1
+        elif [ "$encryption" == "No encryption" ]; then
+            $WPA_CLI_S1G set_network "$id" key_mgmt NONE  >/dev/null 2>&1
+        fi
+    else
+        ret=$($WPA_CLI_S1G set_network "$id" psk "\"$pwd\"")
+        [ "$ret" != "OK" ] && {
+            $WPA_CLI_S1G remove_network "$id" >/dev/null 2>&1
+            return
+        }
+        if [ "$encryption" == "WPA3-SAE" ]; then
+            $WPA_CLI_S1G set_network "$id" key_mgmt SAE WPA-PSK >/dev/null 2>&1
+            $WPA_CLI_S1G set_network "$id" ieee80211w 2 >/dev/null 2>&1
+        fi
+    fi
+
+    [ $((id)) -lt 0 ] && {
+        echo "$STR_FAILED"
+        return
+    }
+
+    local ids=$(cat $(get_halow_connected "0") | grep "^[0-9]" | awk -F'\t' '{print $1}')
+    for i in $ids; do
+        local pri=0
+        [ $((i)) -eq $((id)) ] && { pri=100; }
+        $WPA_CLI_S1G set_network "$i" priority "$pri" >/dev/null 2>&1
+    done
+
+    if [ "$mode" == "0" ]; then
+        iw dev halow0 set 4addr off
+    else
+        iw dev halow0 set 4addr on
+    fi
+
+	_connect_halow "$id"
+
+    echo "$STR_OK"
+}
+
+_halow_set_networks() {
+    local ssid="$1" status="$2"
+    local id=$(cat $(get_halow_connected) | grep -w "$ssid" | awk -F'\t' '{print $1}')
+    [ -z "$id" ] && return 0
+    $WPA_CLI_S1G "$status" "$id"
+    $WPA_CLI_S1G save_config
+}
+
+function disconnectHalow() {
+    echo "$STR_OK"
+    _halow_set_networks "$2" disable_network >/dev/null 2>&1 &
+    rm -f "$CONF_PING"
+}
+
+function forgetHalow() {
+    echo "$STR_OK"
+    local ssid="$2"
+
+    # Get network id
+    local id=$(cat $(get_halow_connected) | grep -w "$ssid" | awk -F'\t' '{print $1}')
+    [ -z "$id" ] && { rm -f "$CONF_PING"; return 0; }
+
+    # Check if this is the last network (count from config file)
+    local conf="/etc/wpa_supplicant_s1g.conf"
+    local network_count=$(grep -c "^network={" "$conf" 2>/dev/null || echo 0)
+
+    if [ "$network_count" -le 1 ]; then
+        # This is the last network, add a new empty network first, then remove the old one
+        # This avoids errors when network info becomes empty during transition
+        local new_id=$($WPA_CLI_S1G add_network)
+        $WPA_CLI_S1G disable_network "$new_id" >/dev/null 2>&1
+        $WPA_CLI_S1G remove_network "$id" >/dev/null 2>&1
+        $WPA_CLI_S1G save_config >/dev/null 2>&1
+    else
+        # Not the last network, remove normally
+        _halow_set_networks "$ssid" disable_network >/dev/null 2>&1
+        _halow_set_networks "$ssid" remove_network >/dev/null 2>&1
+    fi
+    rm -f "$CONF_PING"
+}
+
+function switchAntenna() {
+    echo "$STR_OK"
+
+    if [ ! -d /sys/class/gpio/gpio$GPIO_ANTENNA ]; then
+        echo $GPIO_ANTENNA > /sys/class/gpio/export
+        echo "out" > /sys/class/gpio/gpio$GPIO_ANTENNA/direction
+    fi
+
+    if [ "$1" == "switchAntenna" ]; then
+        value="$2"
+    else
+        value="$1"
+    fi
+
+    printf $value > /sys/class/gpio/gpio$GPIO_ANTENNA/value
+    echo "$value" > "$CONF_ANTENNA"
+}
+
+function savePing() {
+    local ip="$2" interval="$3" enabled="$4"
+    echo "ip=$ip" > "$CONF_PING"
+    echo "interval=$interval" >> "$CONF_PING"
+    echo "enabled=$enabled" >> "$CONF_PING"
+    echo "$STR_OK"
+}
+
+function getPingConfig() {
+    if [ -f "$CONF_PING" ]; then
+        cat "$CONF_PING"
+    else
+        echo "enabled=0"
+    fi
+}
+# halow
+##################################################
+
+##################################################
 # deamon
 function query_sscma() {
     mosquitto_rr -h localhost -p 1883 -q 1 -v -W 3 \
