@@ -64,6 +64,11 @@ docker exec ppocr_convert bash -c "
 - `ppocr_det_cv181x_int8.cvimodel` (877 KB)
 - `ppocr_rec_cv181x_int8.cvimodel` (2.9 MB)
 
+> 说明：`ppocr-reader` 代码默认模型路径是  
+> `/userdata/local/models/ppocr_det_cv181x_mix.cvimodel` 和  
+> `/userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel`。  
+> 如果你部署的是 `int8` 模型，请通过启动参数或 `/etc/ppocr-reader.conf` 显式指定路径。
+
 ### 3. 部署到 reCamera
 
 ```bash
@@ -126,14 +131,16 @@ mosquitto_sub -h 192.168.42.1 -t "recamera/ppocr/texts" -v
 ppocr-reader [options]
 
 Options:
-  --det-model PATH     检测模型路径 (默认: /userdata/local/models/ppocr_det_cv181x_int8.cvimodel)
-  --rec-model PATH     识别模型路径 (默认: /userdata/local/models/ppocr_rec_cv181x_int8.cvimodel)
+  --det-model PATH     检测模型路径 (默认: /userdata/local/models/ppocr_det_cv181x_mix.cvimodel)
+  --rec-model PATH     识别模型路径 (默认: /userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel)
   --dict PATH          字典文件路径 (默认: /userdata/local/dict/ppocr_keys_v1.txt)
+  --kmax N             每帧最多识别的文本框数量 (默认: 5, 0 表示不限制)
   --mqtt-host HOST     MQTT broker 地址 (默认: localhost)
   --mqtt-port PORT     MQTT broker 端口 (默认: 1883)
   --mqtt-topic TOPIC   MQTT 发布主题 (默认: recamera/ppocr/texts)
   --no-rtsp            禁用 RTSP 视频流
   --no-mqtt            禁用 MQTT 发布
+  --test-rec PATH      使用单张图片测试识别器并退出
   -v, --verbose        启用详细日志
   -h, --help           显示帮助信息
 ```
@@ -144,9 +151,10 @@ Options:
 
 ```bash
 # /etc/ppocr-reader.conf
-DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_int8.cvimodel \
-  --rec-model /userdata/local/models/ppocr_rec_cv181x_int8.cvimodel \
+DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_mix.cvimodel \
+  --rec-model /userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel \
   --dict /userdata/local/dict/ppocr_keys_v1.txt \
+  --kmax 5 \
   --mqtt-topic my/custom/topic \
   --verbose"
 ```
@@ -159,21 +167,28 @@ DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_int8.cvimodel \
 {
   "timestamp": 1768969602957,
   "frame_id": 42,
-  "inference_ms": {
+  "inference_time_ms": {
     "detection": 65.2,
     "recognition": 48.3,
     "total": 113.5
   },
+  "text_count": 2,
+  "frame_width": 640,
+  "frame_height": 480,
   "texts": [
     {
-      "box": [[10,20], [200,20], [200,50], [10,50]],
+      "id": 0,
+      "box": [[0.0156,0.0417], [0.3125,0.0417], [0.3125,0.1042], [0.0156,0.1042]],
       "text": "Hello World",
-      "confidence": 0.95
+      "confidence": 0.95,
+      "det_confidence": 0.89
     },
     {
-      "box": [[10,60], [150,60], [150,100], [10,100]],
+      "id": 1,
+      "box": [[0.0156,0.1250], [0.2344,0.1250], [0.2344,0.2083], [0.0156,0.2083]],
       "text": "你好世界",
-      "confidence": 0.88
+      "confidence": 0.88,
+      "det_confidence": 0.91
     }
   ]
 }
@@ -185,12 +200,17 @@ DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_int8.cvimodel \
 |------|------|------|
 | `timestamp` | int | Unix 时间戳 (毫秒) |
 | `frame_id` | int | 帧序号 |
-| `inference_ms.detection` | float | 检测推理耗时 (ms) |
-| `inference_ms.recognition` | float | 识别推理耗时 (ms, 所有文字区域累计) |
-| `inference_ms.total` | float | 总耗时 (ms) |
-| `texts[].box` | array | 文字区域四边形坐标 (顺时针, 左上起) |
+| `inference_time_ms.detection` | float | 检测推理耗时 (ms) |
+| `inference_time_ms.recognition` | float | 识别推理耗时 (ms, 所有文字区域累计) |
+| `inference_time_ms.total` | float | 总耗时 (ms) |
+| `text_count` | int | 结果数量 (`texts` 数组长度) |
+| `frame_width` | int | 原始帧宽度 (像素) |
+| `frame_height` | int | 原始帧高度 (像素) |
+| `texts[].id` | int | 当前结果在数组中的序号 |
+| `texts[].box` | array | 归一化四边形坐标 `[0,1]` (顺时针, 左上起) |
 | `texts[].text` | string | 识别出的文字内容 |
 | `texts[].confidence` | float | 识别置信度 (0-1) |
+| `texts[].det_confidence` | float | 检测置信度 (0-1) |
 
 当画面中没有文字时，`texts` 为空数组 `[]`。
 

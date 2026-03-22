@@ -156,8 +156,8 @@ std::string MqttPublisher::buildResultJson(uint64_t timestamp_ms, uint32_t frame
     json << "\"total\":" << std::setprecision(1) << timings.total_ms;
     json << "},";
     json << "\"text_count\":" << results.size() << ",";
-    json << "\"frame_width\":1,";
-    json << "\"frame_height\":1,";
+    json << "\"frame_width\":" << frame_width << ",";
+    json << "\"frame_height\":" << frame_height << ",";
     json << "\"texts\":[";
 
     for (size_t i = 0; i < results.size(); ++i) {

@@ -55,7 +55,7 @@ private:
     float det_threshold_;   // Binary threshold for probability map (default: 0.3)
     float box_threshold_;   // Minimum box score (default: 0.5)
     float unclip_ratio_;    // Box expansion ratio (default: 1.6)
-    int min_box_size_;      // Minimum box side length in pixels (default: 3)
+    int min_box_size_;      // Minimum box side length in pixels (default: 10)
 
     bool initialized_;
 };

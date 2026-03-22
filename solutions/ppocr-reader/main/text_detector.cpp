@@ -1,11 +1,66 @@
 #include "text_detector.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cmath>
 #include <opencv2/opencv.hpp>
 
 #define TAG "TextDetector"
+
+namespace {
+
+// Robustly order 4 points as: top-left, top-right, bottom-right, bottom-left.
+void orderBoxPointsTLTRBRBL(const cv::Point2f in_pts[4], float out_pts[4][2]) {
+    std::array<cv::Point2f, 4> pts;
+    for (int i = 0; i < 4; ++i) {
+        pts[i] = in_pts[i];
+    }
+
+    float cx = 0.0f, cy = 0.0f;
+    for (const auto& p : pts) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= 4.0f;
+    cy /= 4.0f;
+
+    // Sort by polar angle around centroid.
+    std::sort(pts.begin(), pts.end(), [cx, cy](const cv::Point2f& a, const cv::Point2f& b) {
+        return std::atan2(a.y - cy, a.x - cx) < std::atan2(b.y - cy, b.x - cx);
+    });
+
+    // Rotate so index 0 is the top-left corner (smallest x+y).
+    int tl_idx = 0;
+    float best = pts[0].x + pts[0].y;
+    for (int i = 1; i < 4; ++i) {
+        float v = pts[i].x + pts[i].y;
+        if (v < best) {
+            best = v;
+            tl_idx = i;
+        }
+    }
+
+    std::array<cv::Point2f, 4> ordered;
+    for (int i = 0; i < 4; ++i) {
+        ordered[i] = pts[(tl_idx + i) % 4];
+    }
+
+    // Ensure clockwise order in image coordinates.
+    const cv::Point2f v1 = ordered[1] - ordered[0];
+    const cv::Point2f v2 = ordered[2] - ordered[1];
+    const float cross = v1.x * v2.y - v1.y * v2.x;
+    if (cross < 0.0f) {
+        std::swap(ordered[1], ordered[3]);
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        out_pts[i][0] = ordered[i].x;
+        out_pts[i][1] = ordered[i].y;
+    }
+}
+
+}  // namespace
 
 namespace ppocr {
 
@@ -261,46 +316,11 @@ void TextDetector::postprocess(std::vector<TextBox>& boxes) {
             box.points[i][1] = std::max(0.0f, std::min(static_cast<float>(orig_height_), box.points[i][1]));
         }
 
-        // Sort points: top-left, top-right, bottom-right, bottom-left
-        // Find top-left (smallest x+y) and sort clockwise
-        float cx = 0, cy = 0;
+        cv::Point2f final_pts[4];
         for (int i = 0; i < 4; ++i) {
-            cx += box.points[i][0];
-            cy += box.points[i][1];
+            final_pts[i] = cv::Point2f(box.points[i][0], box.points[i][1]);
         }
-        cx /= 4.0f;
-        cy /= 4.0f;
-
-        // Assign to quadrants relative to center
-        float sorted[4][2];
-        int tl = -1, tr = -1, br = -1, bl = -1;
-        for (int i = 0; i < 4; ++i) {
-            bool is_left = box.points[i][0] < cx;
-            bool is_top = box.points[i][1] < cy;
-            if (is_left && is_top) tl = i;
-            else if (!is_left && is_top) tr = i;
-            else if (!is_left && !is_top) br = i;
-            else bl = i;
-        }
-
-        // Fallback: if quadrant assignment failed, use raw order
-        if (tl < 0 || tr < 0 || br < 0 || bl < 0) {
-            // Sort by y first, then x
-            std::vector<int> idx = {0, 1, 2, 3};
-            std::sort(idx.begin(), idx.end(), [&](int a, int b) {
-                if (std::abs(box.points[a][1] - box.points[b][1]) < 5)
-                    return box.points[a][0] < box.points[b][0];
-                return box.points[a][1] < box.points[b][1];
-            });
-            tl = idx[0]; tr = idx[1]; br = idx[3]; bl = idx[2];
-        }
-
-        sorted[0][0] = box.points[tl][0]; sorted[0][1] = box.points[tl][1];
-        sorted[1][0] = box.points[tr][0]; sorted[1][1] = box.points[tr][1];
-        sorted[2][0] = box.points[br][0]; sorted[2][1] = box.points[br][1];
-        sorted[3][0] = box.points[bl][0]; sorted[3][1] = box.points[bl][1];
-
-        std::memcpy(box.points, sorted, sizeof(sorted));
+        orderBoxPointsTLTRBRBL(final_pts, box.points);
         boxes.push_back(box);
     }
 }

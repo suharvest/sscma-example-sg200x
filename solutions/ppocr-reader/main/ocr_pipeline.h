@@ -32,6 +32,7 @@ public:
     bool init(const std::string& det_model_path,
               const std::string& rec_model_path,
               const std::string& dict_path);
+    void setMaxBoxes(size_t max_boxes);
 
     // Run full OCR pipeline on a camera frame
     std::vector<OcrResult> process(ma_img_t* img, OcrTimings& timings);
@@ -47,6 +48,7 @@ private:
     TextDetector detector_;
     TextRecognizer recognizer_;
     std::vector<uint8_t> crop_buffer_;
+    size_t max_boxes_;
 
     bool initialized_;
     bool rec_available_;

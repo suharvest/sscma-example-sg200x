@@ -10,7 +10,8 @@
 
 namespace ppocr {
 
-OcrPipeline::OcrPipeline() : initialized_(false), rec_available_(false) {}
+OcrPipeline::OcrPipeline()
+    : max_boxes_(5), initialized_(false), rec_available_(false) {}
 
 OcrPipeline::~OcrPipeline() {}
 
@@ -36,6 +37,10 @@ bool OcrPipeline::init(const std::string& det_model_path,
     MA_LOGI(TAG, "OCR pipeline initialized (recognition: %s)",
             rec_available_ ? "enabled" : "disabled");
     return true;
+}
+
+void OcrPipeline::setMaxBoxes(size_t max_boxes) {
+    max_boxes_ = max_boxes;
 }
 
 void OcrPipeline::sortBoxes(std::vector<TextBox>& boxes) {
@@ -160,10 +165,21 @@ bool OcrPipeline::cropTextRegion(const ma_img_t* img, const TextBox& box,
         std::swap(out_w, out_h);
     }
 
-    // Mild unsharp mask to sharpen text edges
+    // Enhance text region for better recognition on blurry images:
+    // 1. CLAHE on luminance channel to boost contrast
+    cv::Mat lab;
+    cv::cvtColor(warped, lab, cv::COLOR_RGB2Lab);
+    std::vector<cv::Mat> lab_channels;
+    cv::split(lab, lab_channels);
+    auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+    clahe->apply(lab_channels[0], lab_channels[0]);
+    cv::merge(lab_channels, lab);
+    cv::cvtColor(lab, warped, cv::COLOR_Lab2RGB);
+
+    // 2. Unsharp mask to sharpen text edges
     cv::Mat blurred;
-    cv::GaussianBlur(warped, blurred, cv::Size(0, 0), 2.0);
-    cv::addWeighted(warped, 1.5, blurred, -0.5, 0, warped);
+    cv::GaussianBlur(warped, blurred, cv::Size(0, 0), 1.5);
+    cv::addWeighted(warped, 2.0, blurred, -1.0, 0, warped);
 
     // Copy to output buffer
     size_t required = out_w * out_h * 3;
@@ -195,11 +211,10 @@ std::vector<OcrResult> OcrPipeline::process(ma_img_t* img, OcrTimings& timings) 
     }
 
     // Limit to top-N boxes by detection confidence to cap recognition time
-    static constexpr size_t kMaxBoxes = 5;
-    if (boxes.size() > kMaxBoxes) {
-        std::partial_sort(boxes.begin(), boxes.begin() + kMaxBoxes, boxes.end(),
+    if (max_boxes_ > 0 && boxes.size() > max_boxes_) {
+        std::partial_sort(boxes.begin(), boxes.begin() + max_boxes_, boxes.end(),
                           [](const TextBox& a, const TextBox& b) { return a.score > b.score; });
-        boxes.resize(kMaxBoxes);
+        boxes.resize(max_boxes_);
     }
 
     // Sort boxes for reading order

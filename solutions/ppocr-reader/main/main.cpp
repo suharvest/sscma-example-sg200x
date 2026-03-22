@@ -26,6 +26,7 @@ static struct {
     std::string det_model_path = "/userdata/local/models/ppocr_det_cv181x_mix.cvimodel";
     std::string rec_model_path = "/userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel";
     std::string dict_path = "/userdata/local/dict/ppocr_keys_v1.txt";
+    size_t kmax = 5;
 
     // MQTT configuration
     std::string mqtt_host = "localhost";
@@ -68,6 +69,7 @@ static void print_usage(const char* prog) {
     printf("  --det-model PATH     Detection model (default: %s)\n", g_config.det_model_path.c_str());
     printf("  --rec-model PATH     Recognition model (default: %s)\n", g_config.rec_model_path.c_str());
     printf("  --dict PATH          Dictionary file (default: %s)\n", g_config.dict_path.c_str());
+    printf("  --kmax N             Max boxes to recognize per frame (default: %zu)\n", g_config.kmax);
     printf("  --mqtt-host HOST     MQTT broker host (default: %s)\n", g_config.mqtt_host.c_str());
     printf("  --mqtt-port PORT     MQTT broker port (default: %d)\n", g_config.mqtt_port);
     printf("  --mqtt-topic TOPIC   MQTT topic (default: %s)\n", g_config.mqtt_topic.c_str());
@@ -85,6 +87,7 @@ static bool parse_args(int argc, char** argv) {
         {"det-model", required_argument, 0, 1},
         {"rec-model", required_argument, 0, 2},
         {"dict", required_argument, 0, 3},
+        {"kmax", required_argument, 0, 10},
         {"mqtt-host", required_argument, 0, 4},
         {"mqtt-port", required_argument, 0, 5},
         {"mqtt-topic", required_argument, 0, 6},
@@ -102,6 +105,7 @@ static bool parse_args(int argc, char** argv) {
             case 1: g_config.det_model_path = optarg; break;
             case 2: g_config.rec_model_path = optarg; break;
             case 3: g_config.dict_path = optarg; break;
+            case 10: g_config.kmax = static_cast<size_t>(std::stoul(optarg)); break;
             case 4: g_config.mqtt_host = optarg; break;
             case 5: g_config.mqtt_port = std::stoi(optarg); break;
             case 6: g_config.mqtt_topic = optarg; break;
@@ -122,6 +126,7 @@ static bool init_pipeline() {
         MA_LOGE(TAG, "Failed to initialize OCR pipeline");
         return false;
     }
+    g_pipeline->setMaxBoxes(g_config.kmax);
     MA_LOGI(TAG, "OCR pipeline initialized");
     return true;
 }
@@ -335,6 +340,7 @@ int main(int argc, char** argv) {
     MA_LOGI(TAG, "Detection model: %s", g_config.det_model_path.c_str());
     MA_LOGI(TAG, "Recognition model: %s", g_config.rec_model_path.c_str());
     MA_LOGI(TAG, "Dictionary: %s", g_config.dict_path.c_str());
+    MA_LOGI(TAG, "Max recognized boxes per frame: %zu", g_config.kmax);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
