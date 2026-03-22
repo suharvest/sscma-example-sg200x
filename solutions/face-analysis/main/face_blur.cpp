@@ -169,10 +169,11 @@ void FaceBlur::deinit() {
 // ============ IoU computation ============
 
 float FaceBlur::computeIoU(const FaceInfo& a, const FaceInfo& b) {
-    float a_l = a.x - a.w * 0.5f, a_r = a.x + a.w * 0.5f;
-    float a_t = a.y - a.h * 0.5f, a_b = a.y + a.h * 0.5f;
-    float b_l = b.x - b.w * 0.5f, b_r = b.x + b.w * 0.5f;
-    float b_t = b.y - b.h * 0.5f, b_b = b.y + b.h * 0.5f;
+    // x,y are top-left, w,h are dimensions (ma_bbox_t convention)
+    float a_l = a.x, a_r = a.x + a.w;
+    float a_t = a.y, a_b = a.y + a.h;
+    float b_l = b.x, b_r = b.x + b.w;
+    float b_t = b.y, b_b = b.y + b.h;
 
     float inter_w = std::max(0.0f, std::min(a_r, b_r) - std::max(a_l, b_l));
     float inter_h = std::max(0.0f, std::min(a_b, b_b) - std::max(a_t, b_t));
@@ -412,8 +413,9 @@ void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
                 continue;
             }
 
-            int left = (int)((box.x - box.w / 2.0f) * target_w + offset_x);
-            int top  = (int)((box.y - box.h / 2.0f) * target_h + offset_y);
+            // box.x/y are already top-left (ma_bbox_t convention)
+            int left = (int)(box.x * target_w + offset_x);
+            int top  = (int)(box.y * target_h + offset_y);
             int w    = (int)(box.w * target_w);
             int h    = (int)(box.h * target_h);
 
