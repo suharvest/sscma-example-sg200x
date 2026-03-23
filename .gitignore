@@ -8,3 +8,4 @@ install/
 solutions/retail-vision/
 *.deb
 CLAUDE.md
+tools/face-analysis-debugger/
