@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# Post-installation script for facemesh-reader
+
+echo "Installing FaceMesh Reader..."
+
+# Create models directory if not exists
+mkdir -p /userdata/local/models
+
+# Set permissions
+chmod +x /usr/local/bin/facemesh-reader
+
+echo "FaceMesh Reader installed successfully!"
+echo ""
+echo "Usage: facemesh-reader [options]"
+echo "       facemesh-reader --help for more options"
+echo ""
+echo "Models should be placed in: /userdata/local/models/"
+echo "  - yolo-face_mixfp16.cvimodel        (face detection)"
+echo "  - face_landmark_cv181x_int8.cvimodel (FaceMesh 468-point landmarks)"
+echo ""
+echo "Configuration file: /etc/facemesh-reader.conf"
+echo ""
+echo "RTSP stream: rtsp://<device_ip>:554/live"
+echo "MQTT topic:  recamera/facemesh-reader/results"
+
+exit 0

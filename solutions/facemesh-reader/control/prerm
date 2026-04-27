@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# Pre-removal script for facemesh-reader
+
+echo "Removing FaceMesh Reader..."
+
+# Stop the service if running
+pkill -f facemesh-reader 2>/dev/null || true
+
+echo "FaceMesh Reader removed."
+
+exit 0
