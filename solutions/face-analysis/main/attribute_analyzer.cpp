@@ -14,11 +14,13 @@ bool AttributeAnalyzer::init(const std::string& genderage_model,
     if (!genderage_model.empty()) {
         MA_LOGI(TAG, "Loading AGR model: %s", genderage_model.c_str());
 
-        // ImageNet normalization: mean=(123.675, 116.28, 103.53), std=(58.395, 57.12, 57.375)
-        agr_runner_.setPreprocess(123.675f, 116.28f, 103.53f,
-                                  1.0f / (255.0f * 0.229f),
-                                  1.0f / (255.0f * 0.224f),
-                                  1.0f / (255.0f * 0.225f));
+        // InsightFace genderage normalization: (pixel - 127.5) / 127.5 → input in [-1, 1].
+        // Previously used ImageNet mean/std, which kept the input distribution off and
+        // collapsed the continuous age regression head to its bias (always ~35 years).
+        agr_runner_.setPreprocess(127.5f, 127.5f, 127.5f,
+                                  1.0f / 127.5f,
+                                  1.0f / 127.5f,
+                                  1.0f / 127.5f);
 
         if (!agr_runner_.init(genderage_model)) {
             MA_LOGE(TAG, "Failed to init AGR runner");
