@@ -5,6 +5,7 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <array>
 
 #include <cvi_region.h>
 
@@ -15,7 +16,6 @@ namespace face_analysis {
 // Slot for OVERLAYEX RGN region
 struct Slot {
     RGN_HANDLE handle;
-    int tracker_idx;          // index into trackers_ that owns this slot; -1 if free
     bool show;
     int last_render_frame;    // frame_id when bitmap was last rendered
     FaceInfo last_render_box; // the box used at last bitmap render (for IoU check)
@@ -104,6 +104,9 @@ private:
     // Kalman prediction tracking
     std::vector<TrackedRegion> trackers_;
     std::mutex tracker_mutex_;
+    // Lock ordering: tracker_mutex_ MUST NOT be held when acquiring rgn_mutexes_[i]. rgn_mutexes_ are leaf locks.
+    // Serializes SetBitMap + SetDisplayAttr on the same RGN handle between detection thread and predict thread.
+    std::array<std::mutex, 8> rgn_mutexes_;
     std::thread predict_thread_;
     std::atomic<bool> predicting_;
     float process_noise_;

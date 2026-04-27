@@ -330,7 +330,6 @@ void FaceBlur::initRegions() {
 
         Slot slot;
         slot.handle = hRgn;
-        slot.tracker_idx = -1;
         slot.show = false;
         slot.last_render_frame = -bitmap_refresh_frames_;  // force first render
         slot.rendered_w = max_bitmap_w_;
@@ -369,6 +368,8 @@ void FaceBlur::deinitRegions() {
 void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
     // Called from predict thread - only update display POSITION (not bitmap)
     if (!regions_inited_ || stream_width_ <= 0 || stream_height_ <= 0) return;
+
+    auto t0 = std::chrono::high_resolution_clock::now();
 
     MMF_CHN_S stChn;
     stChn.enModId  = CVI_ID_VPSS;
@@ -411,10 +412,25 @@ void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
             stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
         }
 
+        std::lock_guard<std::mutex> rgn_lock(rgn_mutexes_[i]);
         CVI_S32 ret = CVI_RGN_SetDisplayAttr(slots_[i].handle, &stChn, &stChnAttr);
         if (ret != CVI_SUCCESS) {
             MA_LOGW(TAG, "CVI_RGN_SetDisplayAttr(%d) failed: 0x%x", slots_[i].handle, ret);
         }
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    long long elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
+    static int call_count = 0;
+    static long long accum_us = 0;
+    call_count++;
+    accum_us += elapsed_us;
+
+    if (call_count >= 30) {
+        MA_LOGI(TAG, "applyRegions: avg per-call %lldus over last 30 calls", (long long)(accum_us / 30));
+        call_count = 0;
+        accum_us = 0;
     }
 }
 
@@ -443,6 +459,14 @@ void FaceBlur::mapNormToStream(const FaceInfo& norm, int& sx, int& sy, int& sw, 
     sy = (int)(norm.y * target_h + offset_y);
     sw = (int)(norm.w * target_w);
     sh = (int)(norm.h * target_h);
+
+    // Coordinate clamping to prevent out-of-bounds regions
+    sx = std::max(0, sx);
+    sy = std::max(0, sy);
+    if (sx >= stream_width_)  { sx = stream_width_ - 8;  if (sx < 0) sx = 0; }
+    if (sy >= stream_height_) { sy = stream_height_ - 8; if (sy < 0) sy = 0; }
+    sw = std::max(1, std::min(sw, stream_width_  - sx));
+    sh = std::max(1, std::min(sh, stream_height_ - sy));
 }
 
 // ============ Mosaic bitmap rendering ============
@@ -517,9 +541,10 @@ void FaceBlur::renderMosaicBitmap(const ma_img_t* frame, const FaceInfo& box_nor
         for (int x = 0; x < bmp_w; x++) {
             const cv::Vec3b& rgb = bitmap_scaled.at<cv::Vec3b>(y, x);
             int idx = (y * bmp_w + x) * 4;
-            argb_out[idx + 0] = rgb[0];  // B
+            // Frame is RGB888 (R,G,B per pixel); CVI ARGB8888 wants memory layout B,G,R,A (LE 0xAARRGGBB)
+            argb_out[idx + 0] = rgb[2];  // B (frame blue at byte 2)
             argb_out[idx + 1] = rgb[1];  // G
-            argb_out[idx + 2] = rgb[2];  // R
+            argb_out[idx + 2] = rgb[0];  // R (frame red at byte 0)
             argb_out[idx + 3] = 0xFF;    // A
         }
     }
@@ -530,7 +555,6 @@ void FaceBlur::renderMosaicBitmap(const ma_img_t* frame, const FaceInfo& box_nor
 // TODO: verify ARGB8888 stride alignment on device — 32-byte align if SetBitMap rejects
 
 void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_t* frame, uint32_t frame_id) {
-    // TODO: SetBitMap has latency (~5-10ms), consider async render in separate thread if needed
     if (!regions_inited_) return;
 
     MMF_CHN_S stChn;
@@ -540,6 +564,11 @@ void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_
 
     int num_slots = (int)slots_.size();
     int active_count = std::min((int)boxes.size(), num_slots);
+
+    long long render_us = 0;
+    long long upload_us = 0;
+    int n_renders = 0;
+    int n_uploads = 0;
 
     for (int i = 0; i < num_slots; i++) {
         Slot& slot = slots_[i];
@@ -574,11 +603,24 @@ void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_
                 need_render = true;
             }
 
-            if (need_render && frame && frame->data) {
-                std::vector<uint8_t> argb_data;
-                int bmp_w = 0, bmp_h = 0;
-                renderMosaicBitmap(frame, box, sw, sh, 16, argb_data, bmp_w, bmp_h);
+            // Track whether we have a valid bitmap before attempting render
+            bool have_valid_bitmap = (slot.last_render_frame >= 0);
 
+            // Render BEFORE acquiring lock (cv::resize is compute-heavy)
+            std::vector<uint8_t> argb_data;
+            int bmp_w = 0, bmp_h = 0;
+            if (need_render && frame && frame->data) {
+                auto render_t0 = std::chrono::high_resolution_clock::now();
+                renderMosaicBitmap(frame, box, sw, sh, 16, argb_data, bmp_w, bmp_h);
+                auto render_t1 = std::chrono::high_resolution_clock::now();
+                render_us += std::chrono::duration_cast<std::chrono::microseconds>(render_t1 - render_t0).count();
+                n_renders++;
+            }
+
+            {
+                std::lock_guard<std::mutex> rgn_lock(rgn_mutexes_[i]);
+
+                // Upload bitmap if rendered successfully
                 if (bmp_w > 0 && bmp_h > 0 && argb_data.size() == (size_t)(bmp_w * bmp_h * 4)) {
                     BITMAP_S stBitmap;
                     stBitmap.enPixelFormat = PIXEL_FORMAT_ARGB_8888;
@@ -586,33 +628,55 @@ void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_
                     stBitmap.u32Height     = bmp_h;
                     stBitmap.pData         = argb_data.data();
 
+                    auto upload_t0 = std::chrono::high_resolution_clock::now();
                     CVI_S32 ret = CVI_RGN_SetBitMap(slot.handle, &stBitmap);
+                    auto upload_t1 = std::chrono::high_resolution_clock::now();
+                    upload_us += std::chrono::duration_cast<std::chrono::microseconds>(upload_t1 - upload_t0).count();
+                    n_uploads++;
+
                     if (ret != CVI_SUCCESS) {
                         MA_LOGW(TAG, "CVI_RGN_SetBitMap(%d) failed: 0x%x", slot.handle, ret);
                     } else {
+                        have_valid_bitmap = true;
                         slot.last_render_frame = frame_id;
                         slot.last_render_box   = box;
                         slot.rendered_w        = bmp_w;
                         slot.rendered_h        = bmp_h;
                     }
                 }
-            }
 
-            stChnAttr.bShow = CVI_TRUE;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = sx;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = sy;
-            stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+                // If no valid bitmap exists, force hide to avoid showing stale/empty content at new position
+                if (!have_valid_bitmap) {
+                    stChnAttr.bShow = CVI_FALSE;
+                } else {
+                    stChnAttr.bShow = CVI_TRUE;
+                    stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = sx;
+                    stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = sy;
+                    stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+                }
+
+                CVI_S32 ret = CVI_RGN_SetDisplayAttr(slot.handle, &stChn, &stChnAttr);
+                if (ret != CVI_SUCCESS) {
+                    MA_LOGW(TAG, "CVI_RGN_SetDisplayAttr(%d) failed: 0x%x", slot.handle, ret);
+                }
+            }
         } else {
             stChnAttr.bShow = CVI_FALSE;
             stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = 0;
             stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = 0;
             stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
-        }
 
-        CVI_S32 ret = CVI_RGN_SetDisplayAttr(slot.handle, &stChn, &stChnAttr);
-        if (ret != CVI_SUCCESS) {
-            MA_LOGW(TAG, "CVI_RGN_SetDisplayAttr(%d) failed: 0x%x", slot.handle, ret);
+            std::lock_guard<std::mutex> rgn_lock(rgn_mutexes_[i]);
+            CVI_S32 ret = CVI_RGN_SetDisplayAttr(slot.handle, &stChn, &stChnAttr);
+            if (ret != CVI_SUCCESS) {
+                MA_LOGW(TAG, "CVI_RGN_SetDisplayAttr(%d) failed: 0x%x", slot.handle, ret);
+            }
         }
+    }
+
+    if (n_uploads > 0) {
+        MA_LOGI(TAG, "applyDetections: renders=%d (total %lldus), uploads=%d (total %lldus)",
+                n_renders, (long long)render_us, n_uploads, (long long)upload_us);
     }
 }
 
@@ -625,19 +689,18 @@ void FaceBlur::onDetection(const std::vector<FaceInfo>& faces) {
 void FaceBlur::onDetection(const std::vector<FaceInfo>& faces, const ma_img_t* frame, uint32_t frame_id) {
     if (!initialized_ || !regions_inited_) return;
 
-    std::lock_guard<std::mutex> lock(tracker_mutex_);
-    associateAndUpdate(faces);
-
-    // Build active box list from trackers
     std::vector<FaceInfo> active_boxes;
-    for (const auto& tracker : trackers_) {
-        if (tracker.miss_count <= max_miss_) {
-            active_boxes.push_back(tracker.getBox());
+    {
+        std::lock_guard<std::mutex> lock(tracker_mutex_);
+        associateAndUpdate(faces);
+        for (const auto& tracker : trackers_) {
+            if (tracker.miss_count <= max_miss_) {
+                active_boxes.push_back(tracker.getBox());
+            }
         }
+        std::sort(active_boxes.begin(), active_boxes.end(),
+            [](const FaceInfo& a, const FaceInfo& b) { return a.score > b.score; });
     }
-    std::sort(active_boxes.begin(), active_boxes.end(),
-        [](const FaceInfo& a, const FaceInfo& b) { return a.score > b.score; });
-
     applyDetections(active_boxes, frame, frame_id);
 }
 
