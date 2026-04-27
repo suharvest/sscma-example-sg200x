@@ -330,7 +330,6 @@ void FaceBlur::initRegions() {
 
         Slot slot;
         slot.handle = hRgn;
-        slot.show = false;
         slot.last_render_frame = -bitmap_refresh_frames_;  // force first render
         slot.rendered_w = max_bitmap_w_;
         slot.rendered_h = max_bitmap_h_;

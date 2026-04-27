@@ -16,7 +16,6 @@ namespace face_analysis {
 // Slot for OVERLAYEX RGN region
 struct Slot {
     RGN_HANDLE handle;
-    bool show;
     int last_render_frame;    // frame_id when bitmap was last rendered
     FaceInfo last_render_box; // the box used at last bitmap render (for IoU check)
     int rendered_w;           // current bitmap width
@@ -106,7 +105,7 @@ private:
     std::mutex tracker_mutex_;
     // Lock ordering: tracker_mutex_ MUST NOT be held when acquiring rgn_mutexes_[i]. rgn_mutexes_ are leaf locks.
     // Serializes SetBitMap + SetDisplayAttr on the same RGN handle between detection thread and predict thread.
-    std::array<std::mutex, 8> rgn_mutexes_;
+    std::array<std::mutex, kMaxRegionsLimit> rgn_mutexes_;
     std::thread predict_thread_;
     std::atomic<bool> predicting_;
     float process_noise_;
