@@ -12,6 +12,17 @@
 
 namespace face_analysis {
 
+// Slot for OVERLAYEX RGN region
+struct Slot {
+    RGN_HANDLE handle;
+    int tracker_idx;          // index into trackers_ that owns this slot; -1 if free
+    bool show;
+    int last_render_frame;    // frame_id when bitmap was last rendered
+    FaceInfo last_render_box; // the box used at last bitmap render (for IoU check)
+    int rendered_w;           // current bitmap width
+    int rendered_h;           // current bitmap height
+};
+
 // 1D Kalman filter with constant-velocity model
 // State: [position, velocity], Observation: [position]
 struct KalmanFilter1D {
@@ -52,18 +63,22 @@ public:
     // Set max number of blur regions (1-16)
     void setMaxRegions(int max_regions);
 
-
-
-    // Feed detection results to update tracking
+    // Feed detection results to update tracking (backward-compatible, calls 3-arg form)
     void onDetection(const std::vector<FaceInfo>& faces);
+
+    // Feed detection results with frame data for bitmap rendering
+    void onDetection(const std::vector<FaceInfo>& faces, const ma_img_t* frame, uint32_t frame_id);
 
 private:
     void initRegions();
     void deinitRegions();
     void applyRegions(const std::vector<FaceInfo>& boxes);
+    void applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_t* frame, uint32_t frame_id);
     void associateAndUpdate(const std::vector<FaceInfo>& faces);
     float computeIoU(const FaceInfo& a, const FaceInfo& b);
     void predictThreadEntry();
+    void renderMosaicBitmap(const ma_img_t* frame, const FaceInfo& box_norm, int target_w, int target_h, int block_size, std::vector<uint8_t>& argb_out, int& out_w, int& out_h);
+    void mapNormToStream(const FaceInfo& norm, int& sx, int& sy, int& sw, int& sh);
 
 private:
     static constexpr int kRgnHandleBase = 100;
@@ -74,8 +89,13 @@ private:
     int max_regions_;
     int vpss_grp_;
     int vpss_chn_;
-    std::vector<RGN_HANDLE> handles_;
+    std::vector<Slot> slots_;
     bool regions_inited_;
+
+    // Bitmap render cadence
+    int bitmap_refresh_frames_ = 5;  // re-render bitmap if last_render_frame is older than this
+    int max_bitmap_w_ = 256;         // max bitmap allocated per slot
+    int max_bitmap_h_ = 256;
 
     // Stream resolution
     int stream_width_;

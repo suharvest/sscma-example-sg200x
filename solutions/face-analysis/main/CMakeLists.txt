@@ -7,4 +7,5 @@ component_register(
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
     PRIVATE_REQUIREDS sscma-micro sophgo cvi_rtsp mosquitto rgn
+    REQUIREDS opencv_core opencv_imgproc
 )
