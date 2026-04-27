@@ -101,16 +101,44 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
             }
         }
 
-        // Emotion inference
+        // Emotion inference (rate-limited via emotion_interval_)
         if (emotion_ready_) {
+            const bool run_now = (frame_counter_ % emotion_interval_) == 0;
             EmotionResult emo;
-            if (emotion_runner_.infer(frame_ptr, fw, fh, x1, y1, x2, y2, emo) && emo.ok) {
+            bool ok = false;
+
+            if (run_now) {
+                ok = emotion_runner_.infer(frame_ptr, fw, fh, x1, y1, x2, y2, emo) && emo.ok;
+            } else {
+                // Reuse cached emotion from a recent frame: best IoU match against last bbox set
+                float best_iou = 0.f;
+                const EmotionCache* best = nullptr;
+                const float ax1 = x1, ay1 = y1, ax2 = x2, ay2 = y2;
+                const float aa = std::max(0.f, ax2 - ax1) * std::max(0.f, ay2 - ay1);
+                for (const auto& c : last_emotion_) {
+                    const float ix1 = std::max(ax1, c.x1);
+                    const float iy1 = std::max(ay1, c.y1);
+                    const float ix2 = std::min(ax2, c.x2);
+                    const float iy2 = std::min(ay2, c.y2);
+                    const float iw = std::max(0.f, ix2 - ix1);
+                    const float ih = std::max(0.f, iy2 - iy1);
+                    const float inter = iw * ih;
+                    const float bb = std::max(0.f, c.x2 - c.x1) * std::max(0.f, c.y2 - c.y1);
+                    const float uni = aa + bb - inter;
+                    const float iou = uni > 1e-6f ? inter / uni : 0.f;
+                    if (iou > best_iou) { best_iou = iou; best = &c; }
+                }
+                if (best && best_iou > 0.3f) {
+                    emo.ok = true;
+                    emo.emotion = static_cast<int>(best->emotion);
+                    emo.score = best->confidence;
+                    ok = true;
+                }
+            }
+
+            if (ok) {
                 analyzed.attributes.emotion = static_cast<Emotion>(emo.emotion);
                 analyzed.attributes.emotion_confidence = emo.score;
-
-                // Compute all probabilities for MQTT output
-                // (runners only return argmax; recompute softmax from raw logits isn't available,
-                //  so set dominant class = score, rest = 0 as approximation)
                 analyzed.attributes.emotion_probs.fill(0.f);
                 if (emo.emotion >= 0 && emo.emotion < 8) {
                     analyzed.attributes.emotion_probs[emo.emotion] = emo.score;
@@ -121,6 +149,22 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
         results.push_back(analyzed);
     }
 
+    // Update cache from this frame's inferences (only when we actually ran emotion)
+    if (emotion_ready_ && (frame_counter_ % emotion_interval_) == 0) {
+        last_emotion_.clear();
+        last_emotion_.reserve(results.size());
+        for (const auto& r : results) {
+            if (r.attributes.emotion_confidence > 0.f) {
+                last_emotion_.push_back({
+                    r.face.x * fw, r.face.y * fh,
+                    (r.face.x + r.face.w) * fw, (r.face.y + r.face.h) * fh,
+                    r.attributes.emotion, r.attributes.emotion_confidence
+                });
+            }
+        }
+    }
+
+    ++frame_counter_;
     return results;
 }
 

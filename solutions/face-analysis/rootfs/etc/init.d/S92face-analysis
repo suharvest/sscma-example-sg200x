@@ -34,6 +34,7 @@ DAEMON_OPTS=""
 [ "$RTSP_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-rtsp"
 [ "$BLUR_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-blur"
 [ -n "$MAX_REGIONS" ] && DAEMON_OPTS="$DAEMON_OPTS --max-regions $MAX_REGIONS"
+[ -n "$EMOTION_INTERVAL" ] && DAEMON_OPTS="$DAEMON_OPTS --emotion-interval $EMOTION_INTERVAL"
 [ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
 
 # Stop conflicting services that use the camera

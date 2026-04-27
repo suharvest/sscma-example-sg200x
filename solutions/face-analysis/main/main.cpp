@@ -46,6 +46,9 @@ static struct {
     // Blur configuration
     int max_regions = 12;
 
+    // Emotion runs every N frames (1 = every frame, 2 = every 2 frames, ...)
+    int emotion_interval = 2;
+
     // Runtime flags
     bool enable_rtsp = true;
     bool enable_mqtt = true;
@@ -81,6 +84,7 @@ static void print_usage(const char* prog) {
     printf("  --no-mqtt                 Disable MQTT publishing\n");
     printf("  --no-blur                 Disable face blur on RTSP stream\n");
     printf("  --max-regions N           Max blur regions (1-16, default: %d)\n", g_config.max_regions);
+    printf("  --emotion-interval N      Run emotion every N frames (default: %d)\n", g_config.emotion_interval);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
 }
@@ -97,6 +101,7 @@ static bool parse_args(int argc, char** argv) {
         {"no-mqtt", no_argument, 0, 2},
         {"no-blur", no_argument, 0, 3},
         {"max-regions", required_argument, 0, 4},
+        {"emotion-interval", required_argument, 0, 5},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -135,6 +140,9 @@ static bool parse_args(int argc, char** argv) {
             case 4:
                 g_config.max_regions = std::stoi(optarg);
                 break;
+            case 5:
+                g_config.emotion_interval = std::stoi(optarg);
+                break;
             case 'v':
                 g_config.verbose = true;
                 break;
@@ -166,6 +174,7 @@ static bool init_models() {
         MA_LOGE(TAG, "Failed to initialize attribute analyzer");
         return false;
     }
+    g_attribute_analyzer->setEmotionInterval(g_config.emotion_interval);
     MA_LOGI(TAG, "Attribute analyzer initialized (GenderAge: %s, Emotion: %s)",
             g_attribute_analyzer->isGenderAgeReady() ? "yes" : "no",
             g_attribute_analyzer->isEmotionReady() ? "yes" : "no");

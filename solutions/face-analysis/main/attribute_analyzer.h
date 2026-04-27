@@ -104,11 +104,24 @@ public:
     bool isGenderAgeReady() const { return genderage_ready_; }
     bool isEmotionReady() const { return emotion_ready_; }
 
+    // Run emotion every N frames; cached result reused on skipped frames.
+    // 1 = every frame, 2 = every 2 frames (default), etc.
+    void setEmotionInterval(int n) { emotion_interval_ = n < 1 ? 1 : n; }
+
 private:
     AgeGenderRaceRunner agr_runner_;
     EmotionRunner emotion_runner_;
     bool genderage_ready_ = false;
     bool emotion_ready_ = false;
+
+    int emotion_interval_ = 2;
+    uint32_t frame_counter_ = 0;
+    struct EmotionCache {
+        float x1, y1, x2, y2;
+        Emotion emotion;
+        float confidence;
+    };
+    std::vector<EmotionCache> last_emotion_;
 };
 
 }  // namespace face_analysis
