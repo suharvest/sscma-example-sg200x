@@ -1,6 +1,7 @@
 #include "face_detector.h"
 
 #include <algorithm>
+#include <cmath>
 
 #define TAG "FaceDetector"
 
@@ -116,6 +117,14 @@ std::vector<FaceInfo> FaceDetector::detect(ma_img_t* img) {
         if (bbox.score < threshold_) continue;
 
         float x = bbox.x, y = bbox.y, w = bbox.w, h = bbox.h;
+
+        // NaN-safe sanity check: NaN compares false to everything, so explicit isfinite test.
+        // Yolo11 / Yolo26 occasionally emit NaN or out-of-range bbox values on warmup or for
+        // weak detections. Downstream alignCropRgb and emotion_runner do not handle NaN → SEGV.
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h)) continue;
+        if (w <= 0.f || h <= 0.f) continue;
+        if (x < -1.f || y < -1.f || x > 2.f || y > 2.f || w > 2.f || h > 2.f) continue;
+
         if (bbox_xy_is_center_) {
             x -= w * 0.5f;
             y -= h * 0.5f;
@@ -126,6 +135,10 @@ std::vector<FaceInfo> FaceDetector::detect(ma_img_t* img) {
         face.y = std::max(0.0f, y);
         face.w = std::min(w, 1.0f - face.x);
         face.h = std::min(h, 1.0f - face.y);
+
+        // Final guard: drop boxes that ended up too small to crop safely.
+        if (face.w < 0.01f || face.h < 0.01f) continue;
+
         face.score = bbox.score;
         face.id = face_id_counter_++;
         faces.push_back(face);
