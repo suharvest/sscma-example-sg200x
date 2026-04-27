@@ -11,22 +11,24 @@
 
 namespace face_analysis {
 
-// FairFace 7-class emotion
+// HSEmotion enet_b0_8 / AffectNet 8-class
+// Order: anger, contempt, disgust, fear, happiness, neutral, sadness, surprise
 enum class Emotion {
     ANGRY = 0,
+    CONTEMPT,
     DISGUST,
     FEAR,
     HAPPY,
+    NEUTRAL,
     SAD,
     SURPRISE,
-    NEUTRAL,
     COUNT
 };
 
 inline const char* getEmotionName(Emotion emotion) {
     static const char* names[] = {
-        "angry", "disgust", "fear", "happy",
-        "sad", "surprise", "neutral"
+        "angry", "contempt", "disgust", "fear",
+        "happy", "neutral", "sad", "surprise"
     };
     int idx = static_cast<int>(emotion);
     if (idx >= 0 && idx < static_cast<int>(Emotion::COUNT)) {
@@ -79,7 +81,7 @@ struct FaceAttributes {
     // Emotion prediction (FairFace 7-class)
     Emotion emotion = Emotion::NEUTRAL;
     float emotion_confidence = 0.f;
-    std::array<float, 7> emotion_probs = {};
+    std::array<float, 8> emotion_probs = {};
 };
 
 struct AnalyzedFace {

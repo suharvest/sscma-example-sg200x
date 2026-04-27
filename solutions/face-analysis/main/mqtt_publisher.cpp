@@ -205,15 +205,16 @@ std::string MqttPublisher::buildResultJson(uint64_t timestamp_ms, uint32_t frame
         json << "\"emotion\":\"" << getEmotionName(attrs.emotion) << "\",";
         json << "\"emotion_confidence\":" << attrs.emotion_confidence << ",";
 
-        // All emotion probabilities (7 classes)
+        // All emotion probabilities (HSEmotion AffectNet 8 classes)
         json << "\"emotion_probs\":{";
         json << "\"angry\":" << attrs.emotion_probs[0] << ",";
-        json << "\"disgust\":" << attrs.emotion_probs[1] << ",";
-        json << "\"fear\":" << attrs.emotion_probs[2] << ",";
-        json << "\"happy\":" << attrs.emotion_probs[3] << ",";
-        json << "\"sad\":" << attrs.emotion_probs[4] << ",";
-        json << "\"surprise\":" << attrs.emotion_probs[5] << ",";
-        json << "\"neutral\":" << attrs.emotion_probs[6];
+        json << "\"contempt\":" << attrs.emotion_probs[1] << ",";
+        json << "\"disgust\":" << attrs.emotion_probs[2] << ",";
+        json << "\"fear\":" << attrs.emotion_probs[3] << ",";
+        json << "\"happy\":" << attrs.emotion_probs[4] << ",";
+        json << "\"neutral\":" << attrs.emotion_probs[5] << ",";
+        json << "\"sad\":" << attrs.emotion_probs[6] << ",";
+        json << "\"surprise\":" << attrs.emotion_probs[7];
         json << "}";
 
         json << "}";

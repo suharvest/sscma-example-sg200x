@@ -33,11 +33,12 @@ bool AttributeAnalyzer::init(const std::string& genderage_model,
     if (!emotion_model.empty()) {
         MA_LOGI(TAG, "Loading Emotion model: %s", emotion_model.c_str());
 
-        // Simple [0,1] normalization: mean=(0,0,0), scale=(1/255, 1/255, 1/255)
-        emotion_runner_.setPreprocess(0.0f, 0.0f, 0.0f,
-                                      1.0f / 255.0f,
-                                      1.0f / 255.0f,
-                                      1.0f / 255.0f);
+        // HSEmotion enet_b0_8: ImageNet normalization on RGB
+        // mean=(0.485, 0.456, 0.406)*255, scale=1/(std*255)
+        emotion_runner_.setPreprocess(123.675f, 116.28f, 103.53f,
+                                      1.0f / (0.229f * 255.0f),
+                                      1.0f / (0.224f * 255.0f),
+                                      1.0f / (0.225f * 255.0f));
 
         if (!emotion_runner_.init(emotion_model)) {
             MA_LOGE(TAG, "Failed to init Emotion runner");
@@ -111,7 +112,7 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
                 // (runners only return argmax; recompute softmax from raw logits isn't available,
                 //  so set dominant class = score, rest = 0 as approximation)
                 analyzed.attributes.emotion_probs.fill(0.f);
-                if (emo.emotion >= 0 && emo.emotion < 7) {
+                if (emo.emotion >= 0 && emo.emotion < 8) {
                     analyzed.attributes.emotion_probs[emo.emotion] = emo.score;
                 }
             }

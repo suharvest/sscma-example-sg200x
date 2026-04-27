@@ -25,7 +25,7 @@ static struct {
     // Model paths (auto-detects FairFace vs InsightFace format)
     std::string face_model = "/userdata/local/models/yolo-face_mixfp16.cvimodel";
     std::string genderage_model = "/userdata/local/models/genderage_int8.cvimodel";
-    std::string emotion_model = "/userdata/local/models/emotion_bf16.cvimodel";
+    std::string emotion_model = "/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel";
 
     // Detection parameters
     float face_threshold = 0.4f;

@@ -276,13 +276,22 @@ void EmotionRunner::packInput(const uint8_t* rgb_hwc_u8) {
         }
     };
 
+    auto luma = [](uint8_t r, uint8_t g, uint8_t b) -> uint8_t {
+        const int y = (int)std::lround(0.299f * r + 0.587f * g + 0.114f * b);
+        return (uint8_t)std::clamp(y, 0, 255);
+    };
+
     if (input_is_chw_) {
         const size_t plane = (size_t)H * (size_t)W;
         for (int y = 0; y < H; ++y) {
             for (int x = 0; x < W; ++x) {
                 const uint8_t* p = rgb_hwc_u8 + ((size_t)y * (size_t)W + (size_t)x) * 3;
-                for (int c = 0; c < C; ++c) {
-                    store_real((size_t)c * plane + (size_t)y * (size_t)W + (size_t)x, to_real(p[c], c));
+                if (C == 1) {
+                    store_real((size_t)y * (size_t)W + (size_t)x, to_real(luma(p[0], p[1], p[2]), 0));
+                } else {
+                    for (int c = 0; c < C; ++c) {
+                        store_real((size_t)c * plane + (size_t)y * (size_t)W + (size_t)x, to_real(p[c], c));
+                    }
                 }
             }
         }
@@ -290,18 +299,22 @@ void EmotionRunner::packInput(const uint8_t* rgb_hwc_u8) {
         for (int y = 0; y < H; ++y) {
             for (int x = 0; x < W; ++x) {
                 const uint8_t* p = rgb_hwc_u8 + ((size_t)y * (size_t)W + (size_t)x) * 3;
-                for (int c = 0; c < C; ++c) {
-                    store_real(((size_t)y * (size_t)W + (size_t)x) * (size_t)C + (size_t)c, to_real(p[c], c));
+                if (C == 1) {
+                    store_real(((size_t)y * (size_t)W + (size_t)x), to_real(luma(p[0], p[1], p[2]), 0));
+                } else {
+                    for (int c = 0; c < C; ++c) {
+                        store_real(((size_t)y * (size_t)W + (size_t)x) * (size_t)C + (size_t)c, to_real(p[c], c));
+                    }
                 }
             }
         }
     }
 }
 
-static void softmax_argmax7(const std::vector<float>& logits, int& idx, float& prob) {
+static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob) {
     idx = -1;
     prob = 0.f;
-    if (logits.size() != 7) return;
+    if (logits.empty()) return;
     float m = -std::numeric_limits<float>::infinity();
     for (float v : logits) m = std::max(m, v);
     float sum = 0.f;
@@ -310,11 +323,11 @@ static void softmax_argmax7(const std::vector<float>& logits, int& idx, float& p
 
     int best = 0;
     float bestp = 0.f;
-    for (int i = 0; i < 7; ++i) {
-        const float p = std::exp(logits[(size_t)i] - m) / sum;
+    for (size_t i = 0; i < logits.size(); ++i) {
+        const float p = std::exp(logits[i] - m) / sum;
         if (p > bestp) {
             bestp = p;
-            best = i;
+            best = (int)i;
         }
     }
     idx = best;
@@ -334,15 +347,15 @@ bool EmotionRunner::parseOutputs(EmotionResult& out) {
 
     const ma_tensor_t t = engine_->getOutput(0);
     const int n = (int)tensor_numel(t);
-    if (n < 7) return false;
+    if (n < 1) return false;
 
     std::vector<float> logits;
-    logits.reserve(7);
-    for (int i = 0; i < 7; ++i) logits.push_back(read_val(t, i));
+    logits.reserve(n);
+    for (int i = 0; i < n; ++i) logits.push_back(read_val(t, i));
 
     int idx = -1;
     float p = 0.f;
-    softmax_argmax7(logits, idx, p);
+    softmax_argmax(logits, idx, p);
 
     out.ok = (idx >= 0);
     out.emotion = idx;
