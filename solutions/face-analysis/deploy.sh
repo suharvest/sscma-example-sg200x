@@ -88,13 +88,22 @@ run_ssh 'for svc in /etc/init.d/S*sscma-node* /etc/init.d/K*sscma-node* \
                /etc/init.d/S*yolo*detector* /etc/init.d/K*yolo*detector* \
                /etc/init.d/S*ppocr* /etc/init.d/K*ppocr* \
                /etc/init.d/S*face-analysis* /etc/init.d/K*face-analysis* \
+               /etc/init.d/S*facemesh* /etc/init.d/K*facemesh* \
                /etc/init.d/S*detection-blur* /etc/init.d/K*detection-blur* \
                /etc/init.d/S*retail-vision* /etc/init.d/K*retail-vision*; do
     [ -x "$svc" ] && "$svc" stop 2>/dev/null || true
 done' || warn "Some init scripts not found (OK)"
 
-run_sudo 'killall -q face-analysis detection-blur retail-vision ppocr-reader yolo8-detector yolo11-detector yolo26-detector yolo11s-detector sscma-node 2>/dev/null || true'
+run_sudo 'killall -q face-analysis facemesh-reader detection-blur retail-vision ppocr-reader yolo8-detector yolo11-detector yolo26-detector yolo11s-detector yolo-detector sscma-node 2>/dev/null || true'
 sleep 2
+
+# Check VPSS hang state — leftover from a previous SEGV. If detected, advise reboot.
+if run_sudo 'dmesg | tail -30 | grep -q "vpss_get_chn_frame.*get chn frame fail"'; then
+    warn "Device dmesg shows VPSS Grp(0) is in a stuck state from an earlier crash."
+    warn "  → Symptom: subsequent face-analysis runs will hang silently with no MQTT output."
+    warn "  → Only fix: reboot the device (sudo reboot or physical power cycle)."
+fi
+
 ok "Services stopped"
 
 # --- Step 3: Transfer & Install ---
@@ -112,14 +121,33 @@ run_sudo "/etc/init.d/S92face-analysis restart" || err "Service start failed"
 ok "Service started"
 
 # --- Step 5: Verify ---
-sleep 5
+sleep 8
 
 log "Checking service status..."
 run_ssh "/etc/init.d/S92face-analysis status" || warn "Status check failed"
 
+# Detect SEGV from this deploy run (uptime in dmesg helps)
+SEGV_HIT=$(run_sudo 'dmesg | tail -50 | grep -c "face-analysis.*unhandled signal"' 2>/dev/null | tr -d '[:space:]')
+if [ -n "$SEGV_HIT" ] && [ "$SEGV_HIT" != "0" ]; then
+    warn "Detected ${SEGV_HIT} SEGV crash(es) of face-analysis in dmesg — process is repeatedly crashing."
+    warn "  → Last crash:"
+    run_sudo "dmesg | grep 'face-analysis.*unhandled signal' | tail -1"
+    warn "  → A SEGV typically leaves VPSS Grp(0) in a stuck state. Reboot before retrying."
+fi
+
+# Detect VPSS hang (process running but not getting frames)
+if run_sudo 'dmesg | tail -10 | grep -q "vpss_get_chn_frame.*get chn frame fail"'; then
+    warn "VPSS Grp(0) is not delivering frames — service will be silent (no MQTT output)."
+    warn "  → Reboot the device to recover."
+fi
+
 if [ "$MQTT_CHECK" = true ]; then
     log "Capturing MQTT output (10s, max 3 messages)..."
-    run_ssh "timeout 10 mosquitto_sub -h localhost -t 'recamera/face-analysis/results' -C 3" || warn "MQTT check timed out"
+    if ! run_ssh "timeout 10 mosquitto_sub -h localhost -t 'recamera/face-analysis/results' -C 3" 2>&1; then
+        warn "MQTT check timed out — service likely not publishing."
+        warn "  → Last 5 log lines:"
+        run_sudo "tail -5 /var/log/face-analysis.log 2>/dev/null"
+    fi
 fi
 
 echo ""
