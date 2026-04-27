@@ -46,6 +46,7 @@ private:
     int input_height_;
     bool initialized_;
     int face_id_counter_;
+    bool bbox_xy_is_center_;  // Yolo11/YoloV8/Yolo26 emit center xy; YoloSingle/SCRFD emit top-left.
 };
 
 }  // namespace face_analysis

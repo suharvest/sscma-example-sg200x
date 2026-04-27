@@ -72,6 +72,13 @@ bool FaceDetector::init(const std::string& model_path) {
 
     detector_ = static_cast<ma::model::Detector*>(model);
 
+    // Yolo11/YoloV8/Yolo26 produce center-xy bboxes; YoloSingle / SCRFD already
+    // convert to top-left. Downstream FaceBlur / AttributeAnalyzer assume top-left.
+    const auto mtype = model->getType();
+    bbox_xy_is_center_ = (mtype == MA_MODEL_TYPE_YOLO11) ||
+                        (mtype == MA_MODEL_TYPE_YOLOV8) ||
+                        (mtype == MA_MODEL_TYPE_YOLO26);
+
     // Get input dimensions
     const ma_img_t* model_input = static_cast<const ma_img_t*>(detector_->getInput());
     if (model_input) {
@@ -106,16 +113,22 @@ std::vector<FaceInfo> FaceDetector::detect(ma_img_t* img) {
 
     auto results = detector_->getResults();
     for (const auto& bbox : results) {
-        if (bbox.score >= threshold_) {
-            FaceInfo face;
-            face.x = bbox.x;
-            face.y = bbox.y;
-            face.w = bbox.w;
-            face.h = bbox.h;
-            face.score = bbox.score;
-            face.id = face_id_counter_++;
-            faces.push_back(face);
+        if (bbox.score < threshold_) continue;
+
+        float x = bbox.x, y = bbox.y, w = bbox.w, h = bbox.h;
+        if (bbox_xy_is_center_) {
+            x -= w * 0.5f;
+            y -= h * 0.5f;
         }
+
+        FaceInfo face;
+        face.x = std::max(0.0f, x);
+        face.y = std::max(0.0f, y);
+        face.w = std::min(w, 1.0f - face.x);
+        face.h = std::min(h, 1.0f - face.y);
+        face.score = bbox.score;
+        face.id = face_id_counter_++;
+        faces.push_back(face);
     }
 
     return faces;
