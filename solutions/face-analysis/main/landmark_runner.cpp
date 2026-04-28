@@ -1,21 +1,19 @@
-#include "age_gender_race_runner.h"
+#include "landmark_runner.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
-#include <limits>
 
 namespace face_analysis {
 
-float AgeGenderRaceRunner::bf16_to_fp32(uint16_t v) {
+float LandmarkRunner::bf16_to_fp32(uint16_t v) {
     uint32_t u = (uint32_t)v << 16;
     float f;
     memcpy(&f, &u, sizeof(f));
     return f;
 }
 
-float AgeGenderRaceRunner::fp16_to_fp32(uint16_t v) {
+float LandmarkRunner::fp16_to_fp32(uint16_t v) {
     const uint32_t sign = (uint32_t)(v & 0x8000u) << 16;
     const uint32_t exp = (v & 0x7C00u) >> 10;
     const uint32_t mant = (v & 0x03FFu);
@@ -49,13 +47,13 @@ float AgeGenderRaceRunner::fp16_to_fp32(uint16_t v) {
     return f;
 }
 
-uint16_t AgeGenderRaceRunner::fp32_to_bf16(float v) {
+uint16_t LandmarkRunner::fp32_to_bf16(float v) {
     uint32_t u;
     memcpy(&u, &v, sizeof(u));
     return (uint16_t)(u >> 16);
 }
 
-uint16_t AgeGenderRaceRunner::fp32_to_fp16(float v) {
+uint16_t LandmarkRunner::fp32_to_fp16(float v) {
     uint32_t u;
     memcpy(&u, &v, sizeof(u));
     const uint32_t sign = (u >> 31) & 1;
@@ -74,7 +72,7 @@ uint16_t AgeGenderRaceRunner::fp32_to_fp16(float v) {
     return (uint16_t)((sign << 15) | ((uint16_t)exp << 10) | (uint16_t)(mant >> 13));
 }
 
-size_t AgeGenderRaceRunner::elem_size(ma_tensor_type_t t) {
+size_t LandmarkRunner::elem_size(ma_tensor_type_t t) {
     switch (t) {
         case MA_TENSOR_TYPE_F32: return 4;
         case MA_TENSOR_TYPE_F16: return 2;
@@ -85,7 +83,7 @@ size_t AgeGenderRaceRunner::elem_size(ma_tensor_type_t t) {
     }
 }
 
-size_t AgeGenderRaceRunner::shape_numel(const ma_shape_t& s) {
+size_t LandmarkRunner::shape_numel(const ma_shape_t& s) {
     if (s.size <= 0) return 0;
     size_t n = 1;
     for (int i = 0; i < s.size; ++i) {
@@ -95,7 +93,7 @@ size_t AgeGenderRaceRunner::shape_numel(const ma_shape_t& s) {
     return n;
 }
 
-float AgeGenderRaceRunner::read_val(const ma_tensor_t& t, int idx) const {
+float LandmarkRunner::read_val(const ma_tensor_t& t, int idx) const {
     switch (t.type) {
         case MA_TENSOR_TYPE_F32:
             return t.data.f32[idx];
@@ -118,45 +116,18 @@ float AgeGenderRaceRunner::read_val(const ma_tensor_t& t, int idx) const {
     }
 }
 
-AgeGenderRaceRunner::ModelFormat AgeGenderRaceRunner::detectModelFormat() const {
-    const int out_n = engine_->getOutputSize();
-    if (out_n <= 0) return ModelFormat::Unknown;
-
-    // Count total output elements
-    int total = 0;
-    for (int i = 0; i < out_n; ++i) {
-        const ma_tensor_t t = engine_->getOutput(i);
-        size_t n = shape_numel(t.shape);
-        if (n == 0) {
-            const size_t es = elem_size(t.type);
-            n = (es > 0) ? (t.size / es) : 0;
-        }
-        total += (int)n;
-    }
-
-    // FairFace: 18 elements (7 race + 2 gender + 9 age)
-    if (total >= 18) return ModelFormat::FairFace;
-    // InsightFace: 3 elements (2 gender logits + 1 age)
-    if (total == 3) return ModelFormat::InsightFace;
-
-    return ModelFormat::Unknown;
-}
-
-bool AgeGenderRaceRunner::init(const std::string& model_path) {
+bool LandmarkRunner::init(const std::string& model_path) {
     engine_ = std::make_unique<ma::engine::EngineCVI>();
     if (engine_->init() != MA_OK) return false;
     if (engine_->load(model_path) != MA_OK) return false;
     if (!prepareInputTensor()) return false;
-
-    model_format_ = detectModelFormat();
-    if (model_format_ == ModelFormat::Unknown) return false;
 
     input_rgb_.assign((size_t)input_h_ * (size_t)input_w_ * 3, 0);
     inited_ = true;
     return true;
 }
 
-bool AgeGenderRaceRunner::prepareInputTensor() {
+bool LandmarkRunner::prepareInputTensor() {
     input_tensor_cache_ = engine_->getInput(0);
     input_type_ = input_tensor_cache_.type;
 
@@ -207,13 +178,29 @@ bool AgeGenderRaceRunner::prepareInputTensor() {
             return false;
     }
 
+    // Detect output point count from output shape
+    const int out_n = engine_->getOutputSize();
+    if (out_n > 0) {
+        const ma_tensor_t t = engine_->getOutput(0);
+        size_t n = shape_numel(t.shape);
+        if (n == 0) {
+            const size_t es = elem_size(t.type);
+            n = (es > 0) ? (t.size / es) : 0;
+        }
+        // PFLD-5point: 10 values (5x2)
+        // WFLD-98point: 196 values (98x2)
+        if (n == 10) output_num_points_ = 5;
+        else if (n == 196) output_num_points_ = 98;
+        else output_num_points_ = (int)(n / 2);
+    }
+
     return true;
 }
 
-void AgeGenderRaceRunner::alignCropRgb(const uint8_t* src, int src_w, int src_h,
-                                      int src_stride_bytes,
-                                      float x1, float y1, float x2, float y2,
-                                      uint8_t* dst, int dst_size) const {
+void LandmarkRunner::alignCropRgb(const uint8_t* src, int src_w, int src_h,
+                                   int src_stride_bytes,
+                                   float x1, float y1, float x2, float y2,
+                                   uint8_t* dst, int dst_size) const {
     if (src_stride_bytes <= 0) src_stride_bytes = src_w * 3;
     const int min_stride = src_w * 3;
     if (src_stride_bytes < min_stride) src_stride_bytes = min_stride;
@@ -266,7 +253,7 @@ void AgeGenderRaceRunner::alignCropRgb(const uint8_t* src, int src_w, int src_h,
     }
 }
 
-void AgeGenderRaceRunner::packInput(const uint8_t* rgb_hwc_u8) {
+void LandmarkRunner::packInput(const uint8_t* rgb_hwc_u8) {
     const int H = input_h_;
     const int W = input_w_;
     const int C = input_c_;
@@ -274,29 +261,9 @@ void AgeGenderRaceRunner::packInput(const uint8_t* rgb_hwc_u8) {
     const float qscale = input_tensor_cache_.quant_param.scale;
     const int qzp = input_tensor_cache_.quant_param.zero_point;
 
-    // When input is U8/S8 and quant params look like defaults, use raw passthrough
-    // (the model's TPU fused preprocess handles normalization internally)
-    const bool input_is_int = (input_type_ == MA_TENSOR_TYPE_U8 || input_type_ == MA_TENSOR_TYPE_S8);
-    const bool quant_param_defaultish = (!std::isfinite(qscale) || qscale <= 0.f || (std::fabs(qscale - 1.0f) < 1e-6f && qzp == 0));
-    const bool use_raw_passthrough = input_is_int && quant_param_defaultish;
-
     auto to_real = [&](uint8_t px, int c) -> float {
         const float v = (float)px;
-        if (use_raw_passthrough) return v;
         return (v - mean_[c]) * scale_[c];
-    };
-
-    auto store_raw = [&](size_t idx, uint8_t px) {
-        switch (input_type_) {
-            case MA_TENSOR_TYPE_U8:
-                input_u8_[idx] = px;
-                break;
-            case MA_TENSOR_TYPE_S8:
-                input_s8_[idx] = (int8_t)std::clamp((int)px - 128, -128, 127);
-                break;
-            default:
-                break;
-        }
     };
 
     auto store_real = [&](size_t idx, float real) {
@@ -335,9 +302,7 @@ void AgeGenderRaceRunner::packInput(const uint8_t* rgb_hwc_u8) {
             for (int x = 0; x < W; ++x) {
                 const uint8_t* p = rgb_hwc_u8 + ((size_t)y * (size_t)W + (size_t)x) * 3;
                 for (int c = 0; c < C; ++c) {
-                    const size_t idx = (size_t)c * plane + (size_t)y * (size_t)W + (size_t)x;
-                    if (use_raw_passthrough) store_raw(idx, p[c]);
-                    else store_real(idx, to_real(p[c], c));
+                    store_real((size_t)c * plane + (size_t)y * (size_t)W + (size_t)x, to_real(p[c], c));
                 }
             }
         }
@@ -346,49 +311,14 @@ void AgeGenderRaceRunner::packInput(const uint8_t* rgb_hwc_u8) {
             for (int x = 0; x < W; ++x) {
                 const uint8_t* p = rgb_hwc_u8 + ((size_t)y * (size_t)W + (size_t)x) * 3;
                 for (int c = 0; c < C; ++c) {
-                    const size_t idx = ((size_t)y * (size_t)W + (size_t)x) * (size_t)C + (size_t)c;
-                    if (use_raw_passthrough) store_raw(idx, p[c]);
-                    else store_real(idx, to_real(p[c], c));
+                    store_real(((size_t)y * (size_t)W + (size_t)x) * (size_t)C + (size_t)c, to_real(p[c], c));
                 }
             }
         }
     }
 }
 
-static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob) {
-    idx = -1;
-    prob = 0.f;
-    if (logits.empty()) return;
-    float m = -std::numeric_limits<float>::infinity();
-    for (float v : logits) m = std::max(m, v);
-    float sum = 0.f;
-    for (float v : logits) sum += std::exp(v - m);
-    if (sum <= 0.f) return;
-    int best = 0;
-    float bestp = 0.f;
-    for (size_t i = 0; i < logits.size(); ++i) {
-        const float p = std::exp(logits[i] - m) / sum;
-        if (p > bestp) {
-            bestp = p;
-            best = (int)i;
-        }
-    }
-    idx = best;
-    prob = bestp;
-}
-
-bool AgeGenderRaceRunner::parseOutputs(AgeGenderRaceResult& out) {
-    switch (model_format_) {
-        case ModelFormat::FairFace:
-            return parseOutputsFairFace(out);
-        case ModelFormat::InsightFace:
-            return parseOutputsInsightFace(out);
-        default:
-            return false;
-    }
-}
-
-bool AgeGenderRaceRunner::parseOutputsFairFace(AgeGenderRaceResult& out) {
+bool LandmarkRunner::parseOutputs(LandmarkResult& out, float crop_x1, float crop_y1, float crop_scale_factor) {
     const int out_n = engine_->getOutputSize();
     if (out_n <= 0) return false;
 
@@ -399,130 +329,78 @@ bool AgeGenderRaceRunner::parseOutputsFairFace(AgeGenderRaceResult& out) {
         return (es > 0) ? (t.size / es) : 0;
     };
 
-    auto read_logits = [&](const ma_tensor_t& t, int n) -> std::vector<float> {
-        std::vector<float> v;
-        v.reserve((size_t)n);
-        for (int i = 0; i < n; ++i) v.push_back(read_val(t, i));
-        return v;
-    };
+    const ma_tensor_t t = engine_->getOutput(0);
+    const int n = (int)tensor_numel(t);
+    if (n < 10) return false;
 
-    std::vector<float> race_logits, gender_logits, age_logits;
+    // Read all landmark coordinates
+    std::vector<float> coords;
+    coords.reserve(n);
+    for (int i = 0; i < n; ++i) coords.push_back(read_val(t, i));
 
-    if (out_n == 1) {
-        const ma_tensor_t t = engine_->getOutput(0);
-        const int n = (int)tensor_numel(t);
-        if (n >= 18) {
-            for (int i = 0; i < 7; ++i) race_logits.push_back(read_val(t, i));
-            for (int i = 0; i < 2; ++i) gender_logits.push_back(read_val(t, 7 + i));
-            for (int i = 0; i < 9; ++i) age_logits.push_back(read_val(t, 9 + i));
-        } else {
-            return false;
+    // PFLD outputs normalized coordinates in [0,1] relative to input crop
+    // Map back to original image coordinates:
+    //   orig_x = crop_x1 + norm_x * crop_width
+    //   orig_y = crop_y1 + norm_y * crop_height
+    const float crop_w = (float)input_size_ / crop_scale_factor;
+    const float crop_h = crop_w;
+
+    out.ok = true;
+    out.num_points = (output_num_points_ == 98) ? 98 : 5;
+
+    if (output_num_points_ == 98) {
+        // WFLW 98-point format: select 5 key landmarks for alignment
+        // WFLW indices: 96(left_eye), 97(right_eye), 54(nose_tip), 76(mouth_left), 82(mouth_right)
+        static const int wflw_indices[5] = {96, 97, 54, 76, 82};
+        for (int i = 0; i < 5; ++i) {
+            const int idx = wflw_indices[i];
+            const float nx = coords[idx * 2];
+            const float ny = coords[idx * 2 + 1];
+            out.pts[i * 2] = crop_x1 + nx * crop_w;
+            out.pts[i * 2 + 1] = crop_y1 + ny * crop_h;
         }
     } else {
-        for (int oi = 0; oi < out_n; ++oi) {
-            const ma_tensor_t t = engine_->getOutput(oi);
-            const int n = (int)tensor_numel(t);
-            if (n == 7 && race_logits.empty()) {
-                race_logits = read_logits(t, 7);
-            } else if (n == 2 && gender_logits.empty()) {
-                gender_logits = read_logits(t, 2);
-            } else if (n == 9 && age_logits.empty()) {
-                age_logits = read_logits(t, 9);
-            }
-        }
-        if (race_logits.size() != 7 || gender_logits.size() != 2 || age_logits.size() != 9) {
-            return false;
+        // PFLD 5-point format: [x0,y0,x1,y1,...,x4,y4]
+        for (int i = 0; i < 5; ++i) {
+            const float nx = coords[i * 2];
+            const float ny = coords[i * 2 + 1];
+            out.pts[i * 2] = crop_x1 + nx * crop_w;
+            out.pts[i * 2 + 1] = crop_y1 + ny * crop_h;
         }
     }
 
-    int race = -1, gender = -1, age = -1;
-    float race_p = 0.f, gender_p = 0.f, age_p = 0.f;
-    softmax_argmax(race_logits, race, race_p);
-    softmax_argmax(gender_logits, gender, gender_p);
-    softmax_argmax(age_logits, age, age_p);
-
-    out.ok = (race >= 0 && gender >= 0 && age >= 0);
-    out.is_fairface = true;
-    out.race = race;
-    // FairFace convention: 0=Male, 1=Female -> remap to 1=Male, 0=Female
-    if (gender == 0) out.gender = 1;
-    else if (gender == 1) out.gender = 0;
-    else out.gender = -1;
-    out.age = age;
-    out.race_score = race_p;
-    out.gender_score = gender_p;
-    out.age_score = age_p;
     return out.ok;
 }
 
-bool AgeGenderRaceRunner::parseOutputsInsightFace(AgeGenderRaceResult& out) {
-    // InsightFace genderage model: 3 outputs in a single tensor
-    // [female_logit, male_logit, age_value]
-    // age_value is continuous age / 100 (e.g. 0.28 = 28 years old)
-    const int out_n = engine_->getOutputSize();
-    if (out_n <= 0) return false;
-
-    auto tensor_numel = [&](const ma_tensor_t& t) -> size_t {
-        size_t n = shape_numel(t.shape);
-        if (n > 0) return n;
-        const size_t es = elem_size(t.type);
-        return (es > 0) ? (t.size / es) : 0;
-    };
-
-    // Read all output values into a flat array
-    std::vector<float> vals;
-    for (int oi = 0; oi < out_n; ++oi) {
-        const ma_tensor_t t = engine_->getOutput(oi);
-        const int n = (int)tensor_numel(t);
-        for (int i = 0; i < n; ++i) vals.push_back(read_val(t, i));
-    }
-
-    if (vals.size() < 3) return false;
-
-    // Gender: softmax over [female_logit, male_logit]
-    std::vector<float> gender_logits = {vals[0], vals[1]};
-    int gender_idx = -1;
-    float gender_p = 0.f;
-    softmax_argmax(gender_logits, gender_idx, gender_p);
-
-    // InsightFace convention: index 0=Female, 1=Male -> remap to 1=Male, 0=Female
-    if (gender_idx == 0) out.gender = 0;       // Female
-    else if (gender_idx == 1) out.gender = 1;  // Male
-    else out.gender = -1;
-    out.gender_score = gender_p;
-
-    // Age: continuous value * 100 gives age in years
-    float age_raw = vals[2];
-    int age_years = std::max(0, std::min(100, (int)std::lround(age_raw * 100.0f)));
-    out.age = age_years;
-    out.age_score = 1.0f;  // continuous prediction, no "confidence" per se
-
-    // No race info in InsightFace model
-    out.race = -1;
-    out.race_score = 0.f;
-
-    out.is_fairface = false;
-    out.ok = (out.gender >= 0);
-    return out.ok;
-}
-
-bool AgeGenderRaceRunner::infer(const uint8_t* rgb888, int src_w, int src_h,
-                               float x1, float y1, float x2, float y2,
-                               AgeGenderRaceResult& out) {
+bool LandmarkRunner::infer(const uint8_t* rgb888, int src_w, int src_h,
+                           float x1, float y1, float x2, float y2,
+                           LandmarkResult& out) {
     return infer(rgb888, src_w, src_h, src_w * 3, x1, y1, x2, y2, out);
 }
 
-bool AgeGenderRaceRunner::infer(const uint8_t* rgb888, int src_w, int src_h, int src_stride_bytes,
-                               float x1, float y1, float x2, float y2,
-                               AgeGenderRaceResult& out) {
-    out = AgeGenderRaceResult{};
+bool LandmarkRunner::infer(const uint8_t* rgb888, int src_w, int src_h, int src_stride_bytes,
+                           float x1, float y1, float x2, float y2,
+                           LandmarkResult& out) {
+    out = LandmarkResult{};
     if (!inited_ || !engine_ || !rgb888) return false;
     if (src_w <= 0 || src_h <= 0) return false;
     if ((x2 - x1) < 10.f || (y2 - y1) < 10.f) return false;
 
     if (src_stride_bytes <= 0) src_stride_bytes = src_w * 3;
-    alignCropRgb(rgb888, src_w, src_h, src_stride_bytes, x1, y1, x2, y2, input_rgb_.data(), input_size_);
 
+    // Compute crop region parameters for coordinate mapping
+    const float bw = std::max(1.0f, x2 - x1);
+    const float bh = std::max(1.0f, y2 - y1);
+    const float cx = 0.5f * (x1 + x2);
+    const float cy = 0.5f * (y1 + y2);
+    const float box = std::max(bw, bh) * std::max(1.0f, crop_scale_);
+    const float crop_scale_factor = (box > 1e-6f) ? ((float)input_size_ / box) : 1.0f;
+    const float crop_w = (float)input_size_ / crop_scale_factor;
+    const float crop_h = crop_w;
+    const float crop_x1 = cx - crop_w * 0.5f;
+    const float crop_y1 = cy - crop_h * 0.5f;
+
+    alignCropRgb(rgb888, src_w, src_h, src_stride_bytes, x1, y1, x2, y2, input_rgb_.data(), input_size_);
     packInput(input_rgb_.data());
 
     ma_tensor_t tensor = {
@@ -550,43 +428,7 @@ bool AgeGenderRaceRunner::infer(const uint8_t* rgb888, int src_w, int src_h, int
 
     engine_->setInput(0, tensor);
     if (engine_->run() != MA_OK) return false;
-    return parseOutputs(out);
-}
-
-bool AgeGenderRaceRunner::inferOnAlignedRgb(const uint8_t* aligned_rgb_96x96_packed, AgeGenderRaceResult& out) {
-    out = AgeGenderRaceResult{};
-    if (!inited_ || !engine_ || !aligned_rgb_96x96_packed) return false;
-
-    // Input must be 96x96 RGB packed (HWC, stride=96*3=288 bytes)
-    // Skip cropRgb, directly pack and run
-    packInput(aligned_rgb_96x96_packed);
-
-    ma_tensor_t tensor = {
-        .size = input_numel_ * elem_size(input_type_),
-        .is_physical = false,
-        .is_variable = false,
-    };
-    switch (input_type_) {
-        case MA_TENSOR_TYPE_F32:
-            tensor.data.data = input_f32_.data();
-            break;
-        case MA_TENSOR_TYPE_F16:
-        case MA_TENSOR_TYPE_BF16:
-            tensor.data.data = input_u16_.data();
-            break;
-        case MA_TENSOR_TYPE_S8:
-            tensor.data.data = input_s8_.data();
-            break;
-        case MA_TENSOR_TYPE_U8:
-            tensor.data.data = input_u8_.data();
-            break;
-        default:
-            return false;
-    }
-
-    engine_->setInput(0, tensor);
-    if (engine_->run() != MA_OK) return false;
-    return parseOutputs(out);
+    return parseOutputs(out, crop_x1, crop_y1, crop_scale_factor);
 }
 
 }  // namespace face_analysis

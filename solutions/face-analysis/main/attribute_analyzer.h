@@ -8,6 +8,7 @@
 #include "face_detector.h"
 #include "age_gender_race_runner.h"
 #include "emotion_runner.h"
+#include "landmark_runner.h"
 
 namespace face_analysis {
 
@@ -95,7 +96,9 @@ public:
     ~AttributeAnalyzer() = default;
 
     // Initialize with model paths
-    bool init(const std::string& genderage_model, const std::string& emotion_model = "");
+    bool init(const std::string& genderage_model,
+              const std::string& emotion_model = "",
+              const std::string& landmark_model = "");
 
     // Analyze attributes for multiple faces from full frame
     std::vector<AnalyzedFace> analyzeAll(ma_img_t* full_frame,
@@ -103,6 +106,7 @@ public:
 
     bool isGenderAgeReady() const { return genderage_ready_; }
     bool isEmotionReady() const { return emotion_ready_; }
+    bool isLandmarkReady() const { return landmark_ready_; }
 
     // Run emotion every N frames; cached result reused on skipped frames.
     // 1 = every frame, 2 = every 2 frames (default), etc.
@@ -111,8 +115,10 @@ public:
 private:
     AgeGenderRaceRunner agr_runner_;
     EmotionRunner emotion_runner_;
+    LandmarkRunner landmark_runner_;
     bool genderage_ready_ = false;
     bool emotion_ready_ = false;
+    bool landmark_ready_ = false;
 
     int emotion_interval_ = 2;
     uint32_t frame_counter_ = 0;

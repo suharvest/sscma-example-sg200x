@@ -53,6 +53,10 @@ public:
                float x1, float y1, float x2, float y2,
                AgeGenderRaceResult& out);
 
+    // Inference on pre-aligned 96x96 RGB image (ArcFace aligned input)
+    // Skip cropRgb, directly packInput + run + parseOutputs
+    bool inferOnAlignedRgb(const uint8_t* aligned_rgb_96x96_packed, AgeGenderRaceResult& out);
+
 private:
     static float bf16_to_fp32(uint16_t v);
     static float fp16_to_fp32(uint16_t v);
