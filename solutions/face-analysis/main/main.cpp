@@ -353,7 +353,7 @@ static void process_frame() {
 
     // Step 2: Feed face detections to blur overlay
     if (g_config.enable_blur && g_face_blur) {
-        g_face_blur->onDetection(faces);
+        g_face_blur->onDetection(faces, &frame, g_frame_id);
     }
 
     // Step 3: Attribute analysis for each face
