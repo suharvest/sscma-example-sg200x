@@ -23,9 +23,12 @@ using namespace face_analysis;
 // Default configuration
 static struct {
     // Model paths (auto-detects FairFace vs InsightFace format)
-    std::string face_model = "/userdata/local/models/yolo-face_mixfp16.cvimodel";
-    std::string genderage_model = "/userdata/local/models/genderage_int8.cvimodel";
+    std::string face_model = "/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel";
+    std::string genderage_model = "/userdata/local/models/fairface_int8.cvimodel";
     std::string emotion_model = "/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel";
+    // PFLD landmark is optional — only useful if AGR is InsightFace (alignment-sensitive).
+    // FairFace is bin-classification and tolerates loose bbox crops, so default off.
+    std::string landmark_model = "";
 
     // Detection parameters
     float face_threshold = 0.4f;
@@ -77,6 +80,7 @@ static void print_usage(const char* prog) {
     printf("  -f, --face-model PATH     Face detection model (default: %s)\n", g_config.face_model.c_str());
     printf("  -g, --genderage-model PATH GenderAge model (default: %s)\n", g_config.genderage_model.c_str());
     printf("  -e, --emotion-model PATH  Emotion model (default: %s)\n", g_config.emotion_model.c_str());
+    printf("  -l, --landmark-model PATH Landmark model (default: %s)\n", g_config.landmark_model.c_str());
     printf("  -t, --threshold FLOAT     Face detection threshold (default: %.2f)\n", g_config.face_threshold);
     printf("  -m, --mqtt-host HOST      MQTT broker host (default: %s)\n", g_config.mqtt_host.c_str());
     printf("  -p, --mqtt-port PORT      MQTT broker port (default: %d)\n", g_config.mqtt_port);
@@ -94,6 +98,7 @@ static bool parse_args(int argc, char** argv) {
         {"face-model", required_argument, 0, 'f'},
         {"genderage-model", required_argument, 0, 'g'},
         {"emotion-model", required_argument, 0, 'e'},
+        {"landmark-model", required_argument, 0, 'l'},
         {"threshold", required_argument, 0, 't'},
         {"mqtt-host", required_argument, 0, 'm'},
         {"mqtt-port", required_argument, 0, 'p'},
@@ -108,7 +113,7 @@ static bool parse_args(int argc, char** argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "f:g:e:t:m:p:vh", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:g:e:l:t:m:p:vh", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'f':
                 g_config.face_model = optarg;
@@ -118,6 +123,9 @@ static bool parse_args(int argc, char** argv) {
                 break;
             case 'e':
                 g_config.emotion_model = optarg;
+                break;
+            case 'l':
+                g_config.landmark_model = optarg;
                 break;
             case 't':
                 g_config.face_threshold = std::stof(optarg);
@@ -170,7 +178,7 @@ static bool init_models() {
 
     // Initialize attribute analyzer
     g_attribute_analyzer = new AttributeAnalyzer();
-    if (!g_attribute_analyzer->init(g_config.genderage_model, g_config.emotion_model)) {
+    if (!g_attribute_analyzer->init(g_config.genderage_model, g_config.emotion_model, g_config.landmark_model)) {
         MA_LOGE(TAG, "Failed to initialize attribute analyzer");
         return false;
     }
