@@ -301,29 +301,29 @@ void FaceBlur::initRegions() {
 
         RGN_ATTR_S stRgnAttr;
         memset(&stRgnAttr, 0, sizeof(stRgnAttr));
-        stRgnAttr.enType = OVERLAYEX_RGN;
-        stRgnAttr.unAttr.stOverlayEx.enPixelFormat = PIXEL_FORMAT_ARGB_8888;
-        stRgnAttr.unAttr.stOverlayEx.u32CanvasNum = 2;
-        stRgnAttr.unAttr.stOverlayEx.stSize.u32Width = max_bitmap_w_;
-        stRgnAttr.unAttr.stOverlayEx.stSize.u32Height = max_bitmap_h_;
+        stRgnAttr.enType = OVERLAY_RGN;
+        stRgnAttr.unAttr.stOverlay.enPixelFormat = PIXEL_FORMAT_ARGB_8888;
+        stRgnAttr.unAttr.stOverlay.u32CanvasNum = 2;
+        stRgnAttr.unAttr.stOverlay.stSize.u32Width = max_bitmap_w_;
+        stRgnAttr.unAttr.stOverlay.stSize.u32Height = max_bitmap_h_;
 
         CVI_S32 ret = CVI_RGN_Create(hRgn, &stRgnAttr);
         if (ret != CVI_SUCCESS) {
-            MA_LOGE(TAG, "CVI_RGN_Create(%d, OVERLAYEX) failed: 0x%x", hRgn, ret);
+            MA_LOGE(TAG, "CVI_RGN_Create(%d, OVERLAY) failed: 0x%x", hRgn, ret);
             continue;
         }
 
         RGN_CHN_ATTR_S stChnAttr;
         memset(&stChnAttr, 0, sizeof(stChnAttr));
         stChnAttr.bShow  = CVI_FALSE;
-        stChnAttr.enType = OVERLAYEX_RGN;
-        stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = 0;
-        stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = 0;
-        stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+        stChnAttr.enType = OVERLAY_RGN;
+        stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = 0;
+        stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
+        stChnAttr.unChnAttr.stOverlayChn.u32Layer    = i;
 
         ret = CVI_RGN_AttachToChn(hRgn, &stChn, &stChnAttr);
         if (ret != CVI_SUCCESS) {
-            MA_LOGE(TAG, "CVI_RGN_AttachToChn(%d, OVERLAYEX) failed: 0x%x", hRgn, ret);
+            MA_LOGE(TAG, "CVI_RGN_AttachToChn(%d, OVERLAY) failed: 0x%x", hRgn, ret);
             CVI_RGN_Destroy(hRgn);
             continue;
         }
@@ -337,12 +337,12 @@ void FaceBlur::initRegions() {
     }
 
     if (slots_.empty()) {
-        MA_LOGE(TAG, "Failed to create any OVERLAYEX regions, disabling face blur");
+        MA_LOGE(TAG, "Failed to create any OVERLAY regions, disabling face blur");
         return;
     }
 
     regions_inited_ = true;
-    MA_LOGI(TAG, "Initialized %d/%d OVERLAYEX regions on VPSS(%d,%d)",
+    MA_LOGI(TAG, "Initialized %d/%d OVERLAY regions on VPSS(%d,%d)",
             (int)slots_.size(), max_regions_, vpss_grp_, vpss_chn_);
 }
 
@@ -361,7 +361,7 @@ void FaceBlur::deinitRegions() {
 
     slots_.clear();
     regions_inited_ = false;
-    MA_LOGI(TAG, "Deinitialized OVERLAYEX regions");
+    MA_LOGI(TAG, "Deinitialized OVERLAY regions");
 }
 
 void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
@@ -381,7 +381,7 @@ void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
     for (int i = 0; i < num_slots; i++) {
         RGN_CHN_ATTR_S stChnAttr;
         memset(&stChnAttr, 0, sizeof(stChnAttr));
-        stChnAttr.enType = OVERLAYEX_RGN;
+        stChnAttr.enType = OVERLAY_RGN;
 
         if (i < active_count) {
             const auto& box = boxes[i];
@@ -401,14 +401,14 @@ void FaceBlur::applyRegions(const std::vector<FaceInfo>& boxes) {
             sh = std::max(8, sh);
 
             stChnAttr.bShow = CVI_TRUE;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = sx;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = sy;
-            stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = sx;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = sy;
+            stChnAttr.unChnAttr.stOverlayChn.u32Layer    = i;
         } else {
             stChnAttr.bShow = CVI_FALSE;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = 0;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = 0;
-            stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = 0;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
+            stChnAttr.unChnAttr.stOverlayChn.u32Layer    = i;
         }
 
         std::lock_guard<std::mutex> rgn_lock(rgn_mutexes_[i]);
@@ -574,7 +574,7 @@ void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_
 
         RGN_CHN_ATTR_S stChnAttr;
         memset(&stChnAttr, 0, sizeof(stChnAttr));
-        stChnAttr.enType = OVERLAYEX_RGN;
+        stChnAttr.enType = OVERLAY_RGN;
 
         if (i < active_count) {
             const auto& box = boxes[i];
@@ -649,9 +649,9 @@ void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_
                     stChnAttr.bShow = CVI_FALSE;
                 } else {
                     stChnAttr.bShow = CVI_TRUE;
-                    stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = sx;
-                    stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = sy;
-                    stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+                    stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = sx;
+                    stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = sy;
+                    stChnAttr.unChnAttr.stOverlayChn.u32Layer    = i;
                 }
 
                 CVI_S32 ret = CVI_RGN_SetDisplayAttr(slot.handle, &stChn, &stChnAttr);
@@ -661,9 +661,9 @@ void FaceBlur::applyDetections(const std::vector<FaceInfo>& boxes, const ma_img_
             }
         } else {
             stChnAttr.bShow = CVI_FALSE;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32X = 0;
-            stChnAttr.unChnAttr.stOverlayExChn.stPoint.s32Y = 0;
-            stChnAttr.unChnAttr.stOverlayExChn.u32Layer    = i;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = 0;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
+            stChnAttr.unChnAttr.stOverlayChn.u32Layer    = i;
 
             std::lock_guard<std::mutex> rgn_lock(rgn_mutexes_[i]);
             CVI_S32 ret = CVI_RGN_SetDisplayAttr(slot.handle, &stChn, &stChnAttr);

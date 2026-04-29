@@ -13,7 +13,7 @@
 
 namespace face_analysis {
 
-// Slot for OVERLAYEX RGN region
+// Slot for OVERLAY RGN region
 struct Slot {
     RGN_HANDLE handle;
     int last_render_frame;    // frame_id when bitmap was last rendered
@@ -82,7 +82,7 @@ private:
 private:
     static constexpr int kRgnHandleBase = 100;
     static constexpr int kDefaultMaxRegions = 8;
-    static constexpr int kMaxRegionsLimit = 8;  // RGN_MOSAIC_MAX_NUM per channel on CV181x
+    static constexpr int kMaxRegionsLimit = 8;  // OVERLAY_RGN max per VPSS chn on CV181x is 8 (RGN_MAX_NUM_VPSS)
 
     // RGN hardware overlay config
     int max_regions_;
@@ -93,8 +93,8 @@ private:
 
     // Bitmap render cadence
     int bitmap_refresh_frames_ = 5;  // re-render bitmap if last_render_frame is older than this
-    int max_bitmap_w_ = 256;         // max bitmap allocated per slot
-    int max_bitmap_h_ = 256;
+    int max_bitmap_w_ = 128;         // max bitmap allocated per slot
+    int max_bitmap_h_ = 128;
 
     // Stream resolution
     int stream_width_;
