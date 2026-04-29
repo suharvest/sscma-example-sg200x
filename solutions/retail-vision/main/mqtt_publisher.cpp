@@ -177,7 +177,7 @@ std::string MqttPublisher::buildVisionJson(uint64_t timestamp_ms, uint32_t frame
     j << ",\"exit_count\":" << zone.exit_count;
     j << "}";
 
-    // Persons array — absolute pixel coords (top-left x,y + width,height), matching UA format
+    // Persons array — display-normalized coords (top-left x,y + w,h in [0,1]), matching draw script format
     j << ",\"persons\":[";
     for (size_t i = 0; i < persons.size(); ++i) {
         const auto& p = persons[i];
@@ -189,21 +189,19 @@ std::string MqttPublisher::buildVisionJson(uint64_t timestamp_ms, uint32_t frame
         float real_w  = p.detection.w / scale_x;
         float real_h  = p.detection.h / scale_y;
 
-        // Convert to absolute top-left pixel coords
-        int bx = static_cast<int>((real_cx - real_w / 2.0f) * fw);
-        int by = static_cast<int>((real_cy - real_h / 2.0f) * fh);
-        int bw = static_cast<int>(real_w * fw);
-        int bh = static_cast<int>(real_h * fh);
+        // Top-left normalized coords
+        float bx = real_cx - real_w / 2.0f;
+        float by = real_cy - real_h / 2.0f;
 
         j << "{";
         j << "\"track_id\":" << p.track_id;
         j << ",\"confidence\":" << std::setprecision(2) << p.detection.score;
 
         j << ",\"bbox\":{";
-        j << "\"x\":" << bx;
+        j << "\"x\":" << std::setprecision(4) << bx;
         j << ",\"y\":" << by;
-        j << ",\"width\":" << bw;
-        j << ",\"height\":" << bh;
+        j << ",\"w\":" << real_w;
+        j << ",\"h\":" << real_h;
         j << "}";
 
         j << ",\"velocity\":{";
