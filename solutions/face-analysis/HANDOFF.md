@@ -142,30 +142,50 @@ sshpass -p recamera ssh recamera@192.168.42.1 "timeout 18 mosquitto_sub -h local
 
 ### 6.4 BLUR 真隐私遮罩（pending 设备验证）
 
-`face_blur` 走 CVI MOSAIC_RGN，stock 内核驱动用 `get_random_u32()` 填 LUT → 出来是彩噪而非遮罩。OVERLAYEX 用户态方案在 CV181x 实质走不通（SDK 注释 "not supported now" 是真的，RGNEX mode 把 ION 预占太多挤掉 FairFace）。
+#### 当前生效路径：OVERLAY_RGN 用户态真马赛克
 
-替代方案：内核驱动 5 行 patch 把 `get_random_u32()` 换成常量 1 + `force_alpha=1, alpha_factor=128`，效果是 50% 半透明纯色块（不是真马赛克，但合规上够用）。
+`face_blur.cpp` 当前走 `OVERLAY_RGN`（commit `6fe57b2`）。每帧把脸 ROI 用 OpenCV `INTER_AREA→INTER_NEAREST` 缩到 16×16 再放回 → ARGB8888 → SetBitMap 上传到硬件 overlay → VPSS scaler 在编码前合成。**真像素化遮罩，无法识别。**
 
-**已完成**：
-- patch 文件：`sg2002_recamera_emmc/osdrv/0001-rgn-vpss-improve-MOSAIC-privacy-mask-visibility-on-CV.patch`
-- 已 build 出两个 ko：`sg2002_recamera_emmc/osdrv/build_out_patched_mosaic/cv181x_{rgn,vpss}.ko`
-- vermagic 校验过 = 设备 baseline `5.10.4-tag- preempt mod_unload riscv`
+**为什么不走 OVERLAYEX**（codex 调研结论）：
+- OVERLAYEX 在 CV181x 驱动里被 hardcode 拒掉（vpss_core.c:1204 "Not support rgn_ex"），结构性死路
+- OVERLAYEX 创建时还会触发 RGNEX init，预占 VB pool 把 FairFace 的 21MB ION 挤掉
+- OVERLAY 走普通 VPSS GOP region 路径，per-canvas ION = 128×128×4×2 = 128KB/slot × 8 slots = 1MB total，完全 fit
 
-**设备上线后部署步骤**（reboot 一次）：
+**性能预算（设备实测前）**：
+- 渲 + 上传 ~5-15ms/8 脸（主线程外）
+- 帧率影响极小（overlay 在 scaler pass 内并行）
+- ION ~1MB（vs FairFace 21MB + emotion 10MB + yolo 6MB ≈ 37MB，60MB 上限剩 23MB）
+- max regions = 8/channel（够用）
+
+**设备上线后验收步骤**：
 ```bash
-scp sg2002_recamera_emmc/osdrv/build_out_patched_mosaic/cv181x_*.ko \
-    recamera@192.168.42.1:/tmp/
+# 1. 部署最新 deb
+cd solutions/face-analysis && ./deploy.sh
+
+# 2. 启用 BLUR
 ssh recamera@192.168.42.1 "
-  sudo cp /tmp/cv181x_vpss.ko /tmp/cv181x_rgn.ko /mnt/system/ko/ &&
-  sudo sync && sudo reboot
+  sudo sed -i 's/^BLUR_ENABLED=0/BLUR_ENABLED=1/' /etc/face-analysis.conf
+  sudo /etc/init.d/face-analysis restart
 "
-# 然后把 face-analysis.conf BLUR_ENABLED 改为 1，重启服务，看 RTSP 验证半透明色块
+
+# 3. 看 RTSP 验证：rtsp://192.168.42.1:8554/live0
+#    检查项：脸上有像素化方块 / 帧率没崩 / FairFace 仍然加载 / 不掉 frames
 ```
 
-**踩坑要点**（避免重做）：
-1. `linux_5.10/` 不是干净 git 状态（13 个 vendor 改动），`scripts/setlocalversion` 会给 vermagic 加 `+`，设备 insmod 拒载
-2. 单 `touch .scmversion` 不够 —— `utsrelease.h` 已经被前一次 `modules_prepare` 烤死，必须 `rm -f include/generated/utsrelease.h && make modules_prepare` 重生成
-3. patch 里漏了 `tmp` 局部变量删除 → `-Werror` 报 unused-variable，已修补
+**回退：50% 半透明色块（kernel patch 路径）**
+
+如果 OVERLAY 实际跑出问题（ION OOM / SetDisplayAttr 太慢），还有内核 driver 5 行 patch 的退路 —— 把 `get_random_u32()` 换成常量 1 + `force_alpha=1, alpha_factor=128`，效果只是 50% 半透明纯色块（不是真马赛克），但 CPU/ION 完全 0 开销。
+
+- patch：`sg2002_recamera_emmc/osdrv/0001-rgn-vpss-improve-MOSAIC-privacy-mask-visibility-on-CV.patch`
+- 已 build 出 ko：`sg2002_recamera_emmc/osdrv/build_out_patched_mosaic/cv181x_{rgn,vpss}.ko`
+- vermagic 已校验 = 设备 baseline `5.10.4-tag- preempt mod_unload riscv`
+- 启用方法：scp 两个 ko 到 `/mnt/system/ko/` → reboot → 还要改 `face_blur.cpp` 把 OVERLAY 改回 MOSAIC_RGN
+- 详情见 memory `cvi-rgn-mosaic-patch.md`
+
+**踩坑要点（避免重做）**：
+1. OVERLAYEX_RGN 在 CV181x 不可用，别再试
+2. kernel 模块 build：`linux_5.10/` 不是干净 git，必须 `touch .scmversion` + `rm utsrelease.h && make modules_prepare` 才能让 vermagic 不带 `+`
+3. patch 漏了 `tmp` 变量删除 → `-Werror`，已修补
 
 ---
 
