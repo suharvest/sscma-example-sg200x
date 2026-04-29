@@ -140,6 +140,33 @@ sshpass -p recamera ssh recamera@192.168.42.1 "timeout 18 mosquitto_sub -h local
 - **InsightFace genderage 永远不要再用**（见 memory `insightface-genderage-broken.md`）
 - 偶尔 emotion confidence 0.00（cached frame，跳帧策略），正常
 
+### 6.4 BLUR 真隐私遮罩（pending 设备验证）
+
+`face_blur` 走 CVI MOSAIC_RGN，stock 内核驱动用 `get_random_u32()` 填 LUT → 出来是彩噪而非遮罩。OVERLAYEX 用户态方案在 CV181x 实质走不通（SDK 注释 "not supported now" 是真的，RGNEX mode 把 ION 预占太多挤掉 FairFace）。
+
+替代方案：内核驱动 5 行 patch 把 `get_random_u32()` 换成常量 1 + `force_alpha=1, alpha_factor=128`，效果是 50% 半透明纯色块（不是真马赛克，但合规上够用）。
+
+**已完成**：
+- patch 文件：`sg2002_recamera_emmc/osdrv/0001-rgn-vpss-improve-MOSAIC-privacy-mask-visibility-on-CV.patch`
+- 已 build 出两个 ko：`sg2002_recamera_emmc/osdrv/build_out_patched_mosaic/cv181x_{rgn,vpss}.ko`
+- vermagic 校验过 = 设备 baseline `5.10.4-tag- preempt mod_unload riscv`
+
+**设备上线后部署步骤**（reboot 一次）：
+```bash
+scp sg2002_recamera_emmc/osdrv/build_out_patched_mosaic/cv181x_*.ko \
+    recamera@192.168.42.1:/tmp/
+ssh recamera@192.168.42.1 "
+  sudo cp /tmp/cv181x_vpss.ko /tmp/cv181x_rgn.ko /mnt/system/ko/ &&
+  sudo sync && sudo reboot
+"
+# 然后把 face-analysis.conf BLUR_ENABLED 改为 1，重启服务，看 RTSP 验证半透明色块
+```
+
+**踩坑要点**（避免重做）：
+1. `linux_5.10/` 不是干净 git 状态（13 个 vendor 改动），`scripts/setlocalversion` 会给 vermagic 加 `+`，设备 insmod 拒载
+2. 单 `touch .scmversion` 不够 —— `utsrelease.h` 已经被前一次 `modules_prepare` 烤死，必须 `rm -f include/generated/utsrelease.h && make modules_prepare` 重生成
+3. patch 里漏了 `tmp` 局部变量删除 → `-Werror` 报 unused-variable，已修补
+
 ---
 
 ## 七、相关 memory 索引
