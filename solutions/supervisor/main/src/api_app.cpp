@@ -623,7 +623,17 @@ api_status_t api_app::switchApp(request_t req, response_t res)
     state["active_app"] = app_id;
     state["active_script"] = target_script;
     if (!write_state(state)) {
-        LOGE("failed to persist app state (app still switched)");
+        // Persisting the selection failed (read-only or full filesystem). The
+        // new app is running but state.json does not record it; a reboot would
+        // then restore the wrong app (or none). Roll back the just-started
+        // process so process reality matches persisted state, and report the
+        // failure instead of a false success.
+        LOGE("failed to persist app state; rolling back '%s'", target_script.c_str());
+        script("app_stop", target_script); // best-effort: free the camera again
+        _state = app_state::ERROR;
+        _last_error = "failed to persist app state (filesystem read-only or full)";
+        response(res, -1, _last_error, { { "state", state_str(_state) } });
+        return API_STATUS_OK;
     }
     _state = app_state::RUNNING;
     _last_error.clear();
@@ -657,10 +667,19 @@ api_status_t api_app::stop(request_t req, response_t res)
     }
 
     _state = app_state::STOPPED;
-    _last_error.clear();
     state["active_app"] = nullptr;
     state["active_script"] = nullptr;
-    write_state(state);
+    if (!write_state(state)) {
+        // The process is stopped but the cleared selection did not persist: a
+        // reboot would resurrect the app from the stale state.json. The camera
+        // is free now, so this is not fatal, but the user must be told the
+        // device is in an inconsistent (read-only / full) filesystem state.
+        LOGE("stop: failed to persist cleared app state");
+        _last_error = "app stopped but failed to persist state (filesystem read-only or full)";
+        response(res, -1, _last_error, { { "state", state_str(_state) } });
+        return API_STATUS_OK;
+    }
+    _last_error.clear();
 
     response(res, 0, STR_OK, { { "state", state_str(_state) } });
     return API_STATUS_OK;

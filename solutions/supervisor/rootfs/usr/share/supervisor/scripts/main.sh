@@ -1328,20 +1328,47 @@ _svc_enable() {
     return 0
 }
 
-# _svc_disable <base> : stop S<base> (10s TERM-only budget) then park it as
-# K<base>. Idempotent: no-op when already K / absent.
+# _svc_disable <base> : stop S<base> (10s TERM-only budget), verify it is
+# actually gone, then park it as K<base>. Idempotent: no-op when already K /
+# absent. Returns non-zero if the service refused to die or the rename failed
+# (a lingering camera holder must not be parked-and-forgotten while the gallery
+# app is about to grab the camera).
 _svc_disable() {
     local base="$1"
     if [ -f "/etc/init.d/S$base" ]; then
         _app_run_timeout 10 "/etc/init.d/S$base" stop >/dev/null 2>&1
-        mv "/etc/init.d/S$base" "/etc/init.d/K$base"
+        # The service is being released, not grabbed, so a slow-to-die process
+        # (node-red is a heavy Node.js runtime and can outlive its 10s TERM
+        # window) must never trap the user in the current mode. Poll for the
+        # script to report stopped for up to ~15s, then force it down, and
+        # always park it as K-prefixed. Scripts without a "status" action
+        # return non-zero (treated as stopped) and exit the loop immediately.
+        local i=0
+        while [ "$i" -lt 15 ]; do
+            _app_run_timeout 5 "/etc/init.d/S$base" status >/dev/null 2>&1 || break
+            i=$((i + 1))
+            sleep 1
+        done
+        if _app_run_timeout 5 "/etc/init.d/S$base" status >/dev/null 2>&1; then
+            # Still alive after the grace period: escalate rather than abort.
+            _app_run_timeout 10 "/etc/init.d/S$base" stop >/dev/null 2>&1
+            killall -9 node-red node sscma-node 2>/dev/null || true
+        fi
+        mv "/etc/init.d/S$base" "/etc/init.d/K$base" || return 1
     fi
     return 0
 }
 
-# setRunMode <console|nodered> : persist the mode, then move the camera stack
-# over. Every sub-step is idempotent, so repeated calls with the same mode are
-# harmless (services already in position, stop/start tolerate that).
+# setRunMode <console|nodered> : move the camera stack over, then persist the
+# mode. The camera hand-over is asymmetric on purpose:
+#   - Switching TO nodered grabs the camera for node-red/sscma-node, so the
+#     current gallery app MUST be confirmed stopped first; any failure aborts
+#     WITHOUT starting the node stack (never two camera owners).
+#   - Switching TO console releases the camera; the node stack stop is verified,
+#     but app_restore (bringing the gallery app back) is best-effort — a failed
+#     restore just leaves the camera idle, which is safe.
+# The mode file is written only after the hand-over succeeds, so a failed
+# switch leaves the previously persisted mode intact.
 function setRunMode() {
     local mode="$2"
     case "$mode" in
@@ -1352,30 +1379,73 @@ function setRunMode() {
         ;;
     esac
 
-    _run_mode_write "$mode" || {
-        echo "$STR_FAILED"
-        return 1
-    }
-
     if [ "$mode" = "nodered" ]; then
-        # Stop the active gallery app first (state.json is advisory: missing,
-        # empty or corrupt state just means nothing to stop). The selection is
-        # deliberately kept in state.json so switching back restores the app.
-        local script=$(_app_active_script)
+        # --- console -> nodered: confirm the gallery app is gone BEFORE the
+        # node stack grabs the camera. state.json is advisory (missing/empty/
+        # corrupt => nothing to stop); the selection is kept so switching back
+        # restores the app.
+        local script
+        script=$(_app_active_script)
         if [ -n "$script" ] && _app_check_script "$script"; then
             _app_do_stop "$script"
+            if [ $? -ne 0 ]; then
+                # Stop failed/timed out: the old owner may still hold the
+                # camera. Abort — do NOT start node-red/sscma-node on top of it.
+                echo "$STR_FAILED"
+                return 1
+            fi
             sleep 2 # VPSS/camera release grace period (kernel driver is fragile)
+            if _app_run_timeout 5 "$script" status >/dev/null 2>&1; then
+                # Still running after stop+grace: refuse the hand-over.
+                echo "$STR_FAILED"
+                return 1
+            fi
         fi
+
+        # Enable + start each service; a failed rename or start aborts.
         local s
         s=$(_svc_enable "03node-red")
-        [ -n "$s" ] && _app_run_timeout 15 "$s" start >/dev/null 2>&1
+        if [ -z "$s" ]; then
+            echo "$STR_FAILED"
+            return 1
+        fi
+        if ! _app_run_timeout 15 "$s" start >/dev/null 2>&1; then
+            echo "$STR_FAILED"
+            return 1
+        fi
         s=$(_svc_enable "91sscma-node")
-        [ -n "$s" ] && _app_run_timeout 15 "$s" start >/dev/null 2>&1
+        if [ -z "$s" ]; then
+            echo "$STR_FAILED"
+            return 1
+        fi
+        if ! _app_run_timeout 15 "$s" start >/dev/null 2>&1; then
+            echo "$STR_FAILED"
+            return 1
+        fi
+
+        _run_mode_write "$mode" || {
+            echo "$STR_FAILED"
+            return 1
+        }
     else
-        _svc_disable "91sscma-node"
-        _svc_disable "03node-red"
+        # --- nodered -> console: release the camera. Verify the node stack
+        # actually stopped (a lingering holder would collide with the gallery
+        # app); if it won't die, abort and do NOT start the gallery app.
+        local svc_err=0
+        _svc_disable "91sscma-node" || svc_err=1
+        _svc_disable "03node-red" || svc_err=1
         sleep 2 # camera release before the gallery app comes back
-        app_restore >/dev/null 2>&1
+        if [ "$svc_err" -ne 0 ]; then
+            echo "$STR_FAILED"
+            return 1
+        fi
+        _run_mode_write "$mode" || {
+            echo "$STR_FAILED"
+            return 1
+        }
+        # Best-effort restore: the camera is idle now, so a failed restore is
+        # non-fatal (the user can start an app from the console).
+        app_restore >/dev/null 2>&1 || true
     fi
 
     echo "$STR_OK"

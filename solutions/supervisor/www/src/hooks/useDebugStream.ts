@@ -138,6 +138,8 @@ export default function useDebugStream({
   const resultsWsRef = useRef<WebSocket | null>(null);
   const jmuxerRef = useRef<JMuxer | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Independent connect timeout for the results-only WS (video owns timeoutRef).
+  const resultsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // High-frequency buffers, flushed to state on timers (see effect below).
   const frameDelayRef = useRef<number | null>(null);
   const frameTsRef = useRef<number | null>(null);
@@ -148,6 +150,10 @@ export default function useDebugStream({
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
+    }
+    if (resultsTimeoutRef.current) {
+      clearTimeout(resultsTimeoutRef.current);
+      resultsTimeoutRef.current = null;
     }
     for (const ref of [videoWsRef, resultsWsRef]) {
       const ws = ref.current;
@@ -312,6 +318,30 @@ export default function useDebugStream({
       try {
         const rws = new WebSocket(resultsUrl);
         resultsWsRef.current = rws;
+        // Results-only mode (no video ws): give the results channel its own
+        // connect timeout so it can't hang in "connecting" forever. When a
+        // video ws is present it owns the connection status, so skip this.
+        if (!wsUrl) {
+          resultsTimeoutRef.current = setTimeout(() => {
+            if (!disposed) {
+              cleanup();
+              setStatus("error");
+            }
+          }, connectTimeout);
+        }
+        rws.onopen = () => {
+          if (disposed) return;
+          if (resultsTimeoutRef.current) {
+            clearTimeout(resultsTimeoutRef.current);
+            resultsTimeoutRef.current = null;
+          }
+          // Results-only: an open socket is enough to be "streaming" — don't
+          // wait for the first business message. With video present, video
+          // drives the status (leave it alone).
+          if (!wsUrl) {
+            setStatus("streaming");
+          }
+        };
         rws.onmessage = (evt: MessageEvent) => {
           if (disposed || typeof evt.data !== "string") return;
           let data: Record<string, unknown> | null = null;
@@ -336,6 +366,15 @@ export default function useDebugStream({
         // Results channel failures are non-fatal when video works.
         rws.onerror = () => {
           if (!disposed && !wsUrl) {
+            cleanup();
+            setStatus("error");
+          }
+        };
+        // Drop after connecting: tear down and (results-only) surface the
+        // error, unless we're disposing intentionally.
+        rws.onclose = () => {
+          if (!disposed && !wsUrl) {
+            cleanup();
             setStatus("error");
           }
         };

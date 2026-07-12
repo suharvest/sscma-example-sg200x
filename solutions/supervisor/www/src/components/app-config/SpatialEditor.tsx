@@ -61,6 +61,80 @@ function dedupeTail(points: NormPoint[]): NormPoint[] {
   return out;
 }
 
+/* ---------------- geometry validation ----------------
+ * Thresholds MUST stay identical to the backend (config_schema.hpp) so the
+ * UI rejects exactly the degenerate shapes the device would reject. All in
+ * normalized [0,1] coordinates.
+ */
+const LINE_MIN_LEN = 0.02; // ~2% of the frame
+const ZONE_MIN_AREA = 0.005; // normalized polygon area
+
+/** Remove consecutive duplicate vertices (and a closing vertex that repeats
+ *  the first) so area / self-intersection tests see a clean ring. */
+function dedupeRing(points: NormPoint[]): NormPoint[] {
+  const out: NormPoint[] = [];
+  for (const p of points) {
+    const last = out[out.length - 1];
+    if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.015) continue;
+    out.push(p);
+  }
+  while (out.length > 1) {
+    const first = out[0];
+    const last = out[out.length - 1];
+    if (Math.hypot(first[0] - last[0], first[1] - last[1]) < 0.015) out.pop();
+    else break;
+  }
+  return out;
+}
+
+/** Shoelace area of a closed polygon (absolute, normalized units). */
+function polygonArea(pts: NormPoint[]): number {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x1, y1] = pts[i];
+    const [x2, y2] = pts[(i + 1) % pts.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** Proper intersection test for two segments (shared endpoints excluded by
+ *  the caller via adjacency skipping). */
+function segmentsCross(
+  p1: NormPoint,
+  p2: NormPoint,
+  p3: NormPoint,
+  p4: NormPoint
+): boolean {
+  const cross = (a: NormPoint, b: NormPoint, c: NormPoint) =>
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const d1 = cross(p3, p4, p1);
+  const d2 = cross(p3, p4, p2);
+  const d3 = cross(p1, p2, p3);
+  const d4 = cross(p1, p2, p4);
+  return (
+    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  );
+}
+
+/** Any pair of non-adjacent edges crossing => self-intersecting. O(n^2),
+ *  fine for the maxPoints (<=8) polygons this editor produces. */
+function isSelfIntersecting(pts: NormPoint[]): boolean {
+  const n = pts.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i++) {
+    const a1 = pts[i];
+    const a2 = pts[(i + 1) % n];
+    for (let j = i + 1; j < n; j++) {
+      // Skip edges that share a vertex (adjacent, incl. the wrap-around pair).
+      if ((i + 1) % n === j || (j + 1) % n === i) continue;
+      if (segmentsCross(a1, a2, pts[j], pts[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
+
 const SpatialEditor = ({
   item,
   value,
@@ -209,6 +283,17 @@ const SpatialEditor = ({
       message.warning(t("config.zoneNeedPoints"));
       return;
     }
+    // Reject degenerate polygons (too small / self-intersecting) so the count
+    // can't silently fail on-device — same thresholds as the backend.
+    const ring = dedupeRing(pts);
+    if (
+      ring.length < 3 ||
+      polygonArea(ring) < ZONE_MIN_AREA ||
+      isSelfIntersecting(ring)
+    ) {
+      message.error(t("config.zoneInvalid"));
+      return;
+    }
     onDone(pts);
   };
 
@@ -222,6 +307,12 @@ const SpatialEditor = ({
       return;
     }
     if (!ptA || !ptB) return;
+    // Reject a degenerate (too-short / zero-length) line — same threshold as
+    // the backend, so crossings can actually be detected on-device.
+    if (Math.hypot(ptB[0] - ptA[0], ptB[1] - ptA[1]) < LINE_MIN_LEN) {
+      message.error(t("config.lineTooShort"));
+      return;
+    }
     const line: ILineValue = { a: ptA, b: ptB };
     if (item.directional) line.direction = direction;
     onDone(line);

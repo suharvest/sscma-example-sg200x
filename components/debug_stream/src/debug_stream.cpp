@@ -27,6 +27,18 @@
 #define DS_CONN_VIDEO   'V'
 #define DS_CONN_RESULT  'R'
 
+// Per-connection resync flag kept in mg_connection::data[1] (video conns only).
+// Set when we had to drop frames for a slow client; while set, that client is
+// mid-GOP and must wait for the next keyframe (SPS/IDR) before it can decode
+// again. Relationship to the global awaiting_idr:
+//   - awaiting_idr (global, producer side): a *new* client joined and the
+//     producer must not even queue P/B frames until one keyframe exists.
+//   - needs_idr (per connection, broadcast side): *this already-running*
+//     client fell behind and dropped frames, so it must skip forward to the
+//     next keyframe. Independent because other clients keep streaming fine.
+#define DS_NEEDS_IDR    'I'   // data[1] == DS_NEEDS_IDR -> awaiting keyframe
+#define DS_SYNCED       '\0'  // data[1] == DS_SYNCED    -> normal delivery
+
 namespace {
 
 struct DebugStreamState {
@@ -114,9 +126,26 @@ static void ds_broadcast(struct mg_mgr* mgr) {
         if (!t->is_websocket) continue;
         if (t->data[0] == DS_CONN_VIDEO) {
             // Slow client: if its send buffer is already large, skip frames
-            // instead of buffering without bound.
-            if (t->send.len > DS_CLIENT_BACKLOG_MAX) continue;
+            // instead of buffering without bound. Mark the connection so it
+            // re-syncs on the next keyframe rather than resuming mid-GOP (which
+            // decodes as garbage until the next natural IDR), and nudge the
+            // encoder for a keyframe (requestVideoIDR coalesces).
+            if (t->send.len > DS_CLIENT_BACKLOG_MAX) {
+                if (t->data[1] != DS_NEEDS_IDR) {
+                    t->data[1] = DS_NEEDS_IDR;
+                    requestVideoIDR((video_ch_index_t)g_ds.video_ch);
+                }
+                continue;
+            }
             for (const auto& frame : vq) {
+                // A connection recovering from a drop must wait for the next
+                // keyframe (SPS/IDR) before it can decode; skip P/B frames
+                // until then. Keyframe AUs start with SPS (7) or IDR (5).
+                if (t->data[1] == DS_NEEDS_IDR) {
+                    int nt = nal_type_of(frame.data(), frame.size());
+                    if (nt != 7 && nt != 5) continue;
+                    t->data[1] = DS_SYNCED;  // keyframe reached, resume delivery
+                }
                 mg_ws_send(t, frame.data(), frame.size(), WEBSOCKET_OP_BINARY);
             }
         } else if (t->data[0] == DS_CONN_RESULT) {
@@ -138,6 +167,7 @@ static void ds_ev_handler(struct mg_connection* c, int ev, void* ev_data) {
             }
             mg_ws_upgrade(c, hm, NULL);
             c->data[0] = DS_CONN_VIDEO;
+            c->data[1] = DS_SYNCED;  // per-conn resync flag starts clear
             g_ds.video_clients.fetch_add(1, std::memory_order_release);
             // New decoder needs SPS/PPS + IDR before any P/B frame.
             g_ds.awaiting_idr.store(true, std::memory_order_release);

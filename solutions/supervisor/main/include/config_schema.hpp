@@ -15,7 +15,11 @@
 //   line    : value = {"a":[x,y], "b":[x,y], "direction":"ab_in"|"ab_out"},
 //             coords normalized 0..1; direction required when "directional".
 
+#include <algorithm>
+#include <cmath>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "json.hpp"
 
@@ -74,6 +78,103 @@ inline bool is_norm_point(const json& p)
         }
     }
     return true;
+}
+
+// --- Geometry validation (normalized 0..1 coords) --------------------------
+// Shared thresholds: the SpatialEditor frontend enforces the SAME numbers, so
+// a shape accepted in the drawing UI is accepted here and vice versa. Keep the
+// two in sync when changing either.
+static constexpr double GEOM_MIN_LINE_LEN = 0.02;   // min line length (~2% of frame)
+static constexpr double GEOM_MIN_ZONE_AREA = 0.005; // min polygon area (normalized)
+static constexpr double GEOM_EPS = 1e-9;
+
+inline double geom_point_dist(const json& a, const json& b)
+{
+    double dx = a[0].get<double>() - b[0].get<double>();
+    double dy = a[1].get<double>() - b[1].get<double>();
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+// Drop consecutive duplicate points, and a closing point that equals the first
+// (the polygon auto-closes). Returns the cleaned vertex list.
+inline std::vector<std::pair<double, double>> geom_dedup_points(const json& pts)
+{
+    std::vector<std::pair<double, double>> out;
+    for (const auto& p : pts) {
+        double x = p[0].get<double>();
+        double y = p[1].get<double>();
+        if (!out.empty() && std::fabs(out.back().first - x) < GEOM_EPS && std::fabs(out.back().second - y) < GEOM_EPS) {
+            continue;
+        }
+        out.emplace_back(x, y);
+    }
+    while (out.size() > 1 && std::fabs(out.front().first - out.back().first) < GEOM_EPS && std::fabs(out.front().second - out.back().second) < GEOM_EPS) {
+        out.pop_back();
+    }
+    return out;
+}
+
+inline double geom_polygon_area(const std::vector<std::pair<double, double>>& p)
+{
+    double a = 0.0;
+    size_t n = p.size();
+    for (size_t i = 0; i < n; ++i) {
+        size_t j = (i + 1) % n;
+        a += p[i].first * p[j].second - p[j].first * p[i].second;
+    }
+    return std::fabs(a) * 0.5;
+}
+
+inline double geom_cross(double ox, double oy, double ax, double ay, double bx, double by)
+{
+    return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
+}
+
+// Assuming collinear, is q on segment p-r?
+inline bool geom_on_seg(double px, double py, double qx, double qy, double rx, double ry)
+{
+    return qx >= std::min(px, rx) - GEOM_EPS && qx <= std::max(px, rx) + GEOM_EPS
+        && qy >= std::min(py, ry) - GEOM_EPS && qy <= std::max(py, ry) + GEOM_EPS;
+}
+
+inline bool geom_segments_intersect(double p1x, double p1y, double p2x, double p2y,
+    double p3x, double p3y, double p4x, double p4y)
+{
+    double d1 = geom_cross(p3x, p3y, p4x, p4y, p1x, p1y);
+    double d2 = geom_cross(p3x, p3y, p4x, p4y, p2x, p2y);
+    double d3 = geom_cross(p1x, p1y, p2x, p2y, p3x, p3y);
+    double d4 = geom_cross(p1x, p1y, p2x, p2y, p4x, p4y);
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+        return true;
+    }
+    if (std::fabs(d1) < GEOM_EPS && geom_on_seg(p3x, p3y, p1x, p1y, p4x, p4y)) return true;
+    if (std::fabs(d2) < GEOM_EPS && geom_on_seg(p3x, p3y, p2x, p2y, p4x, p4y)) return true;
+    if (std::fabs(d3) < GEOM_EPS && geom_on_seg(p1x, p1y, p3x, p3y, p2x, p2y)) return true;
+    if (std::fabs(d4) < GEOM_EPS && geom_on_seg(p1x, p1y, p4x, p4y, p2x, p2y)) return true;
+    return false;
+}
+
+// A simple polygon self-intersects if any pair of non-adjacent edges cross.
+// n <= maxPoints (8) so the O(n^2) sweep is trivially cheap.
+inline bool geom_polygon_self_intersects(const std::vector<std::pair<double, double>>& p)
+{
+    size_t n = p.size();
+    if (n < 4) return false; // a triangle cannot self-intersect
+    for (size_t i = 0; i < n; ++i) {
+        size_t i2 = (i + 1) % n;
+        for (size_t j = i + 1; j < n; ++j) {
+            size_t j2 = (j + 1) % n;
+            // skip the same edge and edges sharing an endpoint (adjacent)
+            if (i == j || i2 == j || j2 == i) {
+                continue;
+            }
+            if (geom_segments_intersect(p[i].first, p[i].second, p[i2].first, p[i2].second,
+                    p[j].first, p[j].second, p[j2].first, p[j2].second)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 inline bool validate_value(const json& item, const json& value, const std::string& key, std::string& err)
@@ -158,6 +259,23 @@ inline bool validate_value(const json& item, const json& value, const std::strin
                 return false;
             }
         }
+        // Degenerate-geometry rejection (matches SpatialEditor thresholds):
+        // drop duplicate/closing points, then require a real, simple polygon.
+        {
+            std::vector<std::pair<double, double>> pts = geom_dedup_points(value);
+            if (pts.size() < 3) {
+                err = "'" + key + "' needs 3 distinct points (duplicates removed)";
+                return false;
+            }
+            if (geom_polygon_area(pts) < GEOM_MIN_ZONE_AREA) {
+                err = "'" + key + "' zone area is too small (min " + std::to_string(GEOM_MIN_ZONE_AREA) + ")";
+                return false;
+            }
+            if (geom_polygon_self_intersects(pts)) {
+                err = "'" + key + "' zone is self-intersecting";
+                return false;
+            }
+        }
         return true;
     }
 
@@ -172,6 +290,11 @@ inline bool validate_value(const json& item, const json& value, const std::strin
         }
         if (!is_norm_point(value["a"]) || !is_norm_point(value["b"])) {
             err = "'" + key + "' endpoints must be [x,y] with coords in 0..1";
+            return false;
+        }
+        // Reject a==b / near-zero-length lines (matches SpatialEditor threshold).
+        if (geom_point_dist(value["a"], value["b"]) < GEOM_MIN_LINE_LEN) {
+            err = "'" + key + "' line is too short (min length " + std::to_string(GEOM_MIN_LINE_LEN) + ")";
             return false;
         }
         bool directional = item.value("directional", false);

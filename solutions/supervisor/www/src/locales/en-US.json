@@ -291,6 +291,8 @@
     "flipDirection": "Flip direction",
     "zoneHint": "Click to add vertices (max {{max}}), drag a vertex to move it. Double-click or press Done to finish.",
     "zoneNeedPoints": "Place at least 3 vertices",
+    "zoneInvalid": "Invalid area — it is too small or self-intersecting",
+    "lineTooShort": "Line is too short — draw a longer line",
     "lineHint": "Click twice to place endpoints A and B, drag to adjust. The arrow marks the \"in\" direction.",
     "gridHint": "Debug stream is off — drawing on a blind grid. Enable the debug stream to calibrate on the live view.",
     "inLabel": "in"

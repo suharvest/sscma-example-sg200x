@@ -91,7 +91,29 @@ start() {
     stop_conflicting_services
 
     start-stop-daemon -S -b -m -p $PIDFILE -a /bin/sh -- -c "exec $DAEMON $DAEMON_OPTS >> $LOGFILE 2>&1"
+    if [ $? -ne 0 ]; then
+        echo "$NAME failed to start (start-stop-daemon error)"
+        rm -f $PIDFILE
+        return 1
+    fi
+
+    # Stability window: a fatal init error (e.g. a missing model) makes the
+    # daemon exit within the first second. Poll the PID so a crash-on-start is
+    # never reported as success. sleep 1, then 3 x 0.5s liveness checks.
+    sleep 1
+    i=0
+    while [ $i -lt 3 ]; do
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+            echo "$NAME exited immediately after start"
+            rm -f $PIDFILE
+            return 1
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
     echo "OK"
+    return 0
 }
 
 stop() {
@@ -118,21 +140,18 @@ status() {
             echo "$NAME is running (PID: $PID)"
             return 0
         fi
-    fi
-    PID=$(ps aux 2>/dev/null | grep "$DAEMON" | grep -v grep | awk '{print $1}' | head -1)
-    if [ -n "$PID" ]; then
-        echo "$NAME is running (PID: $PID)"
-        return 0
+        # Stale PID file (process gone): drop it so we do not misreport.
+        rm -f $PIDFILE
     fi
     echo "$NAME is not running"
     return 1
 }
 
 case "$1" in
-    start) start ;;
-    stop) stop ;;
-    restart) restart ;;
-    status) status ;;
+    start) start; exit $? ;;
+    stop) stop; exit $? ;;
+    restart) restart; exit $? ;;
+    status) status; exit $? ;;
     *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
 
