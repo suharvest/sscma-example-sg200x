@@ -20,19 +20,56 @@ export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3
 # Default options
 DAEMON_OPTS="-v"
 
-# Load config if exists
+# Load global reCamera config (MQTT_HOST, MQTT_PORT, etc.)
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+
+# Load solution-specific config (can override global settings)
 [ -f /etc/retail-vision.conf ] && . /etc/retail-vision.conf
 
-# Stop conflicting services that use the camera
+# Apply MQTT settings from config
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-host $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-port $MQTT_PORT"
+
+# MQTT topic: always passed explicitly so the app manifest
+# (recamera/retail-vision/vision) stays the single source of truth.
+# It matches the binary's built-in default; /etc/retail-vision.conf may
+# still override via MQTT_TOPIC.
+MQTT_TOPIC="${MQTT_TOPIC:-recamera/retail-vision/vision}"
+DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
+
+# Debug stream settings
+[ "$DEBUG_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-debug"
+[ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+
+# Model selection. Default matches the app manifest's default_model
+# (yolo11n detection); the path is always passed explicitly.
+# The supervisor (appMgr setModel) can override it via a plain-text file
+# whose first line is the absolute path of the model to load.
+DEFAULT_MODEL=/userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel
+MODEL_OVERRIDE_FILE=/userdata/local/apps/retail-vision.model
+MODEL_PATH="$DEFAULT_MODEL"
+if [ -f "$MODEL_OVERRIDE_FILE" ]; then
+    OVERRIDE=$(head -n 1 "$MODEL_OVERRIDE_FILE" 2>/dev/null)
+    if [ -n "$OVERRIDE" ] && [ -f "$OVERRIDE" ]; then
+        echo "Using model override: $OVERRIDE"
+        MODEL_PATH="$OVERRIDE"
+    else
+        echo "WARNING: model override file present but model not found: $OVERRIDE"
+    fi
+fi
+DAEMON_OPTS="$DAEMON_OPTS -m $MODEL_PATH"
+
+# Stop conflicting services that use the camera.
+# NOTE: the supervisor is deliberately NOT stopped here — it is the app
+# manager that orchestrates starting/stopping this service.
 stop_conflicting_services() {
     echo "Stopping conflicting services..."
     for prefix in S K; do
         [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
         [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
-        [ -x /etc/init.d/${prefix}93sscma-supervisor ] && /etc/init.d/${prefix}93sscma-supervisor stop 2>/dev/null || true
     done
     # Stop other camera-using solutions
-    for svc in face-analysis detection-blur ppocr-reader yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
+    for svc in face-analysis detection-blur ppocr-reader yolo-detector yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
         for script in /etc/init.d/[SK]*${svc}; do
             [ -x "$script" ] && "$script" stop 2>/dev/null || true
         done

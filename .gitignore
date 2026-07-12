@@ -5,7 +5,6 @@ install/
 *.so
 .DS_Store
 *.onnx
-solutions/retail-vision/
 *.deb
 CLAUDE.md
 tools/face-analysis-debugger/

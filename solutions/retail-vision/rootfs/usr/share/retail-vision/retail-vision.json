@@ -1,0 +1,26 @@
+{
+    "id": "retail-vision",
+    "name": "Retail People Counting",
+    "name_zh": "零售人流分析",
+    "scene": "Retail",
+    "description": "People flow analytics for retail: tracks persons, classifies dwell states (browsing / engaged / assistance), counts entries and exits, and publishes rolling zone metrics over MQTT. Streams H.264 via RTSP.",
+    "type": "native",
+    "init_script": "/etc/init.d/K92retail-vision",
+    "rtsp_url": "rtsp://{host}:8554/live0",
+    "mqtt_topic": "recamera/retail-vision/vision",
+    "debug_ws": {
+        "port": 8001,
+        "video_path": "/",
+        "results_path": "/results"
+    },
+    "models": [
+        {
+            "name": "yolo11n",
+            "path": "/userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel",
+            "task": "detect"
+        }
+    ],
+    "default_model": "yolo11n",
+    "version": "1.1.0",
+    "author": "Seeed Studio"
+}

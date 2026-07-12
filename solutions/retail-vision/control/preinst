@@ -1,15 +1,11 @@
 #!/bin/sh
 
-# Pre-removal script for retail-vision
+# Pre-installation script for retail-vision
 
-echo "Removing Retail Vision Application..."
-
-# Stop the service if running
+# Stop a previously installed instance before upgrading (idempotent)
 for script in /etc/init.d/[SK]92retail-vision; do
     [ -x "$script" ] && "$script" stop 2>/dev/null || true
 done
 pkill -f /usr/local/bin/retail-vision 2>/dev/null || true
-
-echo "Retail Vision removed."
 
 exit 0
