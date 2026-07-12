@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Pre-removal script for yolo-detector
+
+echo "Removing YOLO Detector Application..."
+
+# Stop the service if running
+for script in /etc/init.d/[SK]92yolo-detector; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/yolo-detector 2>/dev/null || true
+
+echo "YOLO Detector removed."
+
+exit 0

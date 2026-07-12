@@ -8,11 +8,15 @@
 
 #include <sscma.h>
 #include <video.h>
+#include <debug_stream.h>
 #include "rtsp_demo.h"
 
 #include "detector.h"
 #include "person_tracker.h"
 #include "mqtt_publisher.h"
+
+#include <sstream>
+#include <iomanip>
 
 using namespace ma;
 using namespace yolo;
@@ -50,6 +54,10 @@ static struct {
     bool enable_blur = false;
     int max_blur_regions = 4;
     std::string blur_classes = "";  // comma-separated class IDs to blur, empty = all
+
+    // Debug stream (H.264-over-WS + results JSON for the supervisor console)
+    bool enable_debug = true;
+    int debug_port = 8001;
 
     // Runtime flags
     bool enable_rtsp = true;
@@ -90,6 +98,8 @@ static void print_usage(const char* prog) {
     printf("  --max-blur-regions N      Max blur regions (default: %d, max: 4)\n", g_config.max_blur_regions);
     printf("  --no-rtsp                 Disable RTSP streaming\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
+    printf("  --no-debug                Disable debug WebSocket stream\n");
+    printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nRTSP Stream: rtsp://<device_ip>:8554/live0\n");
@@ -111,6 +121,8 @@ static bool parse_args(int argc, char** argv) {
         {"blur", no_argument, 0, 10},
         {"blur-classes", required_argument, 0, 11},
         {"max-blur-regions", required_argument, 0, 12},
+        {"no-debug", no_argument, 0, 13},
+        {"debug-port", required_argument, 0, 14},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -133,6 +145,8 @@ static bool parse_args(int argc, char** argv) {
             case 10: g_config.enable_blur = true; break;
             case 11: g_config.blur_classes = optarg; break;
             case 12: g_config.max_blur_regions = std::min(4, std::stoi(optarg)); break;
+            case 13: g_config.enable_debug = false; break;
+            case 14: g_config.debug_port = std::stoi(optarg); break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
@@ -215,11 +229,74 @@ static bool init_video_streaming() {
     stream_param.fps = g_config.stream_fps;
     setupVideo(VIDEO_CH2, &stream_param);
     registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
+    // Debug stream shares the same VENC output (consumer index 1, RTSP owns 0)
+    if (g_config.enable_debug) {
+        registerVideoFrameHandler(VIDEO_CH2, 1, debug_stream_video_handler, NULL);
+    }
     initRtsp((0x01 << VIDEO_CH2));
 
     MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps)",
             g_config.stream_width, g_config.stream_height, g_config.stream_fps);
     return true;
+}
+
+static bool init_debug_stream() {
+    if (!g_config.enable_debug) {
+        MA_LOGI(TAG, "Debug stream disabled");
+        return true;
+    }
+
+    debug_stream_config_t cfg;
+    debug_stream_config_init(&cfg);
+    cfg.port = g_config.debug_port;
+    cfg.video_ch = VIDEO_CH2;
+
+    if (debug_stream_create(&cfg) != 0) {
+        MA_LOGW(TAG, "Failed to start debug stream on port %d, continuing without it", g_config.debug_port);
+        g_config.enable_debug = false;
+        return true;  // non-fatal
+    }
+
+    MA_LOGI(TAG, "Debug stream: ws://<device_ip>:%d/ (video), ws://<device_ip>:%d/results",
+            g_config.debug_port, g_config.debug_port);
+    return true;
+}
+
+// Build the sscma-node compatible result JSON for the debug /results channel:
+// boxes are center-based pixels in the inference resolution.
+// NOTE: this is a separate document from the MQTT payload; the MQTT format is
+// an external contract and must not change.
+static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
+                                            const std::vector<Detection>& detections,
+                                            float inference_time_ms) {
+    std::ostringstream json;
+    json << std::fixed << std::setprecision(1);
+    json << "{";
+    json << "\"timestamp\":" << timestamp_ms << ",";
+    json << "\"frame_id\":" << frame_id << ",";
+    json << "\"inference_time_ms\":" << inference_time_ms << ",";
+    json << "\"resolution\":[" << g_config.inference_width << "," << g_config.inference_height << "],";
+    json << "\"boxes\":[";
+    for (size_t i = 0; i < detections.size(); ++i) {
+        const auto& det = detections[i];
+        if (i > 0) json << ",";
+        // Detection x/y are normalized center coordinates
+        json << "[" << det.x * g_config.inference_width << ","
+             << det.y * g_config.inference_height << ","
+             << det.w * g_config.inference_width << ","
+             << det.h * g_config.inference_height << ","
+             << std::setprecision(3) << det.confidence << std::setprecision(1) << ","
+             << det.class_id << "]";
+    }
+    json << "],";
+    json << "\"labels\":[";
+    for (size_t i = 0; i < detections.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "\"" << Detector::getClassName(detections[i].class_id) << "\"";
+    }
+    json << "]";
+    json << "}";
+    return json.str();
 }
 
 static bool init_mqtt() {
@@ -243,6 +320,7 @@ static bool init_mqtt() {
 
 static void cleanup() {
     if (g_camera) g_camera->stopStream();
+    if (g_config.enable_debug) debug_stream_destroy();
     if (g_config.enable_rtsp) { deinitRtsp(); deinitVideo(); }
     if (g_mqtt_publisher) { g_mqtt_publisher->deinit(); delete g_mqtt_publisher; g_mqtt_publisher = nullptr; }
     if (g_tracker) { delete g_tracker; g_tracker = nullptr; }
@@ -276,6 +354,14 @@ static void process_frame() {
     auto inference_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time
     ).count();
+
+    // Push the same inference result to debug WS clients (sscma-node format).
+    // debug_stream is lazy: skip building JSON when nobody is connected.
+    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        std::string debug_json = build_debug_results_json(timestamp_ms, g_frame_id, detections,
+                                                          static_cast<float>(inference_time));
+        debug_stream_publish_result(debug_json.c_str(), debug_json.size());
+    }
 
     // Publish results via MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
@@ -322,6 +408,7 @@ int main(int argc, char** argv) {
     if (!init_tracker()) { cleanup(); return 1; }
     if (!init_camera()) { cleanup(); return 1; }
     if (!init_video_streaming()) { cleanup(); return 1; }
+    if (!init_debug_stream()) { cleanup(); return 1; }
     if (!init_mqtt()) { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);

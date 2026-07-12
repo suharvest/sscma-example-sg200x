@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Pre-installation script for yolo-detector
+
+# Stop a previously installed instance before upgrading (idempotent)
+for script in /etc/init.d/[SK]92yolo-detector; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/yolo-detector 2>/dev/null || true
+
+exit 0
