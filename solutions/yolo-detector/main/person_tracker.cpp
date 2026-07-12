@@ -17,6 +17,25 @@ void PersonTracker::setConfig(const TrackerConfig& config) {
     config_ = config;
 }
 
+void PersonTracker::setCountZone(const std::vector<geom::Point>& polygon) {
+    if (polygon.size() >= 3) {
+        count_zone_ = polygon;
+        MA_LOGI(TAG, "Counting zone enabled (%zu points)", count_zone_.size());
+    } else {
+        count_zone_.clear();
+    }
+}
+
+void PersonTracker::setEntryLine(const geom::Point& a, const geom::Point& b, bool ab_in) {
+    line_a_ = a;
+    line_b_ = b;
+    line_ab_in_ = ab_in;
+    line_enabled_ = true;
+    line_crossing_ = LineCrossingCount{};
+    MA_LOGI(TAG, "Entry line enabled: (%.3f,%.3f)->(%.3f,%.3f) direction=%s",
+            a[0], a[1], b[0], b[1], ab_in ? "ab_in" : "ab_out");
+}
+
 float PersonTracker::computeIoU(const Detection& a, const Detection& b) const {
     // Convert center format to corner format
     float ax1 = a.x - a.w / 2.0f;
@@ -209,6 +228,28 @@ std::vector<TrackedPerson> PersonTracker::update(
         // Update velocity before updating detection
         updateVelocity(track, person_detections[det_idx], dt);
 
+        // Entry-line crossing: compare the track's previous bbox center with
+        // the new one (both normalized). Cross-product sign change against
+        // the directed line a->b gives the crossing direction.
+        if (line_enabled_) {
+            const Detection& prev = track.detection;
+            const Detection& curr = person_detections[det_idx];
+            int dir = geom::segment_crossing(line_a_[0], line_a_[1], line_b_[0], line_b_[1],
+                                             prev.x, prev.y, curr.x, curr.y);
+            if (dir != 0) {
+                // dir == +1 : left -> right of a->b. "ab_in" counts that as IN.
+                bool is_in = (dir > 0) == line_ab_in_;
+                if (is_in) {
+                    line_crossing_.in_count++;
+                } else {
+                    line_crossing_.out_count++;
+                }
+                MA_LOGI(TAG, "Track %d crossed entry line: %s (in=%u out=%u)",
+                        track_id, is_in ? "in" : "out",
+                        line_crossing_.in_count, line_crossing_.out_count);
+            }
+        }
+
         // Update detection
         track.detection = person_detections[det_idx];
         track.last_seen_time = current_time_sec;
@@ -273,6 +314,13 @@ StateCount PersonTracker::getStateCounts() const {
     for (const auto& pair : tracks_) {
         const auto& track = pair.second;
         if (track.lost_frames > 0) continue;  // Skip lost tracks
+
+        // With a counting zone configured, only persons whose bbox center is
+        // inside the polygon contribute to zone occupancy.
+        if (!count_zone_.empty() &&
+            !geom::point_in_polygon(track.detection.x, track.detection.y, count_zone_)) {
+            continue;
+        }
 
         counts.total++;
         switch (track.dwell_state) {

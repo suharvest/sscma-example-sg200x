@@ -14,6 +14,7 @@
 #include "detector.h"
 #include "person_tracker.h"
 #include "mqtt_publisher.h"
+#include "app_config.h"
 
 #include <sstream>
 #include <iomanip>
@@ -64,6 +65,11 @@ static struct {
     bool enable_mqtt = true;
     bool verbose = false;
 } g_config;
+
+// Supervisor-managed per-app configuration (appMgr setConfig writes it,
+// validated against the manifest's config_schema; missing file = defaults).
+static const char* APP_CONFIG_PATH = "/userdata/local/apps/yolo-detector.config.json";
+static AppConfig g_app_config;
 
 // Global state
 static std::atomic<bool> g_running(true);
@@ -165,6 +171,29 @@ static bool init_detector() {
     return true;
 }
 
+// Apply the supervisor-managed app config on top of built-in defaults.
+// Called BEFORE parse_args so explicit CLI flags (set by an operator in the
+// init script) still win over console-managed configuration.
+static void apply_app_config() {
+    if (!load_app_config(APP_CONFIG_PATH, g_app_config)) {
+        return; // no config file: behavior identical to before
+    }
+    if (g_app_config.has_confidence) {
+        g_config.conf_threshold = g_app_config.confidence;
+        MA_LOGI(TAG, "Config: confidence threshold = %.2f", g_config.conf_threshold);
+    }
+    if (g_app_config.has_tracking) {
+        g_config.enable_tracking = g_app_config.tracking;
+        MA_LOGI(TAG, "Config: tracking = %s", g_config.enable_tracking ? "on" : "off");
+    }
+    if (g_app_config.zone_enabled) {
+        MA_LOGI(TAG, "Config: counting zone with %zu points", g_app_config.zone_points.size());
+    }
+    if (g_app_config.line_enabled) {
+        MA_LOGI(TAG, "Config: entry line enabled (%s)", g_app_config.line_ab_in ? "ab_in" : "ab_out");
+    }
+}
+
 static bool init_tracker() {
     if (!g_config.enable_tracking) {
         MA_LOGI(TAG, "Person tracking disabled");
@@ -179,6 +208,13 @@ static bool init_tracker() {
     tracker_config.frame_width = g_config.inference_width;
     tracker_config.frame_height = g_config.inference_height;
     g_tracker->setConfig(tracker_config);
+
+    if (g_app_config.zone_enabled) {
+        g_tracker->setCountZone(g_app_config.zone_points);
+    }
+    if (g_app_config.line_enabled) {
+        g_tracker->setEntryLine(g_app_config.line_a, g_app_config.line_b, g_app_config.line_ab_in);
+    }
 
     MA_LOGI(TAG, "Person tracker initialized (engaged: %.1fs, assist: %.1fs)",
             g_config.dwell_min_duration, g_config.dwell_assistance_threshold);
@@ -369,9 +405,16 @@ static void process_frame() {
             auto tracked_persons = g_tracker->update(detections, current_time_sec);
             auto state_counts = g_tracker->getStateCounts();
 
+            LineCrossingCount line_crossing;
+            bool has_line = g_tracker->hasEntryLine();
+            if (has_line) {
+                line_crossing = g_tracker->getLineCrossing();
+            }
+
             g_mqtt_publisher->publishTrackingResults(timestamp_ms, g_frame_id,
                                                       tracked_persons, state_counts,
-                                                      static_cast<float>(inference_time));
+                                                      static_cast<float>(inference_time),
+                                                      has_line ? &line_crossing : nullptr);
 
             if (g_config.verbose || !tracked_persons.empty()) {
                 MA_LOGI(TAG, "Frame %u: %zu persons, inference=%lldms | total=%d browse=%d engaged=%d assist=%d",
@@ -394,6 +437,8 @@ static void process_frame() {
 }
 
 int main(int argc, char** argv) {
+    // Console-managed config first, then CLI flags (CLI wins on conflicts).
+    apply_app_config();
     if (!parse_args(argc, argv)) return 1;
 
     MA_LOGI(TAG, "Starting YOLO Detector (universal)");

@@ -4,8 +4,10 @@
 #include <vector>
 #include <map>
 #include <cmath>
+#include <cstdint>
 
 #include "detector.h"
+#include "geometry.h"
 
 namespace yolo {
 
@@ -81,6 +83,12 @@ struct StateCount {
     int assistance = 0;     // ASSISTANCE
 };
 
+// Cumulative entry-line crossing counters (reset on application restart)
+struct LineCrossingCount {
+    uint32_t in_count = 0;
+    uint32_t out_count = 0;
+};
+
 /**
  * Simple ByteTrack-like person tracker with dwell state detection
  *
@@ -97,6 +105,20 @@ public:
 
     // Set tracker configuration
     void setConfig(const TrackerConfig& config);
+
+    // Restrict zone occupancy counting (getStateCounts) to a polygon.
+    // Normalized [0,1] coords; a track counts when its bbox center is inside.
+    // Empty polygon (default) counts the whole frame.
+    void setCountZone(const std::vector<geom::Point>& polygon);
+
+    // Configure the entry line for crossing counting. Normalized coords.
+    // ab_in == true : crossing from the LEFT of the directed line a->b to
+    // the RIGHT counts as "in" (direction "ab_in"); false inverts ("ab_out").
+    void setEntryLine(const geom::Point& a, const geom::Point& b, bool ab_in);
+    bool hasEntryLine() const { return line_enabled_; }
+
+    // Cumulative in/out crossing counts since application start
+    LineCrossingCount getLineCrossing() const { return line_crossing_; }
 
     // Main update - takes person detections, returns tracked persons
     // current_time_sec: Time since application start in seconds
@@ -134,6 +156,16 @@ private:
     std::map<int, TrackedPerson> tracks_;
     int next_track_id_ = 0;
     float last_update_time_ = 0.0f;
+
+    // Optional counting zone (empty = whole frame)
+    std::vector<geom::Point> count_zone_;
+
+    // Optional entry line + cumulative crossing counters
+    bool line_enabled_ = false;
+    geom::Point line_a_ { 0.0f, 0.0f };
+    geom::Point line_b_ { 0.0f, 0.0f };
+    bool line_ab_in_ = true;
+    LineCrossingCount line_crossing_;
 };
 
 }  // namespace yolo

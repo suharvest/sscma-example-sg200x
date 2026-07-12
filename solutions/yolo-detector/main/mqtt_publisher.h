@@ -50,10 +50,13 @@ public:
     // Publish tracking results with person state info
     // persons: tracked persons with velocity and dwell state
     // counts: zone occupancy summary
+    // line_crossing: optional cumulative entry-line counters; when non-null a
+    //                "line_crossing":{"in":N,"out":N} object is added
     bool publishTrackingResults(uint64_t timestamp_ms, uint32_t frame_id,
                                  const std::vector<TrackedPerson>& persons,
                                  const StateCount& counts,
-                                 float inference_time_ms);
+                                 float inference_time_ms,
+                                 const LineCrossingCount* line_crossing = nullptr);
 
     // Publish raw JSON message
     bool publish(const std::string& topic, const std::string& payload);
@@ -75,7 +78,8 @@ private:
     std::string buildTrackingJson(uint64_t timestamp_ms, uint32_t frame_id,
                                    const std::vector<TrackedPerson>& persons,
                                    const StateCount& counts,
-                                   float inference_time_ms);
+                                   float inference_time_ms,
+                                   const LineCrossingCount* line_crossing);
 
 private:
     struct mosquitto* client_;

@@ -199,7 +199,8 @@ bool MqttPublisher::publishResults(uint64_t timestamp_ms, uint32_t frame_id,
 std::string MqttPublisher::buildTrackingJson(uint64_t timestamp_ms, uint32_t frame_id,
                                               const std::vector<TrackedPerson>& persons,
                                               const StateCount& counts,
-                                              float inference_time_ms) {
+                                              float inference_time_ms,
+                                              const LineCrossingCount* line_crossing) {
     std::ostringstream json;
     json << std::fixed;
 
@@ -215,6 +216,14 @@ std::string MqttPublisher::buildTrackingJson(uint64_t timestamp_ms, uint32_t fra
     json << "\"engaged\":" << counts.engaged << ",";
     json << "\"assistance\":" << counts.assistance;
     json << "},";
+
+    // Cumulative entry-line crossing counters (only when a line is configured)
+    if (line_crossing != nullptr) {
+        json << "\"line_crossing\":{";
+        json << "\"in\":" << line_crossing->in_count << ",";
+        json << "\"out\":" << line_crossing->out_count;
+        json << "},";
+    }
 
     // Person array
     json << "\"persons\":[";
@@ -256,8 +265,9 @@ std::string MqttPublisher::buildTrackingJson(uint64_t timestamp_ms, uint32_t fra
 bool MqttPublisher::publishTrackingResults(uint64_t timestamp_ms, uint32_t frame_id,
                                             const std::vector<TrackedPerson>& persons,
                                             const StateCount& counts,
-                                            float inference_time_ms) {
-    std::string payload = buildTrackingJson(timestamp_ms, frame_id, persons, counts, inference_time_ms);
+                                            float inference_time_ms,
+                                            const LineCrossingCount* line_crossing) {
+    std::string payload = buildTrackingJson(timestamp_ms, frame_id, persons, counts, inference_time_ms, line_crossing);
     return publish(config_.topic, payload);
 }
 
