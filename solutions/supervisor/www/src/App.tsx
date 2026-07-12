@@ -7,6 +7,7 @@ import { queryDeviceInfoApi } from "@/api/device/index";
 import { getUserInfoApi } from "@/api/user";
 import useUserStore from "@/store/user";
 import useConfigStore from "@/store/config";
+import useCapabilitiesStore from "@/store/capabilities";
 import { Version } from "@/utils";
 
 const router = createHashRouter(Routes);
@@ -21,10 +22,14 @@ const App = () => {
   } = useUserStore();
 
   const { updateDeviceInfo } = useConfigStore();
+  const { fetchCapabilities } = useCapabilitiesStore();
 
   useEffect(() => {
     console.log(`%cVersion: ${Version}`, "font-weight: bold");
     initUserData();
+    // P5: pull the hardware capability set once (no-auth endpoint; failure
+    // keeps the store undefined and the UI on its legacy fallbacks).
+    fetchCapabilities();
   }, []);
 
   const token = useMemo(() => {

@@ -46,6 +46,11 @@ private:
 
     // helpers
     static bool valid_app_id(const std::string& id);
+    // Hardware capability gating (P5-A): manifest requires[] vs the cached
+    // api_device::capabilities() set.
+    static bool valid_capability_key(const std::string& key);
+    static bool capability_present(const json& caps, const std::string& key);
+    static json missing_capabilities(const json& manifest);
     static bool valid_init_script_path(const std::string& path);
     static bool check_init_script_fs(const std::string& path, std::string& err);
     static std::string jstr(const json& j, const std::string& key);

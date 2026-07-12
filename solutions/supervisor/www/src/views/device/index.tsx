@@ -28,10 +28,15 @@ import {
 import { ISensorStatus, IAudioVolume } from "@/api/device/device";
 import { setLedApi } from "@/api/led";
 import { PowerMode } from "@/enum";
+import useCapabilitiesStore from "@/store/capabilities";
 
-/** Common LED names on reCamera (/sys/class/leds/<name>). Toggling an
- *  absent LED returns an error and the row is marked unavailable. */
+/** Legacy fallback LED list, used only while the capability probe has not
+ *  answered (older firmware). With capabilities present the card renders
+ *  the enumerated /sys/class/leds names instead. */
 const LED_NAMES = ["white", "red", "blue"];
+
+/** Optional-hardware badge order for the Hardware card. */
+const HW_BADGE_KEYS = ["gimbal", "hdr", "halow", "sd", "can"] as const;
 
 type LedState = "unknown" | "on" | "off" | "unavailable";
 
@@ -50,9 +55,24 @@ function formatStorage(value?: number): string {
 
 const DeviceTools = () => {
   const { t } = useTranslation();
-  const [ledStates, setLedStates] = useState<Record<string, LedState>>(
-    Object.fromEntries(LED_NAMES.map((n) => [n, "unknown"]))
-  );
+  // P5 capability-driven rendering. undefined = probe not answered (older
+  // firmware): keep every card visible with its legacy behavior.
+  const capabilities = useCapabilitiesStore((s) => s.capabilities);
+  const ledNames = capabilities ? capabilities.leds : LED_NAMES;
+  const showLedCard = !capabilities || capabilities.leds.length > 0;
+  const showBatteryCard = !capabilities || capabilities.battery;
+  const showMic = !capabilities || capabilities.audio.mic;
+  const showSpeaker = !capabilities || capabilities.audio.speaker;
+  const showAudioCard = showMic || showSpeaker;
+  const hwBadges = capabilities
+    ? HW_BADGE_KEYS.filter((k) =>
+        k === "gimbal" || k === "hdr"
+          ? capabilities[k].present
+          : capabilities[k]
+      )
+    : [];
+
+  const [ledStates, setLedStates] = useState<Record<string, LedState>>({});
   const [battery, setBattery] = useState<number | null | undefined>(undefined); // undefined=loading, null=unavailable
   const [sensor, setSensor] = useState<ISensorStatus | null | undefined>(
     undefined
@@ -208,7 +228,7 @@ const DeviceTools = () => {
   };
 
   const onToggleLed = async (name: string, on: boolean) => {
-    const prev = ledStates[name];
+    const prev = ledStates[name] ?? "unknown";
     setLedStates((s) => ({ ...s, [name]: on ? "on" : "off" }));
     try {
       const res = await setLedApi(name, on);
@@ -329,61 +349,105 @@ const DeviceTools = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-16 mt-24">
-        {/* LED control */}
-        <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">{t("device.ledControl")}</div>
-          <div className="flex flex-col">
-            {LED_NAMES.map((name, i) => (
-              <div
-                key={name}
-                className={`flex items-center justify-between py-10 ${
-                  i ? "border-t border-line" : ""
-                }`}
-              >
-                <div>
-                  <span className="text-14 font-medium">
-                    {t(`device.led.${name}`, {
-                      defaultValue: `${name} LED`,
-                    })}
-                  </span>
-                  {ledStates[name] === "unavailable" && (
-                    <span className="text-12 text-muted ml-8">
-                      {t("device.ledNotAvailable")}
-                    </span>
-                  )}
-                </div>
-                <Switch
-                  size="small"
-                  checked={ledStates[name] === "on"}
-                  disabled={ledStates[name] === "unavailable"}
-                  onChange={(v) => onToggleLed(name, v)}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="text-12 text-muted mt-8">{t("device.ledHint")}</div>
-        </div>
-
-        {/* Battery */}
-        <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">{t("device.battery")}</div>
-          {battery === undefined ? (
-            <div className="text-13 text-muted">{t("common.reading")}</div>
-          ) : battery === null ? (
-            <div className="text-13 text-muted">{t("device.noBattery")}</div>
-          ) : (
-            <div>
-              <div className="rc-kpi-label">{t("device.voltage")}</div>
-              <div className="rc-kpi-value">
-                {(battery / 1000).toFixed(2)}
-                <span className="text-14 font-medium text-muted ml-4">V</span>
-              </div>
-              <div className="rc-mono text-11 text-muted mt-2">
-                {t("device.rawMv", { mv: battery })}
-              </div>
+        {/* Hardware variant (P5): device_type + capability badges */}
+        {capabilities && (
+          <div className="rc-card p-20">
+            <div className="rc-section-label mb-12">
+              {t("capabilities.card")}
             </div>
-          )}
-        </div>
+            <div className="rc-kpi-label">{t("capabilities.deviceType")}</div>
+            <div className="font-display font-semibold text-16 mt-2">
+              {capabilities.device_type || "-"}
+            </div>
+            <div className="rc-mono text-11 text-muted mt-4">
+              {t("capabilities.sensor", {
+                sensor: capabilities.hdr.sensor || "unknown",
+              })}
+            </div>
+            <div className="rc-kpi-label mt-14">
+              {t("capabilities.optional")}
+            </div>
+            {hwBadges.length ? (
+              <div className="flex flex-wrap gap-6 mt-6">
+                {hwBadges.map((k) => (
+                  <span key={k} className="rc-badge accent">
+                    <span className="dot" />
+                    {t(`capabilities.keys.${k}`)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="text-13 text-muted mt-6">
+                {t("capabilities.none")}
+              </div>
+            )}
+            <div className="text-12 text-muted mt-10">
+              {t("capabilities.hint")}
+            </div>
+          </div>
+        )}
+
+        {/* LED control — enumerated from capabilities.leds when available */}
+        {showLedCard && (
+          <div className="rc-card p-20">
+            <div className="rc-section-label mb-12">
+              {t("device.ledControl")}
+            </div>
+            <div className="flex flex-col">
+              {ledNames.map((name, i) => (
+                <div
+                  key={name}
+                  className={`flex items-center justify-between py-10 ${
+                    i ? "border-t border-line" : ""
+                  }`}
+                >
+                  <div>
+                    <span className="text-14 font-medium">
+                      {t(`device.led.${name}`, {
+                        defaultValue: `${name} LED`,
+                      })}
+                    </span>
+                    {ledStates[name] === "unavailable" && (
+                      <span className="text-12 text-muted ml-8">
+                        {t("device.ledNotAvailable")}
+                      </span>
+                    )}
+                  </div>
+                  <Switch
+                    size="small"
+                    checked={ledStates[name] === "on"}
+                    disabled={ledStates[name] === "unavailable"}
+                    onChange={(v) => onToggleLed(name, v)}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="text-12 text-muted mt-8">{t("device.ledHint")}</div>
+          </div>
+        )}
+
+        {/* Battery — hidden entirely when the probe says no battery ADC */}
+        {showBatteryCard && (
+          <div className="rc-card p-20">
+            <div className="rc-section-label mb-12">{t("device.battery")}</div>
+            {battery === undefined ? (
+              <div className="text-13 text-muted">{t("common.reading")}</div>
+            ) : battery === null ? (
+              <div className="text-13 text-muted">{t("device.noBattery")}</div>
+            ) : (
+              <div>
+                <div className="rc-kpi-label">{t("device.voltage")}</div>
+                <div className="rc-kpi-value">
+                  {(battery / 1000).toFixed(2)}
+                  <span className="text-14 font-medium text-muted ml-4">V</span>
+                </div>
+                <div className="rc-mono text-11 text-muted mt-2">
+                  {t("device.rawMv", { mv: battery })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Temperature + storage */}
         <div className="rc-card p-20">
@@ -476,75 +540,90 @@ const DeviceTools = () => {
           </div>
         </div>
 
-        {/* Audio (P3-E): microphone probe, speaker test tone, volume */}
-        <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">{t("audio.card")}</div>
+        {/* Audio (P3-E, P5-gated): hidden without mic AND speaker; a single
+            present side renders only its own half. */}
+        {showAudioCard && (
+          <div className="rc-card p-20">
+            <div className="rc-section-label mb-12">{t("audio.card")}</div>
 
-          <div className="rc-kpi-label">{t("audio.microphone")}</div>
-          <div className="flex gap-8 mt-6 flex-wrap items-center">
-            <Button
-              size="small"
-              icon={<AudioOutlined />}
-              loading={recording}
-              disabled={playTesting}
-              onClick={onRecord}
-            >
-              {recording ? t("audio.recording") : t("audio.recordBtn")}
-            </Button>
-            {recordUrl && (
-              <Button
-                size="small"
-                icon={<DownloadOutlined />}
-                href={recordUrl}
-                download="audio_probe.wav"
-              >
-                {t("audio.download")}
-              </Button>
-            )}
-          </div>
-          {recordUrl && (
-            <audio
-              controls
-              src={recordUrl}
-              className="w-full mt-10"
-              style={{ height: 32 }}
-            />
-          )}
-
-          <div className="rc-kpi-label mt-16">{t("audio.speaker")}</div>
-          <div className="mt-6">
-            <Button
-              size="small"
-              icon={<SoundOutlined />}
-              loading={playTesting}
-              disabled={recording}
-              onClick={onPlayTest}
-            >
-              {t("audio.playBtn")}
-            </Button>
-          </div>
-
-          {audioVolume && audioVolume.controls.length > 0 && (
-            <>
-              <div className="rc-kpi-label mt-16">{t("audio.volume")}</div>
-              {audioVolume.controls.map((c) => (
-                <div key={c.name} className="mt-4">
-                  <div className="rc-mono text-11 text-muted">
-                    {c.name} · {c.percent}%
-                  </div>
-                  <Slider
-                    min={0}
-                    max={100}
-                    value={c.percent}
-                    onChange={(v) => onVolumeChange(c.name, v)}
-                  />
+            {showMic && (
+              <>
+                <div className="rc-kpi-label">{t("audio.microphone")}</div>
+                <div className="flex gap-8 mt-6 flex-wrap items-center">
+                  <Button
+                    size="small"
+                    icon={<AudioOutlined />}
+                    loading={recording}
+                    disabled={playTesting}
+                    onClick={onRecord}
+                  >
+                    {recording ? t("audio.recording") : t("audio.recordBtn")}
+                  </Button>
+                  {recordUrl && (
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      href={recordUrl}
+                      download="audio_probe.wav"
+                    >
+                      {t("audio.download")}
+                    </Button>
+                  )}
                 </div>
-              ))}
-            </>
-          )}
+                {recordUrl && (
+                  <audio
+                    controls
+                    src={recordUrl}
+                    className="w-full mt-10"
+                    style={{ height: 32 }}
+                  />
+                )}
+              </>
+            )}
 
-          <div className="text-12 text-muted mt-10">{t("audio.micHint")}</div>
-        </div>
+            {showSpeaker && (
+              <>
+                <div className={`rc-kpi-label ${showMic ? "mt-16" : ""}`}>
+                  {t("audio.speaker")}
+                </div>
+                <div className="mt-6">
+                  <Button
+                    size="small"
+                    icon={<SoundOutlined />}
+                    loading={playTesting}
+                    disabled={recording}
+                    onClick={onPlayTest}
+                  >
+                    {t("audio.playBtn")}
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {audioVolume && audioVolume.controls.length > 0 && (
+              <>
+                <div className="rc-kpi-label mt-16">{t("audio.volume")}</div>
+                {audioVolume.controls.map((c) => (
+                  <div key={c.name} className="mt-4">
+                    <div className="rc-mono text-11 text-muted">
+                      {c.name} · {c.percent}%
+                    </div>
+                    <Slider
+                      min={0}
+                      max={100}
+                      value={c.percent}
+                      onChange={(v) => onVolumeChange(c.name, v)}
+                    />
+                  </div>
+                ))}
+              </>
+            )}
+
+            <div className="text-12 text-muted mt-10">
+              {showMic ? t("audio.micHint") : t("audio.speakerOnlyHint")}
+            </div>
+          </div>
+        )}
 
         {/* Power */}
         <div className="rc-card p-20">

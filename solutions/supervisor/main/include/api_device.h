@@ -75,6 +75,16 @@ private:
     static api_status_t queryBatteryInfo(request_t req, response_t res);
     static api_status_t getSensorStatus(request_t req, response_t res);
 
+    // Hardware capabilities (P5-A): shell probe, cached for the process
+    // lifetime (hardware does not change while running); ?refresh=1 reprobes.
+    static api_status_t getCapabilities(request_t req, response_t res);
+    // The "type" string reported by queryDeviceInfo (shared builder so
+    // capabilities.device_type is byte-identical).
+    static std::string build_device_type();
+    // Run main.sh queryCapabilities and normalize the result (all keys
+    // present with sane defaults even if the script fails).
+    static json probe_capabilities();
+
     // Runtime mode (P4-D): console (gallery apps) <-> Node-RED.
     static api_status_t getRunMode(request_t req, response_t res);
     static api_status_t setRunMode(request_t req, response_t res);
@@ -88,6 +98,17 @@ private:
     static bool check_adc_available();
 
 public:
+    // Cached capability set for other API groups (appMgr requires[] gating).
+    // Probes on first use; all handlers run on the single mongoose poll
+    // thread (see setRunMode notes), so no locking is needed.
+    static const json& capabilities()
+    {
+        if (_capabilities.empty()) {
+            _capabilities = probe_capabilities();
+        }
+        return _capabilities;
+    }
+
     explicit api_device(bool gallery_mode = false)
         : api_base("deviceMgr")
     {
@@ -161,6 +182,8 @@ public:
         REG_API_NO_AUTH(queryBatteryInfo);
         REG_API(getSensorStatus);
 
+        REG_API_NO_AUTH(getCapabilities); // read-only hardware facts, same trust level as queryDeviceInfo
+
         REG_API_NO_AUTH(getRunMode); // read-only, same trust level as queryDeviceInfo
         REG_API(setRunMode); // security: token required (starts/stops services)
 
@@ -190,7 +213,11 @@ public:
     }
 
 private:
-    static inline json _dev_info;
+    // json::object() (not the default null json): build_device_type() must
+    // stay safe even before the constructor filled it (json::value() throws
+    // on null).
+    static inline json _dev_info = json::object();
+    static inline json _capabilities = json::object(); // P5-A cache, see capabilities()
     static inline bool _gallery_mode = false;
     static inline std::string _model_dir = "";
     static inline std::string _model_suffix = "";

@@ -158,7 +158,9 @@
       "mqtt": "MQTT 主题",
       "models": "模型",
       "pipeline": "流水线（固定，不可切换）"
-    }
+    },
+    "hwNotSupported": "硬件不支持",
+    "hwMissingTooltip": "此设备缺少所需硬件：{{list}}"
   },
   "live": {
     "title": "实时调试",
@@ -192,7 +194,10 @@
     "switchModelTitle": "切换模型为“{{model}}”？",
     "switchModelContent": "应用将重启以加载新模型，输出流会短暂中断。",
     "modelUpdated": "模型已更新，应用正在使用新模型重启。",
-    "switchModelFailed": "切换模型失败"
+    "switchModelFailed": "切换模型失败",
+    "gimbalTitle": "云台控制",
+    "gimbalSoon": "即将支持",
+    "gimbalPlaceholder": "已检测到云台（CAN 电机总线）。本页的水平/俯仰控制将在 Phase 6 提供。"
   },
   "device": {
     "title": "设备",
@@ -254,7 +259,8 @@
     "busy": "音频设备忙——另一个操作正在进行中",
     "volume": "音量",
     "volumeFailed": "设置音量失败",
-    "micHint": "从板载麦克风录音（16 kHz 单声道）并在本浏览器中回放；测试音从设备扬声器播出。"
+    "micHint": "从板载麦克风录音（16 kHz 单声道）并在本浏览器中回放；测试音从设备扬声器播出。",
+    "speakerOnlyHint": "测试音从设备扬声器播出。"
   },
   "doc": {
     "integration": "集成说明",
@@ -474,5 +480,22 @@
     "gateway": "网关",
     "dns": "DNS",
     "connectHint": "连接到“{{name}}”后，即可访问以下地址打开控制台："
+  },
+  "capabilities": {
+    "card": "硬件",
+    "deviceType": "设备型号",
+    "sensor": "传感器：{{sensor}}",
+    "optional": "可选硬件",
+    "none": "未检测到可选硬件",
+    "hint": "启动时自动探测；依赖缺失硬件的应用会在「应用」页被禁用。",
+    "keys": {
+      "gimbal": "云台",
+      "hdr": "HDR",
+      "halow": "Wi-Fi HaLow",
+      "sd": "SD 卡",
+      "can": "CAN 总线",
+      "battery": "电池",
+      "audio": "音频"
+    }
   }
 }

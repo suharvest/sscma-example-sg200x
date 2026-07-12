@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Drawer, Modal, Progress, Spin, Upload, message } from "antd";
+import { Alert, Button, Drawer, Modal, Progress, Spin, Tooltip, Upload, message } from "antd";
 import type { UploadFile, UploadProps } from "antd";
 import {
   ReloadOutlined,
@@ -440,6 +440,11 @@ const Applications = () => {
               const isActive = app.id === activeId;
               const displayName = pickLocalized(app, "name") || app.id;
               const altName = pickLocalizedAlt(app, "name");
+              // P5: hardware dependency gating (backend appMgr/list fields).
+              const hwUnsupported = app.hw_supported === false;
+              const missingList = (app.missing_capabilities || [])
+                .map((k) => t(`capabilities.keys.${k}`, { defaultValue: k }))
+                .join(", ");
               return (
                 <div
                   key={app.id}
@@ -454,12 +459,28 @@ const Applications = () => {
                   }
                 >
                   <div className="flex items-center justify-between gap-8">
-                    <span className="rc-badge">
-                      {pickLocalized(app, "scene") ||
-                        (app.type === "external-firmware"
-                          ? t("apps.sceneFirmware")
-                          : t("apps.sceneGeneral"))}
-                    </span>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <span className="rc-badge">
+                        {pickLocalized(app, "scene") ||
+                          (app.type === "external-firmware"
+                            ? t("apps.sceneFirmware")
+                            : t("apps.sceneGeneral"))}
+                      </span>
+                      {hwUnsupported && (
+                        <Tooltip
+                          title={t("apps.hwMissingTooltip", {
+                            list: missingList,
+                          })}
+                        >
+                          <span
+                            className="rc-badge"
+                            style={{ borderColor: "#D54941", color: "#D54941" }}
+                          >
+                            {t("apps.hwNotSupported")}
+                          </span>
+                        </Tooltip>
+                      )}
+                    </div>
                     <span className={`rc-badge ${isActive ? "accent" : ""}`}>
                       <span
                         className="dot"
@@ -513,6 +534,17 @@ const Applications = () => {
                           {t("common.stop")}
                         </Button>
                       </>
+                    ) : hwUnsupported ? (
+                      <Tooltip
+                        title={t("apps.hwMissingTooltip", { list: missingList })}
+                      >
+                        {/* span wrapper: antd Tooltip needs a non-disabled DOM target */}
+                        <span>
+                          <Button type="primary" size="small" disabled>
+                            {t("common.activate")}
+                          </Button>
+                        </span>
+                      </Tooltip>
                     ) : (
                       <Button
                         type="primary"

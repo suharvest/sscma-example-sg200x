@@ -60,6 +60,42 @@ interface ISensorStatus {
   storage?: ISensorStorage; // /userdata usage
 }
 
+/* Hardware capability set — deviceMgr/getCapabilities (Phase 5).
+ * Shape mirrors api_device::probe_capabilities(); the backend guarantees
+ * every key is present (missing hardware = false / "" / []). */
+interface ICapabilityGimbal {
+  present: boolean;
+  /** CAN interface name when present (e.g. "can0"), "" otherwise. */
+  bus: string;
+}
+
+interface ICapabilityHdr {
+  present: boolean;
+  /** Sensor model ("OV5647" | "GC2053" | "unknown"). */
+  sensor: string;
+}
+
+interface ICapabilityAudio {
+  mic: boolean;
+  speaker: boolean;
+}
+
+interface ICapabilities {
+  /** Same string as queryDeviceInfo `type` (e.g. "Basic WiFi 8G (OV5647)"). */
+  device_type: string;
+  gimbal: ICapabilityGimbal;
+  hdr: ICapabilityHdr;
+  /** User-facing LED names under /sys/class/leds (mmc* triggers filtered). */
+  leds: string[];
+  audio: ICapabilityAudio;
+  battery: boolean;
+  sd: boolean;
+  halow: boolean;
+  can: boolean;
+  /** Unix seconds of the probe. */
+  probed_at?: number;
+}
+
 interface IAudioControl {
   name: string;    // amixer simple control name
   percent: number; // current volume 0..100

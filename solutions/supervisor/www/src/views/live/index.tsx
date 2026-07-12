@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Modal, Select, Spin, Switch, message } from "antd";
+import { Button, Collapse, Modal, Select, Spin, Switch, message } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
@@ -18,6 +18,7 @@ import {
 } from "@/utils/appStream";
 import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
 import IntegrationDoc from "@/components/integration-doc";
+import useCapabilitiesStore from "@/store/capabilities";
 
 interface ContentRect {
   left: number;
@@ -98,6 +99,11 @@ function BoxOverlay({
 
 const Live = () => {
   const { t } = useTranslation();
+  // P5: gimbal variants get a placeholder control card (actual motor
+  // control lands in Phase 6, gated on gimbal hardware for development).
+  const gimbalPresent = useCapabilitiesStore(
+    (s) => s.capabilities?.gimbal.present ?? false
+  );
   const [loading, setLoading] = useState(true);
   const [app, setApp] = useState<IAppInfo | null>(null);
   const [appStatus, setAppStatus] = useState<string>("");
@@ -575,6 +581,36 @@ const Live = () => {
                     )}
                   </div>
                 </div>
+
+                {/* Gimbal placeholder (P5): collapsed card so the gimbal
+                    variant's page layout is already in place for Phase 6. */}
+                {gimbalPresent && (
+                  <div className="rc-card p-8">
+                    <Collapse
+                      ghost
+                      items={[
+                        {
+                          key: "gimbal",
+                          label: (
+                            <div className="flex items-center gap-8">
+                              <span className="rc-section-label">
+                                {t("live.gimbalTitle")}
+                              </span>
+                              <span className="rc-badge">
+                                {t("live.gimbalSoon")}
+                              </span>
+                            </div>
+                          ),
+                          children: (
+                            <div className="text-13 text-muted">
+                              {t("live.gimbalPlaceholder")}
+                            </div>
+                          ),
+                        },
+                      ]}
+                    />
+                  </div>
+                )}
 
                 {!!app.pipeline?.length && (
                   <div className="rc-card p-20">

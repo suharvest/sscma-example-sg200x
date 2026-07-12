@@ -159,7 +159,9 @@
       "mqtt": "MQTT Topic",
       "models": "Models",
       "pipeline": "Pipeline (fixed, not switchable)"
-    }
+    },
+    "hwNotSupported": "Hardware not supported",
+    "hwMissingTooltip": "This device is missing required hardware: {{list}}"
   },
   "live": {
     "title": "Live Debug",
@@ -193,7 +195,10 @@
     "switchModelTitle": "Switch model to \"{{model}}\"?",
     "switchModelContent": "The application will restart to load the new model. Streams will be briefly interrupted.",
     "modelUpdated": "Model updated. The application is restarting with the new model.",
-    "switchModelFailed": "Failed to switch model"
+    "switchModelFailed": "Failed to switch model",
+    "gimbalTitle": "Gimbal Control",
+    "gimbalSoon": "Coming soon",
+    "gimbalPlaceholder": "A gimbal (CAN motor bus) was detected on this device. Pan/tilt control from this page arrives in Phase 6."
   },
   "device": {
     "title": "Device",
@@ -255,7 +260,8 @@
     "busy": "Audio device is busy — another operation is in progress",
     "volume": "Volume",
     "volumeFailed": "Failed to set volume",
-    "micHint": "Records from the on-board microphone (16 kHz mono) and plays it back in this browser. The test sound comes out of the device speaker."
+    "micHint": "Records from the on-board microphone (16 kHz mono) and plays it back in this browser. The test sound comes out of the device speaker.",
+    "speakerOnlyHint": "The test sound plays from the device speaker."
   },
   "doc": {
     "integration": "Integration",
@@ -479,5 +485,22 @@
     "gateway": "Gateway",
     "dns": "DNS",
     "connectHint": "Connect to '{{name}}' then you can explore the dashboard by visit"
+  },
+  "capabilities": {
+    "card": "Hardware",
+    "deviceType": "Device type",
+    "sensor": "Sensor: {{sensor}}",
+    "optional": "Optional hardware",
+    "none": "No optional hardware detected",
+    "hint": "Detected automatically at startup. Apps that need missing hardware are disabled on the Applications page.",
+    "keys": {
+      "gimbal": "Gimbal",
+      "hdr": "HDR",
+      "halow": "Wi-Fi HaLow",
+      "sd": "SD card",
+      "can": "CAN bus",
+      "battery": "Battery",
+      "audio": "Audio"
+    }
   }
 }

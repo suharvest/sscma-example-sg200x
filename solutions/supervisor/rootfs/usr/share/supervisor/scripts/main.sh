@@ -324,6 +324,71 @@ function api_device() {
 }
 EOF
 }
+
+# Hardware capability probe (deviceMgr/getCapabilities).
+# Defensive by design: a missing path/binary means "absent", never an error,
+# and the output is always valid JSON. Probes verified on real hardware
+# (reCamera standard variant, 2026-07):
+#   leds    : /sys/class/leds minus mmc* trigger LEDs -> blue red white
+#   audio   : /dev/snd/pcm*c = capture (mic), /dev/snd/pcm*p = playback
+#             (/proc/asound/cards is empty on this BSP, do not use it)
+#   sensor  : i2c probe, same addresses as api_device (0x36 OV5647, 0x3f GC2053);
+#             /proc/cvitek/vi_dbg and dmesg carry no sensor name on this BSP
+#   battery : iio ADC node (same source as C++ check_adc_available)
+#   halow   : halow0 netdev (same source as _check_halow)
+#   can     : can0 netdev (same source as api_device canbus)
+# device_type is intentionally "": the C++ side fills it with the exact same
+# string queryDeviceInfo reports as "type" (single source of truth).
+function queryCapabilities() {
+    local can=false can_bus=""
+    [ -d /sys/class/net/can0 ] && { can=true; can_bus="can0"; }
+    # Gimbal variant == CAN motor bus present (C++ additionally ORs the
+    # device_type "Gimbal" marker, spec P5-A).
+    local gimbal=$can
+
+    # Sensor model. No shipped sensor is HDR-capable yet; hdr flips true
+    # here once a known HDR sensor id is added (Phase 6).
+    local sensor="unknown" hdr=false
+    if command -v i2cdetect >/dev/null 2>&1; then
+        [ -n "$(i2cdetect -y -r 2 0x36 0x36 2>/dev/null | grep ' 36')" ] && sensor="OV5647"
+        [ -n "$(i2cdetect -y -r 2 0x3f 0x3f 2>/dev/null | grep ' 3f')" ] && sensor="GC2053"
+    fi
+
+    # User-facing LEDs only: mmc* entries are eMMC/SD activity triggers.
+    local leds="" n
+    for n in $(ls /sys/class/leds 2>/dev/null); do
+        case "$n" in mmc*) continue ;; esac
+        leds="$leds\"$n\","
+    done
+    leds="${leds%,}"
+
+    local mic=false speaker=false
+    [ -n "$(ls /dev/snd/pcm*c 2>/dev/null)" ] && mic=true
+    [ -n "$(ls /dev/snd/pcm*p 2>/dev/null)" ] && speaker=true
+
+    local battery=false
+    [ -f /sys/bus/iio/devices/iio:device0/in_voltage0_raw ] && battery=true
+
+    local sd=false
+    { [ -b /dev/mmcblk1 ] || [ -n "$(ls -A /mnt/sd 2>/dev/null)" ]; } && sd=true
+
+    local halow=false
+    [ -d /sys/class/net/halow0 ] && halow=true
+
+    cat <<EOF
+{
+    "device_type": "",
+    "gimbal": { "present": $gimbal, "bus": "$can_bus" },
+    "hdr": { "present": $hdr, "sensor": "$sensor" },
+    "leds": [$leds],
+    "audio": { "mic": $mic, "speaker": $speaker },
+    "battery": $battery,
+    "sd": $sd,
+    "halow": $halow,
+    "can": $can
+}
+EOF
+}
 # device
 ##################################################
 

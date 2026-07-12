@@ -51,6 +51,12 @@ export interface IAppManifest {
   default_model?: string;
   version?: string;
   author?: string;
+  /**
+   * Optional hardware dependencies (P5): capability keys the device must
+   * have ("gimbal" | "hdr" | "halow" | "can" | "sd" | "battery" | "audio").
+   * The backend normalizes this to an array of valid keys.
+   */
+  requires?: string[];
 }
 
 /** Manifest + runtime status, as returned by /api/appMgr/list. */
@@ -59,6 +65,10 @@ export interface IAppInfo extends IAppManifest {
   running?: boolean;
   active?: boolean;
   current_model?: string;
+  /** P5: false when the device lacks required hardware (switch is refused). */
+  hw_supported?: boolean;
+  /** P5: requires[] entries the device does not have. */
+  missing_capabilities?: string[];
 }
 
 export interface IAppListResult {

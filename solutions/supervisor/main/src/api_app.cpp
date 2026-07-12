@@ -1,5 +1,6 @@
 #include "api_app.h"
 
+#include "api_device.h"
 #include "config_schema.hpp"
 
 #include <cctype>
@@ -179,7 +180,88 @@ json api_app::load_manifest_file(const std::string& path)
     if (m.contains("pipeline") && !m["pipeline"].is_array()) {
         m.erase("pipeline");
     }
+    // Optional hardware dependencies (P5-A): requires = ["gimbal", ...].
+    // Keys are validated against the capability whitelist; unknown keys are
+    // dropped with a warning (forward compatibility: an app written for a
+    // future firmware must not be bricked by one unknown key). Normalized
+    // to an array of unique valid strings.
+    {
+        json requires_norm = json::array();
+        if (m.contains("requires")) {
+            if (m["requires"].is_array()) {
+                for (const auto& r : m["requires"]) {
+                    if (!r.is_string()) {
+                        LOGW("App manifest %s: non-string requires entry ignored", path.c_str());
+                        continue;
+                    }
+                    const std::string key = r.get<std::string>();
+                    if (!valid_capability_key(key)) {
+                        LOGW("App manifest %s: unknown capability '%s' in requires[] ignored", path.c_str(), key.c_str());
+                        continue;
+                    }
+                    if (std::find(requires_norm.begin(), requires_norm.end(), json(key)) == requires_norm.end()) {
+                        requires_norm.push_back(key);
+                    }
+                }
+            } else {
+                LOGW("App manifest %s: requires is not an array, ignored", path.c_str());
+            }
+        }
+        m["requires"] = requires_norm;
+    }
     return m;
+}
+
+// --- hardware capability gating (P5-A) --------------------------------------
+
+// Whitelisted requires[] keys. Must stay in sync with the JSON shape of
+// api_device::probe_capabilities().
+bool api_app::valid_capability_key(const std::string& key)
+{
+    static const char* whitelist[] = { "gimbal", "hdr", "halow", "can", "sd", "battery", "audio" };
+    for (const char* k : whitelist) {
+        if (key == k) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Is one capability key present on this device? (caps = cached
+// api_device::capabilities() JSON.)
+bool api_app::capability_present(const json& caps, const std::string& key)
+{
+    if (!caps.is_object() || !caps.contains(key)) {
+        return false;
+    }
+    const json& v = caps[key];
+    if (v.is_boolean()) {
+        return v.get<bool>(); // battery / sd / halow / can
+    }
+    if (v.is_object()) {
+        if (key == "audio") { // mic OR speaker: any audio path counts
+            return v.value("mic", false) || v.value("speaker", false);
+        }
+        return v.value("present", false); // gimbal / hdr
+    }
+    return false;
+}
+
+// Capabilities from the manifest's (already normalized) requires[] that the
+// device does not have. Empty array = app is hardware-supported.
+json api_app::missing_capabilities(const json& manifest)
+{
+    json missing = json::array();
+    if (!manifest.contains("requires") || !manifest["requires"].is_array()) {
+        return missing;
+    }
+    const json& caps = api_device::capabilities();
+    for (const auto& r : manifest["requires"]) {
+        if (r.is_string() && !capability_present(caps, r.get<std::string>())) {
+            missing.push_back(r);
+        }
+    }
+    return missing;
 }
 
 json api_app::load_manifests()
@@ -411,6 +493,10 @@ api_status_t api_app::list(request_t req, response_t res)
         bool is_active = (id == active);
         item["active"] = is_active;
         item["status"] = is_active ? state_str(_state) : "stopped";
+        // P5-A: hardware dependency check against the cached capability set.
+        json missing = missing_capabilities(m);
+        item["hw_supported"] = missing.empty();
+        item["missing_capabilities"] = missing;
         if (state["models"].contains(id) && state["models"][id].is_string()) {
             item["current_model"] = state["models"][id];
         } else {
@@ -493,6 +579,22 @@ api_status_t api_app::switchApp(request_t req, response_t res)
         response(res, -1, "Unknown app: " + app_id);
         return API_STATUS_OK;
     }
+
+    // P5-A: never start an app whose declared hardware is absent (the error
+    // would otherwise surface as an opaque init-script failure).
+    json missing = missing_capabilities(manifests[app_id]);
+    if (!missing.empty()) {
+        std::string keys;
+        for (const auto& k : missing) {
+            if (!keys.empty()) {
+                keys += ", ";
+            }
+            keys += k.get<std::string>();
+        }
+        response(res, -1, "missing hardware capability: " + keys, { { "missing_capabilities", missing } });
+        return API_STATUS_OK;
+    }
+
     std::string target_script = jstr(manifests[app_id], "init_script");
 
     json state = read_state();

@@ -11,6 +11,7 @@ import {
   IBatteryInfo,
   ISensorStatus,
   IAudioVolume,
+  ICapabilities,
 } from "./device";
 
 // 获取设备信息
@@ -403,6 +404,20 @@ export const getTimezoneApi = async () =>
       url: "api/deviceMgr/getTimezone",
       method: "get",
       timeout: 5000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 硬件能力探测（P5）。首次调用后端会跑 shell 探测并缓存进程级结果；
+// refresh=true 强制重探。REG_API_NO_AUTH，登录前也可拉取。
+export const getCapabilitiesApi = async (refresh = false) =>
+  supervisorRequest<ICapabilities>(
+    {
+      url: `api/deviceMgr/getCapabilities${refresh ? "?refresh=1" : ""}`,
+      method: "get",
+      timeout: 10000,
     },
     {
       catchs: true,

@@ -92,55 +92,61 @@ api_status_t api_device::queryDeviceInfo(request_t req, response_t res)
     data["terminalPort"] = _dev_info.value("ttyd", "");
     data["galleryMode"] = _gallery_mode;
 
-    {
-        std::string model_type = "Basic";
-        if (_dev_info.value("canbus", 0)) {
-            model_type = "Gimbal";
-        }
-        if (_dev_info.value("wifi", 0)) {
-            model_type += " WiFi";
-        }
-
-        // emmc
-        uint64_t emmc = 0;
-        if (_dev_info.contains("emmc")) {
-            if (_dev_info["emmc"].is_number_integer()) {
-                emmc = _dev_info["emmc"].get<uint64_t>();
-            } else if (_dev_info["emmc"].is_string()) {
-                try {
-                    emmc = std::stoull(_dev_info["emmc"].get<std::string>());
-                } catch (const std::exception& e) {
-                    LOGW("Failed to parse Emmc value: %s", e.what());
-                }
-            }
-        }
-        emmc = emmc >> 30; // GB
-        if (emmc == 0) {
-            model_type += " No EMMC";
-        } else if (emmc < 8) {
-            model_type += " 8G";
-        } else if (emmc < 16) {
-            model_type += " 16G";
-        } else if (emmc < 32) {
-            model_type += " 32G";
-        } else if (emmc < 64) {
-            model_type += " 64G";
-        }
-
-        // sensor
-        int sensor = _dev_info.value("sensor", 0);
-        if (sensor == 0) {
-            model_type += " (No Sensor)";
-        } else if (sensor == 1) {
-            model_type += " (OV5647)";
-        } else if (sensor == 2) {
-            model_type += " (GC2053)";
-        }
-
-        data["type"] = model_type;
-    }
+    data["type"] = build_device_type();
     response(res, 0, STR_OK, data);
     return API_STATUS_OK;
+}
+
+// Human-readable hardware variant string ("Gimbal WiFi 8G (OV5647)"...).
+// Shared by queryDeviceInfo ("type") and getCapabilities ("device_type") so
+// both endpoints always report the identical value (P5-A).
+std::string api_device::build_device_type()
+{
+    std::string model_type = "Basic";
+    if (_dev_info.value("canbus", 0)) {
+        model_type = "Gimbal";
+    }
+    if (_dev_info.value("wifi", 0)) {
+        model_type += " WiFi";
+    }
+
+    // emmc
+    uint64_t emmc = 0;
+    if (_dev_info.contains("emmc")) {
+        if (_dev_info["emmc"].is_number_integer()) {
+            emmc = _dev_info["emmc"].get<uint64_t>();
+        } else if (_dev_info["emmc"].is_string()) {
+            try {
+                emmc = std::stoull(_dev_info["emmc"].get<std::string>());
+            } catch (const std::exception& e) {
+                LOGW("Failed to parse Emmc value: %s", e.what());
+            }
+        }
+    }
+    emmc = emmc >> 30; // GB
+    if (emmc == 0) {
+        model_type += " No EMMC";
+    } else if (emmc < 8) {
+        model_type += " 8G";
+    } else if (emmc < 16) {
+        model_type += " 16G";
+    } else if (emmc < 32) {
+        model_type += " 32G";
+    } else if (emmc < 64) {
+        model_type += " 64G";
+    }
+
+    // sensor
+    int sensor = _dev_info.value("sensor", 0);
+    if (sensor == 0) {
+        model_type += " (No Sensor)";
+    } else if (sensor == 1) {
+        model_type += " (OV5647)";
+    } else if (sensor == 2) {
+        model_type += " (GC2053)";
+    }
+
+    return model_type;
 }
 
 api_status_t api_device::getSystemStatus(request_t req, response_t res)
@@ -834,6 +840,80 @@ api_status_t api_device::getSensorStatus(request_t req, response_t res)
     data["storage"] = st;
 
     response(res, 0, STR_OK, data);
+    return API_STATUS_OK;
+}
+
+// --- Hardware capabilities (P5-A) ------------------------------------------
+
+// Run `main.sh queryCapabilities` and normalize the result so every key is
+// always present with a sane default, whatever the script returned (empty
+// output, partial JSON after an interrupted probe, ...). The shell leaves
+// device_type empty on purpose; it is filled here from the same builder
+// queryDeviceInfo uses, and gimbal.present is additionally ORed with the
+// device_type "Gimbal" marker (spec P5-A: either signal makes it present).
+json api_device::probe_capabilities()
+{
+    json raw = parse_result(script("queryCapabilities"));
+    if (!raw.is_object()) {
+        LOGW("queryCapabilities returned non-object output");
+        raw = json::object();
+    }
+
+    json caps = json::object();
+    caps["device_type"] = build_device_type();
+
+    json gimbal = json::object();
+    bool gimbal_present = false;
+    std::string gimbal_bus = "";
+    if (raw.contains("gimbal") && raw["gimbal"].is_object()) {
+        gimbal_present = raw["gimbal"].value("present", false);
+        gimbal_bus = raw["gimbal"].value("bus", "");
+    }
+    if (caps["device_type"].get<std::string>().find("Gimbal") != std::string::npos) {
+        gimbal_present = true;
+    }
+    gimbal["present"] = gimbal_present;
+    gimbal["bus"] = gimbal_bus;
+    caps["gimbal"] = gimbal;
+
+    json hdr = json::object();
+    hdr["present"] = false;
+    hdr["sensor"] = "unknown";
+    if (raw.contains("hdr") && raw["hdr"].is_object()) {
+        hdr["present"] = raw["hdr"].value("present", false);
+        hdr["sensor"] = raw["hdr"].value("sensor", "unknown");
+    }
+    caps["hdr"] = hdr;
+
+    caps["leds"] = (raw.contains("leds") && raw["leds"].is_array()) ? raw["leds"] : json::array();
+
+    json audio = json::object();
+    audio["mic"] = false;
+    audio["speaker"] = false;
+    if (raw.contains("audio") && raw["audio"].is_object()) {
+        audio["mic"] = raw["audio"].value("mic", false);
+        audio["speaker"] = raw["audio"].value("speaker", false);
+    }
+    caps["audio"] = audio;
+
+    caps["battery"] = raw.value("battery", false);
+    caps["sd"] = raw.value("sd", false);
+    caps["halow"] = raw.value("halow", false);
+    caps["can"] = raw.value("can", false);
+    caps["probed_at"] = timestamp();
+    return caps;
+}
+
+// GET /api/deviceMgr/getCapabilities[?refresh=1]
+// First call runs the shell probe and caches it for the process lifetime
+// (hardware does not change while running); refresh=1 forces a reprobe.
+api_status_t api_device::getCapabilities(request_t req, response_t res)
+{
+    if (get_param(req, "refresh") == "1" || _capabilities.empty()) {
+        _capabilities = probe_capabilities();
+        LOGI("capabilities probed: %s", _capabilities.dump().c_str());
+    }
+    response(res, 0, STR_OK, _capabilities);
     return API_STATUS_OK;
 }
 
