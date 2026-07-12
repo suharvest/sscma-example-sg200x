@@ -1,11 +1,13 @@
 import { message, Button } from "antd";
+import { useTranslation } from "react-i18next";
 import { setDevicePowerApi } from "@/api/device/index";
 import { PowerMode } from "@/enum";
 
 function Power() {
+  const { t } = useTranslation();
   const onOperateDevice = async (mode: PowerMode) => {
     await setDevicePowerApi({ mode });
-    message.success("Operate Success");
+    message.success(t("power.operateSuccess"));
   };
 
   return (
@@ -16,14 +18,14 @@ function Power() {
         variant="outlined"
         onClick={() => onOperateDevice(PowerMode.Restart)}
       >
-        Reboot
+        {t("power.reboot")}
       </Button>
       <Button
         color="danger"
         variant="outlined"
         onClick={() => onOperateDevice(PowerMode.Shutdown)}
       >
-        Shutdown
+        {t("power.shutdown")}
       </Button>
     </div>
   );

@@ -22,6 +22,7 @@ import {
 } from "@/api/device/index";
 import { ReloadOutlined } from "@ant-design/icons";
 import { message, Modal } from "antd";
+import i18n from "@/i18n";
 
 interface FormParams {
   serverUrl?: string;
@@ -83,9 +84,9 @@ export function useData() {
   const onUpdateRestart = async () => {
     await setDevicePowerApi({ mode: PowerMode.Restart });
     Modal.info({
-      title: "Device rebooting....",
+      title: i18n.t("system.rebootingTitle"),
       icon: <ReloadOutlined spin style={{ color: "#8fc31f" }} />,
-      content: "Please refresh the page in 5 seconds",
+      content: i18n.t("system.rebootingContent"),
       centered: true,
       footer: null,
     });
@@ -179,9 +180,7 @@ export function useData() {
         checkCountRef.current++;
 
         if (code == -1) {
-          message.warning(
-            "Failed to get system version update from the server, please check the Beta Participation Channel"
-          );
+          message.warning(i18n.t("system.checkFailed"));
           return;
         }
 

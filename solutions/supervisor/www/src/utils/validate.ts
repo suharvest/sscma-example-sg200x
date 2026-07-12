@@ -1,3 +1,5 @@
+import i18n from "@/i18n";
+
 // antd-mobile input 空格required验证
 export const requiredTrimValidate = () => {
   return {
@@ -6,7 +8,7 @@ export const requiredTrimValidate = () => {
       if (value && value.trim().length > 0) {
         return Promise.resolve();
       }
-      return Promise.reject("Required");
+      return Promise.reject(i18n.t("validation.required"));
     },
   };
 };
@@ -20,7 +22,7 @@ export const publicKeyValidate = () => {
       if (value && reg.test(value)) {
         return Promise.resolve();
       }
-      return Promise.reject("Invalid Key");
+      return Promise.reject(i18n.t("validation.invalidKey"));
     },
   };
 };
@@ -34,18 +36,24 @@ export const chineseValidate = () => {
       if (value && digitOnly.test(value)) {
         return Promise.resolve();
       }
-      return Promise.reject("Cannot enter Chinese");
+      return Promise.reject(i18n.t("validation.noChinese"));
     },
   };
 };
 
 export const passwordRules = [
-  { required: true, message: "Please input Password" },
+  {
+    required: true,
+    get message() {
+      return i18n.t("validation.passwordRequired");
+    },
+  },
   {
     pattern:
       /^(?=.*[0-9])(?=.*[a-zA-Z])(?=.*[~`!@#$%^&*()_+={}\\|/,.])[0-9a-zA-Z~`!@#$%^&*()_+={}\\|/,.]{8,32}$/,
-    message:
-      "Password must be 8 to 32 characters and include letters, numbers, and symbols.",
+    get message() {
+      return i18n.t("validation.passwordPattern");
+    },
   },
 ];
 
@@ -58,8 +66,9 @@ export const hostnameValidate = (maxLength = 32) => {
     required: true,
     validator: (_: unknown, value: string) => {
       const v = (value || "").trim();
-      if (!v) return Promise.reject("Required");
-      if (!hostnameReg.test(v)) return Promise.reject("Invalid Hostname");
+      if (!v) return Promise.reject(i18n.t("validation.required"));
+      if (!hostnameReg.test(v))
+        return Promise.reject(i18n.t("validation.invalidHostname"));
       return Promise.resolve();
     },
   };

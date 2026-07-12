@@ -2,6 +2,7 @@ import CommonPopup from "@/components/common-popup";
 import { Button, Form, Input, Switch } from "antd";
 import KeyImg from "@/assets/images/svg/key.svg";
 import { DeleteOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 import { useData, IFormTypeEnum } from "./hook";
 import moment from "moment";
 import {
@@ -11,13 +12,14 @@ import {
 } from "@/utils/validate";
 
 const titleObj = {
-  [IFormTypeEnum.Key]: "Add new SSH Key",
-  [IFormTypeEnum.Username]: "Edit Username",
-  [IFormTypeEnum.Password]: "Confirm Password",
-  [IFormTypeEnum.DelKey]: "Remove SSH Key",
+  [IFormTypeEnum.Key]: "security.addKeyTitle",
+  [IFormTypeEnum.Username]: "security.editUsernameTitle",
+  [IFormTypeEnum.Password]: "security.changePasswordTitle",
+  [IFormTypeEnum.DelKey]: "security.removeKeyTitle",
 };
 
 const Security = () => {
+  const { t } = useTranslation();
   const {
     state,
     formRef,
@@ -40,10 +42,10 @@ const Security = () => {
 
   return (
     <div className="my-8 p-16">
-      <div className="font-bold text-18 ">User</div>
+      <div className="font-bold text-18 ">{t("security.user")}</div>
       <div className="rounded-16 bg-white p-30 mt-12 mb-24">
         <div className="flex justify-between mb-16">
-          <span className="text-3d">Username</span>
+          <span className="text-3d">{t("security.username")}</span>
           <div className="flex">
             <span className="text-3d">{state.username}</span>
           </div>
@@ -54,12 +56,12 @@ const Security = () => {
             variant="outlined"
             onClick={() => onEdit(IFormTypeEnum.Password)}
           >
-            Change Password
+            {t("security.changePassword")}
           </Button>
         </div>
       </div>
       <div className="font-bold text-18 flex justify-between items-center">
-        <span>SSH</span>
+        <span>{t("security.ssh")}</span>
         <Switch checked={state.sshEnabled} onChange={handleSShStatusChange} />
       </div>
       {state.sshEnabled && (
@@ -73,7 +75,9 @@ const Security = () => {
                 >
                   <div className="mr-20">
                     <img className="w-44 h-44 mb-16" src={KeyImg} alt="" />
-                    <div className="border px-5 py-3 rounded-2">SSH</div>
+                    <div className="border px-5 py-3 rounded-2">
+                      {t("security.ssh")}
+                    </div>
                   </div>
                   <div className="flex-1 truncate">
                     <div className="text-16 flex justify-between">
@@ -88,9 +92,13 @@ const Security = () => {
                     </div>
                     <div className="text-black opacity-60">
                       <div>
-                        Added on
-                        {item.addTime &&
-                          moment(item.addTime).format(" MMMM DD,YYYY")}
+                        {t("security.addedOn", {
+                          date: item.addTime
+                            ? moment(item.addTime).format(
+                                t("security.dateFormat")
+                              )
+                            : "",
+                        })}
                       </div>
                     </div>
                   </div>
@@ -99,19 +107,19 @@ const Security = () => {
             })
           ) : (
             <div className="text-14 text-text">
-              There are no SSH keys associated with your device.
+              {t("security.noKeys")}
             </div>
           )}
           <div className="flex justify-center mt-24">
             <Button color="primary" variant="outlined" onClick={addSshKey}>
-              Add New Key
+              {t("security.addNewKey")}
             </Button>
           </div>
         </div>
       )}
       <CommonPopup
         visible={state.visible}
-        title={titleObj[state.formType]}
+        title={t(titleObj[state.formType])}
         onCancel={onCancel}
       >
         {state.formType == IFormTypeEnum.Key && (
@@ -123,25 +131,29 @@ const Security = () => {
           >
             <Form.Item
               name="sshName"
-              label="Title"
+              label={t("security.keyName")}
               rules={[requiredTrimValidate()]}
             >
-              <Input placeholder="recamera_132456" allowClear maxLength={32} />
+              <Input
+                placeholder={t("security.keyNamePlaceholder")}
+                allowClear
+                maxLength={32}
+              />
             </Form.Item>
             <Form.Item
               name="sshKey"
-              label="Key"
+              label={t("security.key")}
               trigger="onChange"
               rules={[publicKeyValidate()]}
             >
               <Input.TextArea
                 rows={8}
-                placeholder="Begins with 'ssh-rsa', 'ssh-ed25519',  or 'ssh-dss'"
+                placeholder={t("security.keyPlaceholder")}
               />
             </Form.Item>
             <Form.Item>
               <Button type="primary" block htmlType="submit">
-                Add SSH Key
+                {t("security.addSshKey")}
               </Button>
             </Form.Item>
           </Form>
@@ -155,22 +167,22 @@ const Security = () => {
           >
             <Form.Item
               name="oldPassword"
-              label="Old Password"
+              label={t("security.oldPassword")}
               rules={[requiredTrimValidate()]}
             >
               <Input.Password placeholder="" allowClear minLength={8} maxLength={32} />
             </Form.Item>
             <Form.Item
               name="newPassword"
-              label="New Password"
+              label={t("security.newPassword")}
               rules={passwordRules}
-              extra="Password must be 8-32 characters and include letters, numbers, and symbols"
+              extra={t("security.passwordExtra")}
             >
               <Input.Password placeholder="" allowClear minLength={8} maxLength={32} />
             </Form.Item>
             <Form.Item>
               <Button type="primary" block htmlType="submit">
-                Confirm
+                {t("common.confirm")}
               </Button>
             </Form.Item>
           </Form>
@@ -185,14 +197,14 @@ const Security = () => {
           >
             <Form.Item
               name="username"
-              label="Username"
+              label={t("security.username")}
               rules={[requiredTrimValidate()]}
             >
               <Input placeholder="" allowClear maxLength={32} />
             </Form.Item>
             <Form.Item>
               <Button type="primary" block htmlType="submit">
-                Confirm
+                {t("common.confirm")}
               </Button>
             </Form.Item>
           </Form>
@@ -200,11 +212,10 @@ const Security = () => {
         {state.formType == IFormTypeEnum.DelKey && (
           <div>
             <div className="text-3d text-16 mb-20">
-              This action cannot revert, are you sure you want to remove this
-              SSH key?
+              {t("security.removeConfirm")}
             </div>
             <Button type="primary" block danger onClick={onDeleteFinish}>
-              Confirm
+              {t("common.confirm")}
             </Button>
           </div>
         )}

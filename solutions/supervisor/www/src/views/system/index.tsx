@@ -9,6 +9,7 @@ import {
 } from "antd-mobile/es/components/picker";
 import { Button } from "antd";
 import moment from "moment";
+import { useTranslation } from "react-i18next";
 import { useData } from "./hook";
 import { DeviceChannleMode, UpdateStatus, PowerSourceMode } from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
@@ -16,19 +17,20 @@ import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
 
 const channelList = [
-  { label: "Self-Host", value: DeviceChannleMode.Self },
-  { label: "Seeed-Official", value: DeviceChannleMode.Official },
+  { label: "system.channelSelfHost", value: DeviceChannleMode.Self },
+  { label: "system.channelOfficial", value: DeviceChannleMode.Official },
 ];
 const infoList = [
-  { label: "CPU", key: "cpu" },
-  { label: "RAM", key: "ram" },
-  { label: "NPU", key: "npu" },
-  { label: "OS", key: "osVersion" },
-  { label: "Device Info", key: "type" },
-  { label: "Battery", key: "powerSource", isPowerSource: true },
+  { label: "system.infoCpu", key: "cpu" },
+  { label: "system.infoRam", key: "ram" },
+  { label: "system.infoNpu", key: "npu" },
+  { label: "system.infoOs", key: "osVersion" },
+  { label: "system.infoDevice", key: "type" },
+  { label: "system.infoBattery", key: "powerSource", isPowerSource: true },
 ];
 
 function System() {
+  const { t } = useTranslation();
   const {
     deviceInfo,
     batteryInfo,
@@ -58,8 +60,8 @@ function System() {
     const index = channelList.findIndex(
       (item) => item.value === systemUpdateState.channel
     );
-    return index > -1 && channelList[index].label;
-  }, [systemUpdateState.channel]);
+    return index > -1 && t(channelList[index].label);
+  }, [systemUpdateState.channel, t]);
 
   const displayInfoList = useMemo(() => {
     // Only show Battery row if battery hardware is detected as available
@@ -70,30 +72,32 @@ function System() {
 
   return (
     <div className="my-8 p-16">
-      <div className="font-bold text-18 mb-14">Update</div>
+      <div className="font-bold text-18 mb-14">{t("system.update")}</div>
       <div className="bg-white rounded-20 px-24">
         <div className="flex justify-between pt-24">
-          <span className="opacity-60 self-center mr-20">Software Update</span>
+          <span className="opacity-60 self-center mr-20">
+            {t("system.softwareUpdate")}
+          </span>
           <div className="flex-1 text-right justify-end flex">
             {systemUpdateState.status == UpdateStatus.NoNeedUpdate && (
-              <span className="self-center ml-12">Up to Date</span>
+              <span className="self-center ml-12">{t("system.upToDate")}</span>
             )}
             {systemUpdateState.status == UpdateStatus.Check && (
               <Button type="primary" onClick={() => onUpdateCheck(true)}>
-                Check Update
+                {t("system.checkUpdate")}
               </Button>
             )}
             {systemUpdateState.status == UpdateStatus.NeedUpdate && (
               <Button type="primary" onClick={onUpdateApply}>
-                Update
+                {t("system.updateBtn")}
               </Button>
             )}
             {systemUpdateState.status == UpdateStatus.Updating && (
-              <Button onClick={onUpdateCancel}>Cancel</Button>
+              <Button onClick={onUpdateCancel}>{t("common.cancel")}</Button>
             )}
             {systemUpdateState.status == UpdateStatus.UpdateDone && (
               <Button type="primary" onClick={onUpdateRestart}>
-                Reboot
+                {t("system.reboot")}
               </Button>
             )}
           </div>
@@ -101,12 +105,12 @@ function System() {
         <div className="flex justify-between py-12 text-3d ">
           {systemUpdateState.status == UpdateStatus.NoNeedUpdate && (
             <span className="text-12">
-              Up to date: last checked a minutes ago
+              {t("system.upToDateHint")}
             </span>
           )}
           {systemUpdateState.status == UpdateStatus.UpdateDone && (
             <span className="text-12">
-              Please reboot the device to finish the update
+              {t("system.rebootHint")}
             </span>
           )}
           {systemUpdateState.status == UpdateStatus.Updating && (
@@ -123,18 +127,20 @@ function System() {
                 />
               </div>
               <div className="mt-8">
-                The update can last several minutes depends on the network
-                condition
+                {t("system.updatingHint")}
               </div>
             </div>
           )}
         </div>
       </div>
-      <div className="font-bold text-18 mb-14 my-24"> Beta Participation</div>
+      <div className="font-bold text-18 mb-14 my-24">
+        {" "}
+        {t("system.betaParticipation")}
+      </div>
 
       <div className="bg-white rounded-20 px-24">
         <div className="flex justify-between py-24">
-          <span className="opacity-60 mr-20">Channel</span>
+          <span className="opacity-60 mr-20">{t("system.channel")}</span>
           <div
             className="flex-1 text-right justify-end flex"
             onClick={onChannelChange}
@@ -153,7 +159,9 @@ function System() {
         </div>
         {systemUpdateState.channel == DeviceChannleMode.Self && (
           <div className="flex justify-between py-24 w-full border-t">
-            <span className="opacity-60 mr-20">Server Address</span>
+            <span className="opacity-60 mr-20">
+              {t("system.serverAddress")}
+            </span>
             <div
               className="flex-1 text-right justify-end flex truncate"
               onClick={onEditServerAddress}
@@ -169,7 +177,12 @@ function System() {
         )}
       </div>
       <Picker
-        columns={[channelList]}
+        columns={[
+          channelList.map((item) => ({
+            label: t(item.label),
+            value: item.value,
+          })),
+        ]}
         visible={systemUpdateState.channelVisible}
         onClose={() => {
           setSystemUpdateState({
@@ -184,7 +197,10 @@ function System() {
 
       {!isDashboard && (
         <div>
-          <div className="font-bold text-18 mb-14 my-24"> System Info</div>
+          <div className="font-bold text-18 mb-14 my-24">
+            {" "}
+            {t("system.systemInfo")}
+          </div>
           <div className="bg-white rounded-20 px-24">
             {displayInfoList.map((item, index) => {
               const isPowerSource = (item as any).isPowerSource;
@@ -196,7 +212,7 @@ function System() {
                     }`}
                   >
                     <span className="opacity-60 text-black mr-20">
-                      {item.label}
+                      {t(item.label)}
                     </span>
                     <div className="flex-1 truncate text-right flex items-center justify-end">
                       {isPowerSource ? (
@@ -244,7 +260,7 @@ function System() {
 
       <CommonPopup
         visible={systemUpdateState.visible}
-        title={"Server Address"}
+        title={t("system.serverAddress")}
         onCancel={onCancel}
       >
         <Form
@@ -257,7 +273,7 @@ function System() {
           }}
           footer={
             <Button block htmlType="submit" type="primary">
-              Confirm
+              {t("common.confirm")}
             </Button>
           }
         >
@@ -276,7 +292,7 @@ function System() {
       >
         <div className="px-30 pt-100 pb-100 h-full" style={{ height: "100vh" }}>
           <div className="text-3d bg-white  rounded-16 p-20 h-full flex-1  flex flex-col justify-between">
-            <div className="font-bold text-16">reCamera OS Update</div>
+            <div className="font-bold text-16">{t("system.osUpdateTitle")}</div>
             <div className="flex justify-between opacity-60 font-bold mt-6 mb-10">
               <span>Version 15.4</span>
               <span>24/06/2024</span>
@@ -289,10 +305,10 @@ function System() {
             </div>
             <div className="flex mt-20">
               <Button className="flex-1 mr-28" onClick={onUpdateCancel}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button type="primary" className="flex-1" onClick={onUpdateApply}>
-                Apply
+                {t("system.apply")}
               </Button>
             </div>
           </div>

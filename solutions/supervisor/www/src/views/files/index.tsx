@@ -47,6 +47,7 @@ import {
 } from "@/api/files";
 import { getToken } from "@/store/user";
 import { baseIP } from "@/utils/supervisorRequest";
+import { useTranslation } from "react-i18next";
 
 type SortField = "name" | "size" | "type" | "modified";
 type SortDirection = "asc" | "desc";
@@ -63,6 +64,7 @@ const isProtectedRootDir = (name: string) =>
   PROTECTED_ROOT_DIRS.includes(normalizePath(name));
 
 const Files = () => {
+  const { t } = useTranslation();
   // 状态管理
   const [currentStorage, setCurrentStorage] = useState<StorageType>("local");
   const [currentPath, setCurrentPath] = useState<string>("");
@@ -147,7 +149,7 @@ const Files = () => {
       setHistoryIndex(newHistory.length - 1);
     } catch (error) {
       console.error("Failed to load file list:", error);
-      messageApi.error("Failed to load file list");
+      messageApi.error(t("files.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -294,7 +296,7 @@ const Files = () => {
   // 预览图片
   const handleImagePreview = async (filename: string) => {
     if (!isImageFile(filename)) {
-      messageApi.warning("This file is not an image");
+      messageApi.warning(t("files.notImage"));
       return;
     }
 
@@ -318,7 +320,7 @@ const Files = () => {
       setPreviewLoading(false);
     };
     img.onerror = () => {
-      messageApi.error("Failed to load image");
+      messageApi.error(t("files.imageLoadFailed"));
       setPreviewLoading(false);
       setPreviewModalVisible(false);
     };
@@ -328,7 +330,7 @@ const Files = () => {
   // 预览视频
   const handleVideoPreview = async (filename: string) => {
     if (!isVideoFile(filename)) {
-      messageApi.warning("This file is not a video");
+      messageApi.warning(t("files.notVideo"));
       return;
     }
 
@@ -389,7 +391,7 @@ const Files = () => {
   // 新建文件夹
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) {
-      messageApi.error("Please enter a folder name");
+      messageApi.error(t("files.folderNameRequired"));
       return;
     }
 
@@ -398,20 +400,20 @@ const Files = () => {
         ? `${currentPath}/${newFolderName}`
         : newFolderName;
       await makeDirectory(currentStorage, fullPath);
-      messageApi.success("Folder created successfully");
+      messageApi.success(t("files.folderCreated"));
       setNewFolderModalVisible(false);
       setNewFolderName("");
       loadFileList(currentStorage, currentPath);
     } catch (error) {
       console.error("Failed to create folder:", error);
-      messageApi.error("Failed to create folder");
+      messageApi.error(t("files.folderCreateFailed"));
     }
   };
 
   // 上传文件
   const handleUpload = async () => {
     if (uploadFileList.length === 0) {
-      messageApi.error("Please select files to upload");
+      messageApi.error(t("files.selectFilesFirst"));
       return;
     }
 
@@ -453,13 +455,13 @@ const Files = () => {
 
       // 隐藏进度弹窗
       setUploadProgress({ visible: false, progress: 0 });
-      messageApi.success("Files uploaded successfully");
+      messageApi.success(t("files.uploadSuccess"));
       setUploadModalVisible(false);
       setUploadFileList([]);
       loadFileList(currentStorage, currentPath);
     } catch (error) {
       console.error("Failed to upload files:", error);
-      messageApi.error("Failed to upload files");
+      messageApi.error(t("files.uploadFailed"));
       // 隐藏进度弹窗
       setUploadProgress({ visible: false, progress: 0 });
     }
@@ -469,25 +471,27 @@ const Files = () => {
   const handleDelete = async (name: string, isDirectory: boolean) => {
     // 保护：根目录的受保护文件夹本身不能被删除
     if (currentPath === "" && isDirectory && isProtectedRootDir(name)) {
-      messageApi.warning("This directory cannot be deleted");
+      messageApi.warning(t("files.protectedDelete"));
       return;
     }
 
     Modal.confirm({
-      title: `Delete ${isDirectory ? "Folder" : "File"}`,
-      content: `Are you sure you want to delete "${name}"? This action cannot be undone.`,
-      okText: "Delete",
+      title: isDirectory
+        ? t("files.deleteFolderTitle")
+        : t("files.deleteFileTitle"),
+      content: t("files.deleteConfirm", { name }),
+      okText: t("files.delete"),
       okType: "danger",
-      cancelText: "Cancel",
+      cancelText: t("common.cancel"),
       onOk: async () => {
         try {
           const fullPath = currentPath ? `${currentPath}/${name}` : name;
           await removeEntry(currentStorage, fullPath);
-          messageApi.success("Deleted successfully");
+          messageApi.success(t("files.deleteSuccess"));
           loadFileList(currentStorage, currentPath);
         } catch (error) {
           console.error("Failed to delete:", error);
-          messageApi.error("Failed to delete");
+          messageApi.error(t("files.deleteFailed"));
         }
       },
     });
@@ -496,13 +500,13 @@ const Files = () => {
   // 重命名文件/文件夹
   const handleRename = async () => {
     if (!selectedFile || !newFileName.trim()) {
-      messageApi.error("Please enter a new name");
+      messageApi.error(t("files.renameRequired"));
       return;
     }
 
     // 保护：根目录的受保护文件夹本身不能被重命名
     if (currentPath === "" && isProtectedRootDir(selectedFile)) {
-      messageApi.warning("This directory cannot be renamed");
+      messageApi.warning(t("files.protectedRename"));
       return;
     }
 
@@ -514,14 +518,14 @@ const Files = () => {
         ? `${currentPath}/${newFileName}`
         : newFileName;
       await renameEntry(currentStorage, oldPath, newPath);
-      messageApi.success("Renamed successfully");
+      messageApi.success(t("files.renameSuccess"));
       setRenameModalVisible(false);
       setNewFileName("");
       setSelectedFile(null);
       loadFileList(currentStorage, currentPath);
     } catch (error) {
       console.error("Failed to rename:", error);
-      messageApi.error("Failed to rename");
+      messageApi.error(t("files.renameFailed"));
     }
   };
 
@@ -541,10 +545,10 @@ const Files = () => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
-      messageApi.success("Downloaded successfully");
+      messageApi.success(t("files.downloadSuccess"));
     } catch (error) {
       console.error("Failed to download:", error);
-      messageApi.error("Failed to download");
+      messageApi.error(t("files.downloadFailed"));
     } finally {
       setLoading(false);
     }
@@ -561,14 +565,14 @@ const Files = () => {
 
     const items: MenuProps["items"] = [
       ...(isDirectory
-        ? [{ key: "open", icon: <FolderFilled />, label: "Open" }]
+        ? [{ key: "open", icon: <FolderFilled />, label: t("files.open") }]
         : [
             ...(isImageFile(item.name)
               ? [
                   {
                     key: "preview",
                     icon: <PictureOutlined />,
-                    label: "Preview",
+                    label: t("files.preview"),
                   },
                 ]
               : isVideoFile(item.name)
@@ -576,22 +580,26 @@ const Files = () => {
                   {
                     key: "preview",
                     icon: <VideoCameraOutlined />,
-                    label: "Preview",
+                    label: t("files.preview"),
                   },
                 ]
               : []),
-            { key: "download", icon: <DownloadOutlined />, label: "Download" },
+            {
+              key: "download",
+              icon: <DownloadOutlined />,
+              label: t("files.download"),
+            },
           ]),
       {
         key: "rename",
         icon: <EditOutlined />,
-        label: "Rename",
+        label: t("files.rename"),
         disabled: disableModify,
       },
       {
         key: "delete",
         icon: <DeleteOutlined />,
-        label: "Delete",
+        label: t("files.delete"),
         danger: true,
         disabled: disableModify,
       },
@@ -703,7 +711,7 @@ const Files = () => {
             </div>
           ) : directories.length === 0 && files.length === 0 ? (
             <div className="flex justify-center items-center h-full">
-              <Empty description="This folder is empty" />
+              <Empty description={t("files.emptyFolder")} />
             </div>
           ) : (
             <div className="px-4 pb-4">
@@ -719,9 +727,13 @@ const Files = () => {
         <div className="bg-gray-50 border-t border-gray-200 px-4 py-2 text-sm text-gray-600">
           <div className="flex justify-between items-center">
             <span>
-              {directories.length + files.length} items
-              {directories.length > 0 && ` (${directories.length} folders)`}
-              {files.length > 0 && ` (${files.length} files)`}
+              {t("files.itemsCount", {
+                count: directories.length + files.length,
+              })}
+              {directories.length > 0 &&
+                ` ${t("files.foldersCount", { count: directories.length })}`}
+              {files.length > 0 &&
+                ` ${t("files.filesCount", { count: files.length })}`}
             </span>
           </div>
         </div>
@@ -740,8 +752,8 @@ const Files = () => {
     };
 
     const radioOptions = [
-      { label: "Local Files", value: "local" },
-      ...(sdCardAvailable ? [{ label: "SD Card", value: "sd" }] : []),
+      { label: t("files.localFiles"), value: "local" },
+      ...(sdCardAvailable ? [{ label: t("files.sdCard"), value: "sd" }] : []),
     ];
 
     return (
@@ -756,7 +768,9 @@ const Files = () => {
               options={radioOptions}
             />
           ) : (
-            <div className="text-2xl font-bold text-gray-900">Local Files</div>
+            <div className="text-2xl font-bold text-gray-900">
+              {t("files.localFiles")}
+            </div>
           )}
         </div>
       </div>
@@ -775,7 +789,7 @@ const Files = () => {
 
       {/* Media Preview Modal */}
       <Modal
-        title={previewFileName || "Media Preview"}
+        title={previewFileName || t("files.mediaPreview")}
         open={previewModalVisible}
         onCancel={handleCloseMediaPreview}
         footer={null}
@@ -787,7 +801,9 @@ const Files = () => {
             previewLoading ? (
               <div className="flex flex-col justify-center items-center h-64">
                 <Spin size="large" />
-                <div className="mt-4 text-gray-500">Loading image...</div>
+                <div className="mt-4 text-gray-500">
+                  {t("files.loadingImage")}
+                </div>
               </div>
             ) : (
               <img
@@ -800,7 +816,7 @@ const Files = () => {
                 }}
                 onError={(e) => {
                   console.error("Image load error:", e);
-                  messageApi.error("Failed to display image");
+                  messageApi.error(t("files.imageDisplayFailed"));
                 }}
               />
             )
@@ -816,14 +832,14 @@ const Files = () => {
               }}
               onError={(e) => {
                 console.error("Video load error:", e);
-                messageApi.error("Failed to load video");
+                messageApi.error(t("files.videoLoadFailed"));
               }}
             >
-              Your browser does not support the video tag.
+              {t("files.videoNotSupported")}
             </video>
           ) : (
             <div className="text-center text-gray-500">
-              Unsupported file type for preview
+              {t("files.unsupportedPreview")}
             </div>
           )}
         </div>
@@ -831,18 +847,18 @@ const Files = () => {
 
       {/* New Folder Modal */}
       <Modal
-        title="New Folder"
+        title={t("files.newFolder")}
         open={newFolderModalVisible}
         onOk={handleCreateFolder}
         onCancel={() => {
           setNewFolderModalVisible(false);
           setNewFolderName("");
         }}
-        okText="Create"
-        cancelText="Cancel"
+        okText={t("files.create")}
+        cancelText={t("common.cancel")}
       >
         <Input
-          placeholder="Enter folder name"
+          placeholder={t("files.folderNamePlaceholder")}
           value={newFolderName}
           onChange={(e) => setNewFolderName(e.target.value)}
           onPressEnter={handleCreateFolder}
@@ -851,15 +867,15 @@ const Files = () => {
 
       {/* Upload Files Modal */}
       <Modal
-        title="Upload Files"
+        title={t("files.uploadFiles")}
         open={uploadModalVisible}
         onOk={handleUpload}
         onCancel={() => {
           setUploadModalVisible(false);
           setUploadFileList([]);
         }}
-        okText="Upload"
-        cancelText="Cancel"
+        okText={t("files.upload")}
+        cancelText={t("common.cancel")}
         confirmLoading={loading}
       >
         <Upload
@@ -868,13 +884,13 @@ const Files = () => {
           onChange={({ fileList }) => setUploadFileList(fileList)}
           multiple
         >
-          <Button icon={<UploadOutlined />}>Select files</Button>
+          <Button icon={<UploadOutlined />}>{t("files.selectFiles")}</Button>
         </Upload>
       </Modal>
 
       {/* Rename Modal */}
       <Modal
-        title="Rename"
+        title={t("files.rename")}
         open={renameModalVisible}
         onOk={handleRename}
         onCancel={() => {
@@ -882,11 +898,11 @@ const Files = () => {
           setNewFileName("");
           setSelectedFile(null);
         }}
-        okText="Rename"
-        cancelText="Cancel"
+        okText={t("files.rename")}
+        cancelText={t("common.cancel")}
       >
         <Input
-          placeholder="Enter a new name"
+          placeholder={t("files.newNamePlaceholder")}
           value={newFileName}
           onChange={(e) => setNewFileName(e.target.value)}
           onPressEnter={handleRename}
@@ -895,7 +911,7 @@ const Files = () => {
 
       {/* Upload Progress Modal */}
       <Modal
-        title="Upload Progress"
+        title={t("files.uploadProgress")}
         open={uploadProgress.visible}
         footer={null}
         closable={false}

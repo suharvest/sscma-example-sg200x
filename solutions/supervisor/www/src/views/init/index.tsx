@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { CheckCircleFilled } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 import useConfigStore from "@/store/config";
 import { getWiFiInfoListApi } from "@/api/network";
 import { NetworkStatus } from "@/enum/network";
@@ -7,27 +8,28 @@ import { queryDeviceInfoApi } from "@/api/device/index";
 
 const infoList = [
   {
-    label: "IP",
+    label: "init.ip",
     key: "ip",
   },
   {
-    label: "Wi-Fi IP",
+    label: "init.wifiIp",
     key: "wifiIp",
   },
   {
-    label: "Mask",
+    label: "init.mask",
     key: "mask",
   },
   {
-    label: "Gateway",
+    label: "init.gateway",
     key: "gateway",
   },
   {
-    label: "DNS",
+    label: "init.dns",
     key: "dns",
   },
 ];
 function Init() {
+  const { t } = useTranslation();
   const { deviceInfo, updateWifiStatus, updateEtherStatus, updateDeviceInfo } =
     useConfigStore();
 
@@ -63,7 +65,7 @@ function Init() {
             return (
               <div className="flex justify-between mb-8" key={index}>
                 <span className="text-black opacity-60 text-right w-2/5">
-                  {item.label}：
+                  {t(item.label)}：
                 </span>
                 <span className="font-bold flex-1  ">
                   {deviceInfo[item.key]}
@@ -82,8 +84,7 @@ function Init() {
           {deviceInfo.wifiIp != deviceInfo.ip && (
             <div className="text-center text-18 px-32  break-all">
               <span>
-                Connect to '{deviceInfo.deviceName}' then you can explore the
-                dashboard by visit
+                {t("init.connectHint", { name: deviceInfo.deviceName })}
               </span>
               <a
                 className="text-primary ml-2"

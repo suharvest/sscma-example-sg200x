@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Button,
   Form,
@@ -53,11 +54,12 @@ const getSignalIcon = (signal: number): number => {
 };
 
 const titleObj = {
-  [FormType.Password]: "Password",
-  [FormType.Disabled]: "Disable Wi-Fi",
-  [FormType.HalowConfig]: "HaLow Configuration",
+  [FormType.Password]: "network.passwordTitle",
+  [FormType.Disabled]: "network.disableWifiTitle",
+  [FormType.HalowConfig]: "network.halowConfigTitle",
 };
 function Network() {
+  const { t } = useTranslation();
   const {
     state,
     passwordFormRef,
@@ -85,20 +87,22 @@ function Network() {
 
   return (
     <div className="px-16 pb-24">
-      <div className="text-24 font-bold mt-24">Internet</div>
+      <div className="text-24 font-bold mt-24">{t("network.internet")}</div>
       {!state.wifiChecked &&
         state.etherStatus === NetworkStatus.Disconnected && (
           <div className="flex mt-10">
             <img className="w-24" src={WarnImg} alt="" />
             <span className="ml-12 self-center text-16">
-              Not connected to a network
+              {t("network.notConnected")}
             </span>
           </div>
         )}
       {/* 有线网络 */}
       {state.etherInfo && (
         <div className="mt-30">
-          <div className="font-bold text-18 mb-20">Internet</div>
+          <div className="font-bold text-18 mb-20">
+            {t("network.internet")}
+          </div>
           <div className="border-b text-16">
             <div
               className="flex justify-between border-t py-10"
@@ -106,7 +110,9 @@ function Network() {
             >
               <span className="flex flex-1 truncate">
                 <img className="w-18 mr-12" src={WireImg} alt="" />
-                <span className="self-center truncate">Ethernet</span>
+                <span className="self-center truncate">
+                  {t("network.ethernet")}
+                </span>
               </span>
             </div>
           </div>
@@ -122,14 +128,16 @@ function Network() {
           items={[
             {
               key: "wifi",
-              label: "Wi-Fi",
+              label: t("network.wifi"),
               children: (
                 <>
                   {/* WiFi开关：当 wifiEnable !== 2 时显示，状态由 state.wifiChecked 控制 */}
                   {state.wifiEnable !== WifiEnable.Disable && (
                     <div className="mt-20">
                       <div className="flex justify-between mb-20">
-                        <div className="font-bold text-18">Enable Wi-Fi</div>
+                        <div className="font-bold text-18">
+                          {t("network.enableWifi")}
+                        </div>
                         <Switch
                           checked={state.wifiChecked}
                           onChange={onSwitchEnabledWifi}
@@ -143,7 +151,7 @@ function Network() {
                     state.connectedWifiInfoList.length > 0 && (
                       <div className="mt-30">
                         <div className="font-bold text-18 mb-20">
-                          My Networks
+                          {t("network.myNetworks")}
                         </div>
                         <div className="border-b text-16">
                           {state.connectedWifiInfoList.map(
@@ -213,7 +221,7 @@ function Network() {
                   {state.wifiChecked && state.wifiInfoList.length > 0 && (
                     <div className="mt-30">
                       <div className="font-bold text-18 mb-20">
-                        Networks Found
+                        {t("network.networksFound")}
                       </div>
                       <div className="border-b text-16">
                         {state.wifiInfoList.map((wifiItem, index) => (
@@ -279,14 +287,16 @@ function Network() {
             },
             {
               key: "halow",
-              label: "HaLow",
+              label: t("network.halow"),
               children: (
                 <>
                   {/* Halow开关：当 halowEnable !== 2 时显示，状态由 state.halowChecked 控制 */}
                   {state.halowEnable !== 2 && (
                     <div className="mt-20">
                       <div className="flex justify-between mb-20">
-                        <div className="font-bold text-18">Enable HaLow</div>
+                        <div className="font-bold text-18">
+                          {t("network.enableHalow")}
+                        </div>
                         <Switch
                           checked={state.halowChecked}
                           onChange={onSwitchEnabledHalow}
@@ -299,7 +309,9 @@ function Network() {
                   {state.halowEnable !== 2 && state.halowChecked && (
                     <div className="mt-20">
                       <div className="flex justify-between items-center mb-20">
-                        <div className="font-bold text-18">IPEX Antenna</div>
+                        <div className="font-bold text-18">
+                          {t("network.ipexAntenna")}
+                        </div>
                         <div className="flex items-center">
                           <Switch
                             checked={state.antennaEnable === AntennaEnable.RF2}
@@ -313,16 +325,22 @@ function Network() {
                   {state.halowEnable !== 2 && state.halowChecked && (
                     <div className="mt-20">
                       <div className="flex justify-between items-center mb-20">
-                        <div className="font-bold text-18">Keep-Alive</div>
+                        <div className="font-bold text-18">
+                          {t("network.keepAlive")}
+                        </div>
                         <div className="flex items-center">
                           {/* 显示当前目标IP (只读) */}
                           <span style={{ marginRight: 10, color: '#999' }}>
-                            {state.pingEnabled ? `Target: ${state.pingIp}` : ''}
+                            {state.pingEnabled
+                              ? t("network.keepAliveTarget", {
+                                  ip: state.pingIp,
+                                })
+                              : ''}
                           </span>
                           {(state.pingEnabled || showPingInput) && (
                             <>
                               <Input
-                                placeholder="Interval"
+                                placeholder={t("network.intervalPlaceholder")}
                                 value={state.pingInterval}
                                 onChange={(e) => {
                                   const val = e.target.value;
@@ -345,15 +363,19 @@ function Network() {
                                 }}
                                 disabled={state.pingEnabled}
                               />
-                              <span style={{ marginRight: 10, marginLeft: 5 }}>s</span>
+                              <span style={{ marginRight: 10, marginLeft: 5 }}>
+                                {t("network.secondsUnit")}
+                              </span>
                             </>
                           )}
                           {state.pingEnabled ? (
                             <Button onClick={handleStopPing} danger>
-                              Stop
+                              {t("common.stop")}
                             </Button>
                           ) : !showPingInput ? (
-                            <Button onClick={() => setShowPingInput(true)}>Start</Button>
+                            <Button onClick={() => setShowPingInput(true)}>
+                              {t("network.start")}
+                            </Button>
                           ) : (
                             <Button
                               type="primary"
@@ -362,7 +384,7 @@ function Network() {
                                 setShowPingInput(false);
                               }}
                             >
-                              Confirm
+                              {t("common.confirm")}
                             </Button>
                           )}
                         </div>
@@ -376,7 +398,7 @@ function Network() {
                     state.connectedHalowInfoList.length > 0 && (
                       <div className="mt-30">
                         <div className="font-bold text-18 mb-20">
-                          My Networks
+                          {t("network.myNetworks")}
                         </div>
                         <div className="border-b text-16">
                           {state.connectedHalowInfoList.map(
@@ -446,7 +468,9 @@ function Network() {
                   {state.halowChecked && (
                     <div className="mt-30">
                       <div className="flex justify-between items-center mb-20">
-                        <div className="font-bold text-18">Networks Found</div>
+                        <div className="font-bold text-18">
+                          {t("network.networksFound")}
+                        </div>
                         <Button
                           type="primary"
                           icon={<PlusOutlined />}
@@ -528,14 +552,13 @@ function Network() {
         centered
         width="90%"
         style={{ maxWidth: 480 }}
-        title={titleObj[state.formType]}
+        title={t(titleObj[state.formType])}
         destroyOnClose
       >
         {state.formType === FormType.Disabled && (
           <div>
             <div className="text-3d text-16 mb-20">
-              This action will prevent you from access this web dashboard. Are
-              you sure want to turn off it now?
+              {t("network.disableConfirm")}
             </div>
             <Button
               block
@@ -548,7 +571,7 @@ function Network() {
                   : handleSwitchHalow
               }
             >
-              Confirm
+              {t("common.confirm")}
             </Button>
           </div>
         )}
@@ -575,7 +598,7 @@ function Network() {
               htmlType="submit"
               loading={state.submitLoading}
             >
-              Confirm
+              {t("common.confirm")}
             </Button>
           </Form>
         )}
@@ -604,16 +627,22 @@ function Network() {
             {!state.selectedHalowInfo && (
               <Form.Item
                 name="ssid"
-                label="SSID"
+                label={t("network.ssid")}
                 rules={[requiredTrimValidate()]}
               >
-                <Input placeholder="Enter SSID" allowClear maxLength={63} />
+                <Input
+                  placeholder={t("network.ssidPlaceholder")}
+                  allowClear
+                  maxLength={63}
+                />
               </Form.Item>
             )}
             <Form.Item
               name="country"
-              label="Country"
-              rules={[{ required: true, message: "Please select country" }]}
+              label={t("network.country")}
+              rules={[
+                { required: true, message: t("network.countryRequired") },
+              ]}
             >
               <Select
                 options={[
@@ -624,26 +653,28 @@ function Network() {
             </Form.Item>
             <Form.Item
               name="mode"
-              label="Mode"
-              rules={[{ required: true, message: "Please select mode" }]}
+              label={t("network.mode")}
+              rules={[{ required: true, message: t("network.modeRequired") }]}
             >
               <Select
                 options={[
-                  { label: "no WDS", value: 0 },
-                  { label: "WDS", value: 1 },
+                  { label: t("network.modeNoWds"), value: 0 },
+                  { label: t("network.modeWds"), value: 1 },
                 ]}
               />
             </Form.Item>
             <Form.Item
               name="encryption"
-              label="Encryption"
-              rules={[{ required: true, message: "Please select encryption" }]}
+              label={t("network.encryption")}
+              rules={[
+                { required: true, message: t("network.encryptionRequired") },
+              ]}
             >
               <Select
                 options={[
                   { label: "WPA3-SAE", value: "WPA3-SAE" },
                   { label: "OWE", value: "OWE" },
-                  { label: "No encryption", value: "No encryption" },
+                  { label: t("network.noEncryption"), value: "No encryption" },
                 ]}
               />
             </Form.Item>
@@ -657,7 +688,7 @@ function Network() {
                   return state.selectedHalowInfo.auth === WifiAuth.Need ? (
                     <Form.Item
                       name="password"
-                      label="Password"
+                      label={t("network.password")}
                       rules={[requiredTrimValidate()]}
                     >
                       <Input.Password placeholder="" allowClear maxLength={63} />
@@ -668,7 +699,7 @@ function Network() {
                   return encryption && encryption !== "OWE" && encryption !== "No encryption" ? (
                     <Form.Item
                       name="password"
-                      label="Password"
+                      label={t("network.password")}
                       rules={[requiredTrimValidate()]}
                     >
                       <Input.Password placeholder="" allowClear maxLength={63} />
@@ -683,7 +714,7 @@ function Network() {
               htmlType="submit"
               loading={state.submitLoading}
             >
-              Confirm
+              {t("common.confirm")}
             </Button>
           </Form>
         )}
@@ -729,7 +760,7 @@ function Network() {
                         }
                         onClick={() => onHandleOperate(OperateType.Forget)}
                       >
-                        Forget
+                        {t("network.forget")}
                       </Button>
                       <Button
                         size="small"
@@ -742,7 +773,7 @@ function Network() {
                         }
                         onClick={() => onHandleOperate(OperateType.DisConnect)}
                       >
-                        Disconnect
+                        {t("network.disconnect")}
                       </Button>
                     </>
                   ) : (state.connectedWifiInfoList || []).some(
@@ -760,7 +791,7 @@ function Network() {
                         }
                         onClick={() => onHandleOperate(OperateType.Forget)}
                       >
-                        Forget
+                        {t("network.forget")}
                       </Button>
                       <Button
                         size="small"
@@ -773,7 +804,7 @@ function Network() {
                         }
                         onClick={() => onHandleOperate(OperateType.Connect)}
                       >
-                        Connect
+                        {t("network.connect")}
                       </Button>
                     </>
                   ) : (
@@ -787,7 +818,7 @@ function Network() {
                       }
                       onClick={() => onHandleOperate(OperateType.Connect)}
                     >
-                      <span className="text-14">Connect</span>
+                      <span className="text-14">{t("network.connect")}</span>
                     </Button>
                   )}
                 </div>
@@ -810,7 +841,7 @@ function Network() {
                         }
                         onClick={() => onHandleHalowOperate(OperateType.Forget)}
                       >
-                        Forget
+                        {t("network.forget")}
                       </Button>
                       <Button
                         size="small"
@@ -825,7 +856,7 @@ function Network() {
                           onHandleHalowOperate(OperateType.DisConnect)
                         }
                       >
-                        Disconnect
+                        {t("network.disconnect")}
                       </Button>
                     </>
                   ) : (state.connectedHalowInfoList || []).some(
@@ -843,7 +874,7 @@ function Network() {
                         }
                         onClick={() => onHandleHalowOperate(OperateType.Forget)}
                       >
-                        Forget
+                        {t("network.forget")}
                       </Button>
                       <Button
                         size="small"
@@ -858,7 +889,7 @@ function Network() {
                           onHandleHalowOperate(OperateType.Connect)
                         }
                       >
-                        Connect
+                        {t("network.connect")}
                       </Button>
                     </>
                   ) : (
@@ -872,7 +903,7 @@ function Network() {
                       }
                       onClick={() => onHandleHalowOperate(OperateType.Connect)}
                     >
-                      <span className="text-14">Connect</span>
+                      <span className="text-14">{t("network.connect")}</span>
                     </Button>
                   )}
                 </div>
@@ -881,11 +912,11 @@ function Network() {
             <div className="flex-1 mt-20 border-t">
               <div>
                 <div className="flex justify-between border-b py-6">
-                  <span className="self-center">MAC Address</span>
+                  <span className="self-center">{t("network.macAddress")}</span>
                   <span className="text-8d text-black opacity-60">
                     {state.activeTab === "wifi"
-                      ? state.selectedWifiInfo?.macAddress || "N/A"
-                      : state.selectedHalowInfo?.macAddress || "N/A"}
+                      ? state.selectedWifiInfo?.macAddress || t("network.na")
+                      : state.selectedHalowInfo?.macAddress || t("network.na")}
                   </span>
                 </div>
               </div>
@@ -895,53 +926,55 @@ function Network() {
                 : state.selectedHalowInfo) && (
                 <div>
                   <div className="font-bold border-b mt-24 py-6">
-                    IPV4 ADDRESS
+                    {t("network.ipv4Address")}
                   </div>
                   <div className="flex justify-between border-b py-6">
-                    <span className="self-center">IP Address Assignment</span>
+                    <span className="self-center">
+                      {t("network.ipAssignment")}
+                    </span>
                     <span className="text-8d text-black opacity-60">
                       {(state.activeTab === "wifi"
                         ? state.selectedWifiInfo
                         : state.selectedHalowInfo
                       )?.ipAssignment === WifiIpAssignmentRule.Automatic
-                        ? "Automatic"
-                        : "Static"}
+                        ? t("network.automatic")
+                        : t("network.staticIp")}
                     </span>
                   </div>
                   <div className="flex justify-between border-b py-6">
-                    <span className="self-center">IP Address</span>
+                    <span className="self-center">{t("network.ipAddress")}</span>
                     <span className="text-8d text-black opacity-60">
                       {(state.activeTab === "wifi"
                         ? state.selectedWifiInfo
                         : state.selectedHalowInfo
-                      )?.ip || "N/A"}
+                      )?.ip || t("network.na")}
                     </span>
                   </div>
                   <div className="flex justify-between border-b py-6">
-                    <span className="self-center">Subnet Mask</span>
+                    <span className="self-center">{t("network.subnetMask")}</span>
                     <span className="text-8d text-black opacity-60">
                       {(state.activeTab === "wifi"
                         ? state.selectedWifiInfo
                         : state.selectedHalowInfo
-                      )?.subnetMask || "N/A"}
+                      )?.subnetMask || t("network.na")}
                     </span>
                   </div>
                   <div className="flex justify-between border-b py-6">
-                    <span className="self-center">DNS 1</span>
+                    <span className="self-center">{t("network.dns1")}</span>
                     <span className="text-8d text-black opacity-60">
                       {(state.activeTab === "wifi"
                         ? state.selectedWifiInfo
                         : state.selectedHalowInfo
-                      )?.dns1 || "N/A"}
+                      )?.dns1 || t("network.na")}
                     </span>
                   </div>
                   <div className="flex justify-between border-b py-6">
-                    <span className="self-center">DNS 2</span>
+                    <span className="self-center">{t("network.dns2")}</span>
                     <span className="text-8d text-black opacity-60">
                       {(state.activeTab === "wifi"
                         ? state.selectedWifiInfo
                         : state.selectedHalowInfo
-                      )?.dns2 || "N/A"}
+                      )?.dns2 || t("network.na")}
                     </span>
                   </div>
                 </div>

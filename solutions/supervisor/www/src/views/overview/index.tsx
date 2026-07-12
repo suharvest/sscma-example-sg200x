@@ -1,8 +1,10 @@
 import usehookData from './hook'
 import moment from 'moment'
+import { useTranslation } from 'react-i18next'
 
 function Home() {
 	const {timeObj} = usehookData()
+	const { t } = useTranslation()
 	return (
 		<div className='m-auto p-16' style={{ maxWidth: '600px' }}>
 			<div className='iframe my-20  flex justify-center' style={{ height: 'auto' }}>
@@ -16,8 +18,8 @@ function Home() {
 				></video>
 			</div>
 			<div className='flex justify-between text-black opacity-60 mb-10'>
-				<span>Time Stamp</span>
-				<span>Delay</span>
+				<span>{t('overview.timeStamp')}</span>
+				<span>{t('overview.delay')}</span>
 			</div>
 
 			<div className='flex justify-between text-17 '>
