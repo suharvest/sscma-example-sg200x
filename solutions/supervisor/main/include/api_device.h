@@ -70,6 +70,7 @@ private:
     static api_status_t setTimezone(request_t req, response_t res);
     static api_status_t getTimezone(request_t req, response_t res);
     static api_status_t getTimezoneList(request_t req, response_t res);
+    static api_status_t syncTime(request_t req, response_t res);
 
     static api_status_t queryBatteryInfo(request_t req, response_t res);
     static api_status_t getSensorStatus(request_t req, response_t res);
@@ -140,6 +141,7 @@ public:
         REG_API(setTimezone);
         REG_API(getTimezone);
         REG_API(getTimezoneList);
+        REG_API(syncTime);
 
         REG_API_NO_AUTH(queryBatteryInfo);
         REG_API(getSensorStatus);

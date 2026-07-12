@@ -267,6 +267,25 @@ function updateSystem() {
     echo $STR_OK
 }
 
+# NTP time sync (deviceMgr/syncTime). Devices often boot with a 1970 clock
+# (no RTC battery); try well-known NTP servers in order, 10 seconds each.
+# Timeouts use _app_run_timeout (pure-shell, defined in the app manager
+# section below): the `timeout` binary is deliberately avoided because
+# busybox builds need `timeout -t SECS` while coreutils takes plain SECS.
+# On success the RTC is persisted via hwclock (best effort).
+function syncTimeNtp() {
+    local server
+    for server in pool.ntp.org ntp.aliyun.com time.windows.com; do
+        if _app_run_timeout 10 ntpdate -b "$server" >/dev/null 2>&1; then
+            hwclock -w >/dev/null 2>&1 || true
+            printf '{"result": "OK", "server": "%s", "timestamp": %d}' "$server" "$(date +%s)"
+            return 0
+        fi
+    done
+    printf '{"result": "Failed", "timestamp": %d}' "$(date +%s)"
+    return 1
+}
+
 function api_device() {
     _check_models >/dev/null &
 
@@ -1137,6 +1156,119 @@ function app_restore() {
     echo "$STR_OK"
 }
 # app manager
+##################################################
+
+##################################################
+# audio (deviceMgr/audioRecord | audioPlayTest | audioVolume)
+# Verified on device: card 0 cv182xa_adc = mic (hw:0,0 capture), card 1
+# cv182xa_dac = speaker (hw:1,0 playback). Concurrency is enforced by the
+# supervisor process (api_audio mutex); functions here only need timeout
+# protection (_app_run_timeout, defined in the app manager section above).
+readonly AUDIO_PROBE_WAV="/tmp/audio_probe.wav"
+readonly AUDIO_TEST_WAV="/usr/share/supervisor/sounds/test_tone.wav"
+readonly AUDIO_CAPTURE_DEV="hw:0,0"
+readonly AUDIO_PLAYBACK_DEV="hw:1,0"
+
+# audioRecord <seconds> : capture 1..10 s of 16 kHz mono S16_LE to the probe
+# file. Argument is re-validated here (second line of defense; the C++ side
+# already enforces integer 1..10). Timeout = duration + 5 s of slack.
+function audioRecord() {
+    local secs="$2"
+    case "$secs" in
+    [1-9] | 10) ;;
+    *)
+        echo "$STR_FAILED"
+        return 1
+        ;;
+    esac
+    rm -f "$AUDIO_PROBE_WAV"
+    _app_run_timeout $((secs + 5)) \
+        arecord -D "$AUDIO_CAPTURE_DEV" -f S16_LE -r 16000 -c 1 -d "$secs" "$AUDIO_PROBE_WAV" \
+        >/dev/null 2>&1
+    if [ -s "$AUDIO_PROBE_WAV" ]; then
+        echo "$STR_OK"
+    else
+        rm -f "$AUDIO_PROBE_WAV"
+        echo "$STR_FAILED"
+        return 1
+    fi
+}
+
+# audioPlayTest : play the packaged test tone (installed by the deb) on the
+# speaker. 10 s timeout guards against a wedged DAC.
+function audioPlayTest() {
+    [ -s "$AUDIO_TEST_WAV" ] || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    if _app_run_timeout 10 aplay -D "$AUDIO_PLAYBACK_DEV" "$AUDIO_TEST_WAV" >/dev/null 2>&1; then
+        echo "$STR_OK"
+    else
+        echo "$STR_FAILED"
+        return 1
+    fi
+}
+
+# audioVolumeGet : probe amixer for simple controls that expose a volume.
+# Output: {"supported": bool, "controls": [{"name": "...", "percent": N}]}
+# Parsing is defensive: no amixer, no controls, or switch-only controls all
+# degrade to supported=false. Names containing quote/backslash are skipped
+# so the emitted JSON can never be malformed.
+function audioVolumeGet() {
+    command -v amixer >/dev/null 2>&1 || {
+        echo '{"supported": false, "controls": []}'
+        return 0
+    }
+    local names name pct out="" sep=""
+    names=$(amixer scontrols 2>/dev/null | sed -n "s/^Simple mixer control '\([^']*\)'.*/\1/p")
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        case "$name" in
+        *\"* | *\\*) continue ;;
+        esac
+        pct=$(amixer sget "$name" 2>/dev/null | sed -n 's/.*\[\([0-9]\{1,3\}\)%\].*/\1/p' | head -n 1)
+        [ -z "$pct" ] && continue # switch-only control, no volume slider
+        out="$out$sep{\"name\": \"$name\", \"percent\": $pct}"
+        sep=", "
+    done <<EOF
+$names
+EOF
+    if [ -z "$out" ]; then
+        echo '{"supported": false, "controls": []}'
+    else
+        printf '{"supported": true, "controls": [%s]}\n' "$out"
+    fi
+}
+
+# audioVolumeSet <control> <percent> : set one simple control to N%.
+# Both arguments are re-validated (C++ already whitelists them).
+function audioVolumeSet() {
+    local name="$2" pct="$3"
+    command -v amixer >/dev/null 2>&1 || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    case "$pct" in
+    [0-9] | [1-9][0-9] | 100) ;;
+    *)
+        echo "$STR_FAILED"
+        return 1
+        ;;
+    esac
+    case "$name" in
+    '' | *[!A-Za-z0-9\ ._-]*)
+        echo "$STR_FAILED"
+        return 1
+        ;;
+    esac
+    if amixer sset "$name" "${pct}%" >/dev/null 2>&1; then
+        echo "$STR_OK"
+    else
+        echo "$STR_FAILED"
+        return 1
+    fi
+}
+# audio
 ##################################################
 
 # call function

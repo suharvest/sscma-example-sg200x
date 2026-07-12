@@ -1,5 +1,7 @@
 #include "api_app.h"
 
+#include "config_schema.hpp"
+
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -27,6 +29,8 @@ api_app::api_app()
     REG_API_FULL("switch", switchApp, false); // "switch" is a C++ keyword
     REG_API(stop);
     REG_API(setModel);
+    REG_API(getConfig);
+    REG_API(setConfig);
     REG_API(getIntegrationDoc);
 }
 
@@ -195,6 +199,12 @@ json api_app::load_manifests()
             if (p.extension() != ".json" || p.filename() == "state.json") {
                 continue;
             }
+            // <id>.config.json files are per-app config values, not manifests.
+            const std::string fname = p.filename().string();
+            const std::string cfg_suffix = ".config.json";
+            if (fname.size() > cfg_suffix.size() && fname.compare(fname.size() - cfg_suffix.size(), cfg_suffix.size(), cfg_suffix) == 0) {
+                continue;
+            }
             json m = load_manifest_file(p.string());
             if (!m.is_object()) {
                 continue;
@@ -272,6 +282,57 @@ bool api_app::write_model_override(const std::string& app_id, const std::string&
         return false;
     }
     std::string data = model_path + "\n";
+    ssize_t n = ::write(fd, data.data(), data.size());
+    ::fsync(fd);
+    ::close(fd);
+    if (n != (ssize_t)data.size()) {
+        LOGE("short write to %s", tmp.c_str());
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    if (::rename(tmp.c_str(), dst.c_str()) != 0) {
+        LOGE("rename(%s -> %s) failed: %s", tmp.c_str(), dst.c_str(), strerror(errno));
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+// Current config values of an app: /userdata/local/apps/<id>.config.json.
+// Missing or unparsable file -> empty object (never an error).
+json api_app::read_config_file(const std::string& app_id)
+{
+    json values = json::object();
+    std::ifstream f(std::string(USER_APPS_DIR) + "/" + app_id + ".config.json");
+    if (f.is_open()) {
+        try {
+            f >> values;
+        } catch (const std::exception& e) {
+            LOGW("Bad config file for app %s: %s", app_id.c_str(), e.what());
+            values = json::object();
+        }
+    }
+    if (!values.is_object()) {
+        values = json::object();
+    }
+    return values;
+}
+
+// Atomic write of /userdata/local/apps/<id>.config.json.
+// Same tmp + fsync + rename pattern as write_state().
+bool api_app::write_config_file(const std::string& app_id, const json& values)
+{
+    std::error_code ec;
+    fs::create_directories(USER_APPS_DIR, ec);
+
+    std::string dst = std::string(USER_APPS_DIR) + "/" + app_id + ".config.json";
+    std::string tmp = std::string(USER_APPS_DIR) + "/." + app_id + ".config.json.tmp";
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        LOGE("open(%s) failed: %s", tmp.c_str(), strerror(errno));
+        return false;
+    }
+    std::string data = values.dump(2) + "\n";
     ssize_t n = ::write(fd, data.data(), data.size());
     ::fsync(fd);
     ::close(fd);
@@ -595,17 +656,13 @@ api_status_t api_app::setModel(request_t req, response_t res)
     return API_STATUS_OK;
 }
 
-// GET/POST /api/appMgr/getIntegrationDoc?app_id=<id>
-// Returns the integration/output-format markdown for an application:
-//   /userdata/local/apps/<id>.md  (user override, preferred)
-//   /usr/share/supervisor/apps/<id>.md  (shipped with supervisor)
-// Missing file is NOT an error: code 0 + data.content = "" (frontend hides
-// the section). app_id goes through the [a-z0-9-] whitelist, so the joined
-// path cannot escape the apps directories (no '/', '.' or '..' possible).
-api_status_t api_app::getIntegrationDoc(request_t req, response_t res)
+// GET/POST /api/appMgr/getConfig?app_id=<id>
+// Returns {schema, values, defaults}:
+//   schema   : the manifest's config_schema (or null if the app has none)
+//   values   : current /userdata/local/apps/<id>.config.json content ({} if unset)
+//   defaults : per-key defaults declared in the schema
+api_status_t api_app::getConfig(request_t req, response_t res)
 {
-    static constexpr size_t MAX_DOC_SIZE = 32 * 1024; // spec: md files < 32KB
-
     std::string app_id = get_param(req, "app_id");
     if (app_id.empty()) {
         app_id = parse_body(req).value("app_id", "");
@@ -615,22 +672,160 @@ api_status_t api_app::getIntegrationDoc(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
+    json manifests = load_manifests();
+    if (!manifests.contains(app_id)) {
+        response(res, -1, "Unknown app: " + app_id);
+        return API_STATUS_OK;
+    }
+    const json& app = manifests[app_id];
+
+    json data = json::object();
+    if (app.contains("config_schema") && app["config_schema"].is_object()) {
+        data["schema"] = app["config_schema"];
+        data["defaults"] = config_schema::defaults_from_schema(app["config_schema"]);
+    } else {
+        data["schema"] = nullptr;
+        data["defaults"] = json::object();
+    }
+    data["app_id"] = app_id;
+    data["values"] = read_config_file(app_id);
+    response(res, 0, STR_OK, data);
+    return API_STATUS_OK;
+}
+
+// POST /api/appMgr/setConfig  body: {app_id, values:{...}}
+// Every key in values is validated against the manifest's config_schema
+// (unknown keys rejected, per-type range/shape checks), then the whole
+// object is written atomically to /userdata/local/apps/<id>.config.json.
+// If the app is the active one it is restarted so the new config applies
+// (same stop/start building blocks and busy semantics as setModel).
+api_status_t api_app::setConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    std::string app_id = body.value("app_id", "");
+    if (!valid_app_id(app_id)) {
+        response(res, -1, "Invalid app_id");
+        return API_STATUS_OK;
+    }
+    if (!body.contains("values") || !body["values"].is_object()) {
+        response(res, -1, "Missing values object");
+        return API_STATUS_OK;
+    }
+    const json& values = body["values"];
+
+    if (!_op_mutex.try_lock()) {
+        response(res, -2, "busy: another app operation is in progress");
+        return API_STATUS_OK;
+    }
+    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
+
+    json manifests = load_manifests();
+    if (!manifests.contains(app_id)) {
+        response(res, -1, "Unknown app: " + app_id);
+        return API_STATUS_OK;
+    }
+    const json& app = manifests[app_id];
+
+    if (!app.contains("config_schema") || !app["config_schema"].is_object()) {
+        response(res, -1, "app '" + app_id + "' has no config_schema");
+        return API_STATUS_OK;
+    }
+
+    std::string err;
+    if (!config_schema::validate_values(app["config_schema"], values, err)) {
+        response(res, -1, "Invalid config: " + err);
+        return API_STATUS_OK;
+    }
+
+    if (!write_config_file(app_id, values)) {
+        response(res, -1, "Failed to persist config");
+        return API_STATUS_OK;
+    }
+
+    // Restart the app if it is the active one so the config takes effect.
+    bool restarted = false;
+    json state = read_state();
+    if (jstr(state, "active_app") == app_id) {
+        std::string script_path = jstr(app, "init_script");
+        if (!stop_current_locked(script_path, res)) {
+            return API_STATUS_OK;
+        }
+        if (!start_target_locked(script_path, res)) {
+            json st2 = read_state();
+            st2["active_app"] = nullptr;
+            st2["active_script"] = nullptr;
+            write_state(st2);
+            return API_STATUS_OK;
+        }
+        _state = app_state::RUNNING;
+        restarted = true;
+    }
+
+    response(res, 0, STR_OK, { { "app_id", app_id }, { "values", values }, { "restarted", restarted } });
+    return API_STATUS_OK;
+}
+
+// GET/POST /api/appMgr/getIntegrationDoc?app_id=<id>[&lang=zh|en]
+// Returns the integration/output-format markdown for an application.
+// Candidates, first match wins (user dir overrides built-in; zh variants
+// are preferred when lang=zh, with backend fallback to English):
+//   lang=zh: /userdata/local/apps/<id>.zh.md, /usr/share/supervisor/apps/<id>.zh.md,
+//            /userdata/local/apps/<id>.md,    /usr/share/supervisor/apps/<id>.md
+//   default: the two <id>.md paths only
+// The response carries "lang_served" ("zh" only when a .zh.md was served).
+// Missing file is NOT an error: code 0 + data.content = "" (frontend hides
+// the section). app_id goes through the [a-z0-9-] whitelist, so the joined
+// path cannot escape the apps directories (no '/', '.' or '..' possible).
+api_status_t api_app::getIntegrationDoc(request_t req, response_t res)
+{
+    static constexpr size_t MAX_DOC_SIZE = 32 * 1024; // spec: md files < 32KB
+
+    std::string app_id = get_param(req, "app_id");
+    std::string lang = get_param(req, "lang");
+    if (app_id.empty()) {
+        auto&& body = parse_body(req);
+        app_id = body.value("app_id", "");
+        if (lang.empty()) {
+            lang = body.value("lang", "");
+        }
+    }
+    if (!valid_app_id(app_id)) {
+        response(res, -1, "Invalid app_id");
+        return API_STATUS_OK;
+    }
+    // Anything that is not exactly "zh" is served English (backend fallback).
+    bool want_zh = (lang == "zh");
+
     json data = json::object();
     data["app_id"] = app_id;
     data["content"] = "";
     data["source"] = "";
+    data["lang_served"] = "en";
 
-    // User doc overrides the built-in one.
-    for (const char* dir : { USER_APPS_DIR, BUILTIN_APPS_DIR }) {
-        std::string path = std::string(dir) + "/" + app_id + ".md";
+    // Candidate list: zh variants first when requested, user dir over builtin.
+    struct doc_candidate {
+        std::string path;
+        const char* source;
+        const char* lang;
+    };
+    std::vector<doc_candidate> candidates;
+    if (want_zh) {
+        candidates.push_back({ std::string(USER_APPS_DIR) + "/" + app_id + ".zh.md", "user", "zh" });
+        candidates.push_back({ std::string(BUILTIN_APPS_DIR) + "/" + app_id + ".zh.md", "builtin", "zh" });
+    }
+    candidates.push_back({ std::string(USER_APPS_DIR) + "/" + app_id + ".md", "user", "en" });
+    candidates.push_back({ std::string(BUILTIN_APPS_DIR) + "/" + app_id + ".md", "builtin", "en" });
 
+    for (const auto& c : candidates) {
         // Defense in depth: the whitelist already prevents traversal, but
-        // verify the canonical path is still inside the apps directory.
+        // verify the canonical path is still inside an apps directory.
         char resolved[PATH_MAX] = { 0 };
-        if (realpath(path.c_str(), resolved) == nullptr) {
-            continue; // does not exist (or unreadable) -> try next dir
+        if (realpath(c.path.c_str(), resolved) == nullptr) {
+            continue; // does not exist (or unreadable) -> try next candidate
         }
-        if (std::string(resolved).rfind(std::string(dir) + "/", 0) != 0) {
+        std::string resolved_s(resolved);
+        if (resolved_s.rfind(std::string(USER_APPS_DIR) + "/", 0) != 0
+            && resolved_s.rfind(std::string(BUILTIN_APPS_DIR) + "/", 0) != 0) {
             LOGW("integration doc path escapes apps dir (rejected): %s", resolved);
             continue;
         }
@@ -646,7 +841,8 @@ api_status_t api_app::getIntegrationDoc(request_t req, response_t res)
             content.resize(MAX_DOC_SIZE);
         }
         data["content"] = content;
-        data["source"] = (dir == std::string(USER_APPS_DIR)) ? "user" : "builtin";
+        data["source"] = c.source;
+        data["lang_served"] = c.lang;
         break;
     }
 

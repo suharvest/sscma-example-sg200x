@@ -31,6 +31,55 @@
         }
     ],
     "default_model": "yolo11n",
-    "version": "1.0.0",
+    "config_schema": {
+        "groups": [
+            {
+                "key": "detection",
+                "title": "Detection",
+                "title_zh": "检测",
+                "items": [
+                    {
+                        "key": "confidence",
+                        "type": "number",
+                        "title": "Confidence threshold",
+                        "title_zh": "置信度阈值",
+                        "min": 0.05,
+                        "max": 0.95,
+                        "step": 0.05,
+                        "default": 0.25
+                    },
+                    {
+                        "key": "tracking",
+                        "type": "boolean",
+                        "title": "Person tracking",
+                        "title_zh": "人员追踪",
+                        "default": true
+                    }
+                ]
+            },
+            {
+                "key": "spatial",
+                "title": "Zones & Lines",
+                "title_zh": "区域与划线",
+                "items": [
+                    {
+                        "key": "count_zone",
+                        "type": "zone",
+                        "title": "Counting zone",
+                        "title_zh": "统计区域",
+                        "maxPoints": 8
+                    },
+                    {
+                        "key": "entry_line",
+                        "type": "line",
+                        "title": "Entry line",
+                        "title_zh": "进出计数线",
+                        "directional": true
+                    }
+                ]
+            }
+        ]
+    },
+    "version": "1.1.0",
     "author": "Seeed Studio"
 }

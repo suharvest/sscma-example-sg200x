@@ -1,4 +1,4 @@
-<!-- app: yolo-detector | version: 1.0.0 | doc-format: recamera-integration/v1 -->
+<!-- app: yolo-detector | version: 1.1.0 | doc-format: recamera-integration/v1 -->
 
 # Object Detection (YOLO) — Integration Guide
 
@@ -44,7 +44,11 @@ Person tracking is **enabled by default** (`--no-tracking` disables it). In this
 | `zone_occupancy.browsing` | integer | — | Persons in `transient` or `dwelling` state |
 | `zone_occupancy.engaged` | integer | — | Persons in `engaged` state |
 | `zone_occupancy.assistance` | integer | — | Persons in `assistance` state |
+| `line_crossing.in` | integer | — | **Only when an entry line is configured.** Cumulative "in" crossings since app start (reset on restart) |
+| `line_crossing.out` | integer | — | **Only when an entry line is configured.** Cumulative "out" crossings since app start (reset on restart) |
 | `persons` | array | — | One object per tracked person (may be empty) |
+
+Note: when a **counting zone** is configured (see Configuration below), `zone_occupancy` only counts persons whose bbox center lies inside the zone polygon; `persons[]` still contains every tracked person in the frame.
 
 Each element of `persons[]`:
 
@@ -189,6 +193,33 @@ The active model can be switched from the console (Live page → Model). Switchi
 Mechanics: the console writes the selected model's absolute path to `/userdata/local/apps/yolo-detector.model` (one line); the init script passes it to the binary via `-m` on the next start. Delete the file to fall back to the built-in default.
 
 Note: the pose model detects persons only; the published payload keeps the same detection/tracking JSON schema (keypoints are not published over MQTT).
+
+## Configuration (console-managed)
+
+The console (Applications page → Configure) writes validated settings to `/userdata/local/apps/yolo-detector.config.json`; the application reads that file at startup, and saving the config restarts the app automatically when it is active. Delete the file to return to the built-in defaults. Explicit CLI flags in the init script still take precedence over the config file.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `confidence` | number 0.05–0.95 | 0.25 | Detection confidence threshold |
+| `tracking` | boolean | `true` | Enable the person tracker (payload format A). `false` switches to raw detections (format B) |
+| `count_zone` | polygon (3–8 points) | unset (whole frame) | Counting zone. `zone_occupancy` only counts persons whose bbox **center** is inside this polygon |
+| `entry_line` | line segment + direction | unset | Entry/exit counting line; enables the `line_crossing` payload field |
+
+All spatial coordinates are **normalized to [0, 1]** relative to the frame (resolution independent), e.g.:
+
+```json
+{
+  "confidence": 0.35,
+  "count_zone": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+  "entry_line": { "a": [0.5, 0.0], "b": [0.5, 1.0], "direction": "ab_in" }
+}
+```
+
+### Line crossing semantics
+
+- A crossing is counted when a tracked person's bbox center moves from one side of the segment `a -> b` to the other between two consecutive tracked positions (segment-segment intersection, so walking past the line's endpoints does not count).
+- **Direction convention**: looking along the line from point `a` towards point `b`, with `"direction": "ab_in"` a person crossing **from the left side to the right side** is counted as `in` (right-to-left is `out`). `"ab_out"` inverts the mapping.
+- Counters are cumulative from application start and reset on every restart (including config saves and model switches). Consumers needing persistent totals should accumulate deltas externally.
 
 ## Quick start (integrator checklist)
 

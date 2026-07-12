@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "api_app.h"
+#include "api_audio.h"
 #include "api_base.h"
 #include "api_device.h"
 #include "api_file.h"
@@ -28,6 +29,7 @@ public:
     {
         _apis.emplace_back(std::make_unique<api_base>());
         _apis.emplace_back(std::make_unique<api_device>(gallery_mode));
+        _apis.emplace_back(std::make_unique<api_audio>());
         _apis.emplace_back(std::make_unique<api_app>());
         _apis.emplace_back(std::make_unique<api_file>());
         _apis.emplace_back(std::make_unique<api_led>());

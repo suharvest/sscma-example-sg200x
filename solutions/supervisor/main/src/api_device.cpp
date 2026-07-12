@@ -594,6 +594,28 @@ api_status_t api_device::getTimestamp(request_t req, response_t res)
     return API_STATUS_OK;
 }
 
+// POST /api/deviceMgr/syncTime — sync the system clock via NTP.
+// Delegates to main.sh syncTimeNtp (ntpdate -b against a server list, 10s
+// timeout each, hwclock -w on success). Requires internet access; when all
+// servers fail (or the 30s script() budget elapses) an explicit error is
+// returned so the frontend can tell the user the device needs a connection.
+api_status_t api_device::syncTime(request_t req, response_t res)
+{
+    json out = parse_result(script("syncTimeNtp"));
+    long ts = 0;
+    if (out.contains("timestamp") && out["timestamp"].is_number()) {
+        ts = out["timestamp"].get<long>();
+    } else {
+        ts = static_cast<long>(std::time(nullptr));
+    }
+    if (out.value("result", "") == STR_OK) {
+        response(res, 0, STR_OK, { { "timestamp", ts }, { "server", out.value("server", "") } });
+    } else {
+        response(res, -1, "NTP sync failed: the device needs internet access", { { "timestamp", ts } });
+    }
+    return API_STATUS_OK;
+}
+
 api_status_t api_device::setTimezone(request_t req, response_t res)
 {
     auto&& body = parse_body(req);

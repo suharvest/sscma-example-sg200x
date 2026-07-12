@@ -39,6 +39,8 @@ private:
     static api_status_t switchApp(request_t req, response_t res); // uri: "switch"
     static api_status_t stop(request_t req, response_t res);
     static api_status_t setModel(request_t req, response_t res);
+    static api_status_t getConfig(request_t req, response_t res);
+    static api_status_t setConfig(request_t req, response_t res);
     static api_status_t getIntegrationDoc(request_t req, response_t res);
 
     // helpers
@@ -51,6 +53,8 @@ private:
     static json read_state();
     static bool write_state(json& state);
     static bool write_model_override(const std::string& app_id, const std::string& model_path);
+    static json read_config_file(const std::string& app_id);
+    static bool write_config_file(const std::string& app_id, const json& values);
     static const char* state_str(app_state s);
     static bool stop_current_locked(const std::string& script_path, response_t res);
     static bool start_target_locked(const std::string& script_path, response_t res);
