@@ -235,6 +235,7 @@ typedef int (*pfpDataConsumes)(void *pData, void *pCtx, void *pUserData);
 
 APP_PARAM_VENC_CTX_S *app_ipcam_Venc_Param_Get(void);
 int app_ipcam_Venc_Consumes_Set(int chn, int index, pfpDataConsumes consume, void *pUserData);
+int app_ipcam_Venc_RequestIDR(int chn);
 char *app_ipcam_Postfix_Get(PAYLOAD_TYPE_E enPayload);
 int app_ipcam_Venc_Init(APP_VENC_CHN_E VencIdx);
 int app_ipcam_Venc_Start(APP_VENC_CHN_E VencIdx);

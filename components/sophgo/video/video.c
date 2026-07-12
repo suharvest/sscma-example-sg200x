@@ -185,6 +185,14 @@ int registerVideoFrameHandler(video_ch_index_t ch, int index, pfpDataConsumes ha
     return 0;
 }
 
+int requestVideoIDR(video_ch_index_t ch) {
+    if (ch >= VIDEO_CH_MAX) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "video ch(%d) index is out of range\n", ch);
+        return -1;
+    }
+    return app_ipcam_Venc_RequestIDR(ch);
+}
+
 int setVideoMirror(bool mirror) {
     video_mirror = mirror;
 }

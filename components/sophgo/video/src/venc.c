@@ -63,6 +63,27 @@ int app_ipcam_Venc_Consumes_Set(int chn, int index, pfpDataConsumes consume, voi
     return 0;
 }
 
+int app_ipcam_Venc_RequestIDR(int chn)
+{
+    if (chn < 0 || chn >= VENC_CHN_MAX) {
+        return -1;
+    }
+
+    APP_VENC_CHN_CFG_S *pstVencChnCfg = &g_pstVencCtx->astVencChnCfg[chn];
+    if (!pstVencChnCfg->bEnable) {
+        APP_PROF_LOG_PRINT(LEVEL_WARN, "chn(%d) not enabled, skip RequestIDR\n", chn);
+        return -1;
+    }
+
+    CVI_S32 s32Ret = CVI_VENC_RequestIDR(chn, CVI_TRUE);
+    if (s32Ret != CVI_SUCCESS) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "chn(%d) CVI_VENC_RequestIDR failed with 0x%x\n", chn, s32Ret);
+        return -1;
+    }
+
+    return 0;
+}
+
 char* app_ipcam_Postfix_Get(PAYLOAD_TYPE_E enPayload)
 {
     if (enPayload == PT_H264)

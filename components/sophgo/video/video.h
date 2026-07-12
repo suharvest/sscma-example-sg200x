@@ -50,6 +50,7 @@ int getVideoMirror();
 int getVideoFlip();
 int setupVideo(video_ch_index_t ch, const video_ch_param_t* param);
 int registerVideoFrameHandler(video_ch_index_t ch, int index, pfpDataConsumes handler, void* pUserData);
+int requestVideoIDR(video_ch_index_t ch);
 
 #ifdef __cplusplus
 }
