@@ -13,6 +13,10 @@ typedef enum {
     API_STATUS_REPLY_FILE,
     API_STATUS_AUTHORIZED,
     API_STATUS_UNAUTHORIZED,
+    // #14: the handler enqueued a long operation on the worker pool and the
+    // reply will be sent later from MG_EV_WAKEUP. The dispatcher must keep the
+    // connection open and NOT reply now.
+    API_STATUS_ASYNC,
 } api_status_t;
 typedef const struct mg_http_message* request_t;
 typedef json& response_t;
@@ -22,6 +26,14 @@ class http_interface {
 public:
     http_interface() = default;
     virtual ~http_interface() = default;
+
+    // #14: id of the mongoose connection whose MG_EV_HTTP_MSG is being
+    // dispatched right now. Set by http_server on the poll thread just before
+    // it calls api_base::api_handler(), so an async handler can remember which
+    // connection to reply to once its worker finishes. All handlers run on the
+    // single poll thread, so a plain static is race-free here.
+    static void set_conn_id(unsigned long id) { _conn_id = id; }
+    static unsigned long conn_id() { return _conn_id; }
 
 protected:
     static inline const std::string STR_OK = "OK";
@@ -156,6 +168,7 @@ protected:
     }
 
 private:
+    static inline unsigned long _conn_id = 0;
     static inline std::unordered_map<std::string, time_t> _tokens;
 
     static std::string _get_http_var(request_t req, std::string param)

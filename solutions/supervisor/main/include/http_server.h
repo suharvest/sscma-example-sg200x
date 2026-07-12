@@ -66,6 +66,16 @@ public:
             return false;
         }
 
+        // #14: enable mg_wakeup() so worker threads can poke the poll thread,
+        // and start the async worker pool. Wakeups are routed to the listener
+        // connection (always alive), so pick whichever listener exists.
+        if (!mg_wakeup_init(&mgr)) {
+            LOGE("mg_wakeup_init failed");
+            return false;
+        }
+        unsigned long listener_id = http_conn ? http_conn->id : https_conn->id;
+        async_exec::instance().init(&mgr, listener_id);
+
         worker = std::thread([this]() {
             running = true;
             signal(SIGUSR1, [](int sig) {
@@ -87,6 +97,7 @@ public:
             if (worker.joinable()) {
                 worker.join();
             }
+            async_exec::instance().shutdown();
             mg_mgr_free(&mgr);
         }
         LOGV("Server stopped");
@@ -108,9 +119,28 @@ private:
 
     static void event_handler(mg_connection* c, int ev, void* ev_data)
     {
+        // #14: a worker finished a long operation. Drain every completed job
+        // (commit state, reply on the original connection, release the gate).
+        // Routed to the listener connection, so this fires here regardless of
+        // which client connection the job belonged to.
+        if (ev == MG_EV_WAKEUP) {
+            async_exec::instance().drain_completions();
+            return;
+        }
+        // #14: a client connection closed. Mark any in-flight job on it
+        // cancelled so its reply is dropped (its worker still finishes and its
+        // gate is still released from MG_EV_WAKEUP).
+        if (ev == MG_EV_CLOSE) {
+            async_exec::instance().on_conn_close(c->id);
+            return;
+        }
         if (ev == MG_EV_HTTP_MSG) {
             http_server* server = static_cast<http_server*>(c->fn_data);
             mg_http_message* hm = (mg_http_message*)ev_data;
+
+            // #14: remember which connection this request belongs to so an
+            // async handler can reply to it later from MG_EV_WAKEUP.
+            api_base::set_conn_id(c->id);
 
             LOGV(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
             LOGV("---> uri=%s", std::string(hm->uri.buf, hm->uri.len).c_str());
@@ -122,6 +152,11 @@ private:
 
             json res;
             api_status_t status = api_base::api_handler(hm, res);
+            if (status == API_STATUS_ASYNC) {
+                // Long operation queued: keep the connection open, the reply
+                // is sent from MG_EV_WAKEUP when the worker finishes.
+                return;
+            }
             if (status == API_STATUS_OK) {
                 mg_http_reply(c, 200, "Content-Type: application/json\r\n"
                                       "Access-Control-Allow-Origin: *\r\n"

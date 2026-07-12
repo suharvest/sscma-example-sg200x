@@ -607,19 +607,28 @@ api_status_t api_device::getTimestamp(request_t req, response_t res)
 // returned so the frontend can tell the user the device needs a connection.
 api_status_t api_device::syncTime(request_t req, response_t res)
 {
-    json out = parse_result(script("syncTimeNtp"));
-    long ts = 0;
-    if (out.contains("timestamp") && out["timestamp"].is_number()) {
-        ts = out["timestamp"].get<long>();
-    } else {
-        ts = static_cast<long>(std::time(nullptr));
-    }
-    if (out.value("result", "") == STR_OK) {
-        response(res, 0, STR_OK, { { "timestamp", ts }, { "server", out.value("server", "") } });
-    } else {
-        response(res, -1, "NTP sync failed: the device needs internet access", { { "timestamp", ts } });
-    }
-    return API_STATUS_OK;
+    // #14: ntpdate can block up to the 30s script budget; run it on a worker.
+    // No busy gate: concurrent NTP syncs are harmless (each forks its own
+    // ntpdate) and there is no process-internal state to protect.
+    auto out = std::make_shared<json>();
+    return submit_async(
+        [out]() { *out = parse_result(script("syncTimeNtp")); },
+        [out](json& res) -> api_status_t {
+            long ts = 0;
+            if (out->contains("timestamp") && (*out)["timestamp"].is_number()) {
+                ts = (*out)["timestamp"].get<long>();
+            } else {
+                ts = static_cast<long>(std::time(nullptr));
+            }
+            if (out->value("result", "") == STR_OK) {
+                response(res, 0, STR_OK, { { "timestamp", ts }, { "server", out->value("server", "") } });
+            } else {
+                response(res, -1, "NTP sync failed: the device needs internet access", { { "timestamp", ts } });
+            }
+            return API_STATUS_OK;
+        },
+        []() {},
+        res);
 }
 
 api_status_t api_device::setTimezone(request_t req, response_t res)
@@ -827,23 +836,30 @@ api_status_t api_device::queryBatteryInfo(request_t req, response_t res)
 // storage total/used/available in BYTES.
 api_status_t api_device::getSensorStatus(request_t req, response_t res)
 {
-    // Single fork: main.sh querySensorStatus merges the temperature and
-    // storage probes into {"temperature": {...}, "storage": {...}}.
-    json merged = parse_result(script("querySensorStatus"));
+    // #14: forks main.sh querySensorStatus; run it on a worker. No busy gate
+    // (read-only probe, no process-internal state).
+    auto merged = std::make_shared<json>();
+    return submit_async(
+        // Single fork: main.sh querySensorStatus merges the temperature and
+        // storage probes into {"temperature": {...}, "storage": {...}}.
+        [merged]() { *merged = parse_result(script("querySensorStatus")); },
+        [merged](json& res) -> api_status_t {
+            json data = json::object();
+            json temp = merged->is_object() ? merged->value("temperature", json::object()) : json::object();
+            data["temperature_c"] = temp.value("temperature_c", 0.0);
 
-    json data = json::object();
-    json temp = merged.is_object() ? merged.value("temperature", json::object()) : json::object();
-    data["temperature_c"] = temp.value("temperature_c", 0.0);
+            json storage = merged->is_object() ? merged->value("storage", json::object()) : json::object();
+            json st = json::object();
+            st["total"] = storage.value("total", 0.0);
+            st["used"] = storage.value("used", 0.0);
+            st["available"] = storage.value("available", 0.0);
+            data["storage"] = st;
 
-    json storage = merged.is_object() ? merged.value("storage", json::object()) : json::object();
-    json st = json::object();
-    st["total"] = storage.value("total", 0.0);
-    st["used"] = storage.value("used", 0.0);
-    st["available"] = storage.value("available", 0.0);
-    data["storage"] = st;
-
-    response(res, 0, STR_OK, data);
-    return API_STATUS_OK;
+            response(res, 0, STR_OK, data);
+            return API_STATUS_OK;
+        },
+        []() {},
+        res);
 }
 
 // --- Hardware capabilities (P5-A) ------------------------------------------
@@ -912,12 +928,27 @@ json api_device::probe_capabilities()
 // (hardware does not change while running); refresh=1 forces a reprobe.
 api_status_t api_device::getCapabilities(request_t req, response_t res)
 {
-    if (get_param(req, "refresh") == "1" || _capabilities.empty()) {
-        _capabilities = probe_capabilities();
-        LOGI("capabilities probed: %s", _capabilities.dump().c_str());
+    // Cache hit: answer synchronously (no shell).
+    if (get_param(req, "refresh") != "1" && !_capabilities.empty()) {
+        response(res, 0, STR_OK, _capabilities);
+        return API_STATUS_OK;
     }
-    response(res, 0, STR_OK, _capabilities);
-    return API_STATUS_OK;
+    // #14: (re)probe forks main.sh queryCapabilities; run it on a worker and
+    // commit the cache on the poll thread. No busy gate: a concurrent probe
+    // just reprobes, and only the poll thread writes _capabilities.
+    // (probe_capabilities reads _dev_info which is read-only after startup, so
+    // it is safe to run on a worker.)
+    auto caps = std::make_shared<json>();
+    return submit_async(
+        [caps]() { *caps = probe_capabilities(); },
+        [caps](json& res) -> api_status_t {
+            _capabilities = *caps;
+            LOGI("capabilities probed: %s", _capabilities.dump().c_str());
+            response(res, 0, STR_OK, _capabilities);
+            return API_STATUS_OK;
+        },
+        []() {},
+        res);
 }
 
 // --- Runtime mode (P4-D): console (gallery apps) <-> Node-RED -------------
@@ -971,11 +1002,6 @@ api_status_t api_device::getRunMode(request_t req, response_t res)
 // already flipped) and reloads the page; no reconnect/polling dance needed.
 api_status_t api_device::setRunMode(request_t req, response_t res)
 {
-    // Anti-double-click: independent mutex (api_app::_op_mutex guards camera
-    // hand-over between gallery apps; this guards the mode switch itself and
-    // must not be blocked by an unrelated stuck app operation).
-    static std::mutex _mode_mutex;
-
     std::string mode = get_param(req, "mode");
     if (mode.empty()) {
         mode = parse_body(req).value("mode", "");
@@ -985,33 +1011,66 @@ api_status_t api_device::setRunMode(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    if (!_mode_mutex.try_lock()) {
+    // #14: unified mode gate shared with forceConsole (acquired on the poll
+    // thread, released in the wakeup finalize). While a mode switch runs on a
+    // worker, another setRunMode OR forceConsole gets busy(-2).
+    if (!mode_try_acquire()) {
         response(res, -2, "busy: a mode switch is already in progress");
         return API_STATUS_OK;
     }
-    std::lock_guard<std::mutex> lk(_mode_mutex, std::adopt_lock);
 
-    // Budget: worst case ->nodered = app stop 10s + 2s VPSS release + 2x15s
-    // service starts; ->console = 2x10s stops + 2s + async app_restore.
-    std::string result = script_timeout(60, __func__, mode);
-    if (result != STR_OK) {
-        response(res, -1, result.empty() ? "setRunMode failed (timeout)" : result);
-        return API_STATUS_OK;
-    }
-
-    if (mode == "nodered") {
-        if (!_serviced) {
-            _serviced = std::make_unique<serviced>();
-        }
-        _gallery_mode = false;
-    } else {
-        _serviced.reset(); // joins the watchdog thread cleanly
+    // The blocking main.sh setRunMode (stops/starts services, ~40-60s) runs on
+    // a worker; the process-internal state (_serviced / _gallery_mode) is
+    // flipped only on the poll thread (here or in commit), so queryDeviceInfo /
+    // queryServiceStatus never race it.
+    //
+    // ORDERING (important): when switching TO console we must tear the watchdog
+    // down BEFORE the worker stops node-red, not after in commit. Otherwise the
+    // still-alive serviced watchdog respawns node-red every ~6s and fights the
+    // worker's _svc_disable — the stop then fails, the worker returns non-OK,
+    // and commit's success branch (which would flip state) never runs, leaving
+    // the device stuck (_gallery_mode=false, watchdog alive) even though the
+    // mode file says console. Silencing it here (poll thread) is race-free and
+    // safe even if the stop later fails: gallery mode simply means "don't
+    // monitor". Going TO nodered keeps the opposite order — the watchdog is
+    // created in commit, after the worker has brought node-red up.
+    if (mode == "console") {
+        _serviced.reset(); // joins the watchdog thread cleanly (no-op if null)
         _gallery_mode = true;
     }
-    LOGI("Run mode switched to '%s' (galleryMode=%d)", mode.c_str(), (int)_gallery_mode);
-
-    response(res, 0, STR_OK, { { "mode", mode }, { "galleryMode", _gallery_mode } });
-    return API_STATUS_OK;
+    auto result = std::make_shared<std::string>();
+    return submit_async(
+        // worker thread: only the blocking shell.
+        [result, mode]() {
+            // Budget: worst case ->nodered = app stop 10s + 2s VPSS release +
+            // 2x15s service starts; ->console = 2x10s stops + 2s + async
+            // app_restore.
+            *result = script_timeout(60, "setRunMode", mode);
+        },
+        // poll thread: flip in-process state on success, build the same reply.
+        [result, mode](json& res) -> api_status_t {
+            if (*result != STR_OK) {
+                // console: watchdog already down + gallery_mode=true (set
+                // pre-worker), so a failed stop just leaves node-red lingering
+                // with nothing to respawn it — recoverable, not stuck.
+                // nodered: nothing was flipped yet, so state stays console.
+                response(res, -1, result->empty() ? "setRunMode failed (timeout)" : *result);
+                return API_STATUS_OK;
+            }
+            if (mode == "nodered") {
+                if (!_serviced) {
+                    _serviced = std::make_unique<serviced>();
+                }
+                _gallery_mode = false;
+            }
+            // console: _serviced/_gallery_mode already flipped before the worker.
+            LOGI("Run mode switched to '%s' (galleryMode=%d)", mode.c_str(), (int)_gallery_mode);
+            response(res, 0, STR_OK, { { "mode", mode }, { "galleryMode", _gallery_mode } });
+            return API_STATUS_OK;
+        },
+        // poll thread: release the shared mode gate whatever happened.
+        []() { mode_release(); },
+        res);
 }
 
 // POST /api/deviceMgr/forceConsole
@@ -1035,27 +1094,44 @@ api_status_t api_device::setRunMode(request_t req, response_t res)
 // setRunMode so a stuck graceful switch cannot block the emergency path.
 api_status_t api_device::forceConsole(request_t req, response_t res)
 {
-    static std::mutex _force_mutex;
-    if (!_force_mutex.try_lock()) {
-        response(res, -2, "busy: a mode reset is already in progress");
+    // #14: shares the SINGLE mode gate with setRunMode (spec hard-constraint 3):
+    // once async, an independent gate would let force and setRunMode run at the
+    // same time and overwrite each other's _serviced / _gallery_mode. The
+    // setRunMode shell is bounded at 60s, so a wedged switch frees the gate and
+    // this escape hatch becomes available shortly after.
+    if (!mode_try_acquire()) {
+        response(res, -2, "busy: a mode switch/reset is already in progress");
         return API_STATUS_OK;
     }
-    std::lock_guard<std::mutex> lk(_force_mutex, std::adopt_lock);
 
-    // Budget: kill + 2x fast park (best-effort stop, no long wait) + mode
-    // write. Well under the default 30s, but give slack for a slow stop.
-    std::string result = script_timeout(45, __func__);
-
-    // The shell side is best-effort by design; flip the in-process state
-    // regardless so the running supervisor stops watchdogging Node-RED at once
-    // and reports gallery mode.
+    // Silence the watchdog BEFORE the worker kills node-red (poll thread,
+    // race-free), same ordering rule as setRunMode->console: otherwise the
+    // live serviced watchdog could respawn node-red in the window between the
+    // worker's killall and commit. gallery_mode=true now means "stop
+    // monitoring"; the worker then kills/parks and app_restore brings the
+    // gallery app back.
     _serviced.reset(); // joins the watchdog thread cleanly (no-op if null)
     _gallery_mode = true;
-    script("app_restore"); // best-effort: bring the persisted gallery app back
-    LOGI("forceConsole: forced to console (galleryMode=1), shell result='%s'", result.c_str());
 
-    response(res, 0, STR_OK, { { "mode", "console" }, { "galleryMode", _gallery_mode }, { "detail", result } });
-    return API_STATUS_OK;
+    // Blocking shells on a worker; in-process state already flipped above.
+    auto result = std::make_shared<std::string>();
+    return submit_async(
+        // worker thread: forceConsole (kill + park + persist console mode) then
+        // best-effort app_restore (bring the persisted gallery app back).
+        [result]() {
+            // Budget: kill + 2x fast park (best-effort stop, no long wait) +
+            // mode write. Slack for a slow stop.
+            *result = script_timeout(45, "forceConsole");
+            script("app_restore"); // best-effort
+        },
+        // poll thread: state already flipped; just log + reply.
+        [result](json& res) -> api_status_t {
+            LOGI("forceConsole: forced to console (galleryMode=1), shell result='%s'", result->c_str());
+            response(res, 0, STR_OK, { { "mode", "console" }, { "galleryMode", _gallery_mode }, { "detail", *result } });
+            return API_STATUS_OK;
+        },
+        []() { mode_release(); },
+        res);
 }
 
 // Read battery voltage once (called by collector thread)

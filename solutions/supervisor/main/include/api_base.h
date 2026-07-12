@@ -16,6 +16,7 @@
 
 #include "logger.hpp"
 
+#include "async_exec.h"
 #include "http_interface.h"
 #include "version.h"
 
@@ -177,6 +178,42 @@ public:
 
         LOGV("Completed: [%d] %s", result.size(), result.c_str());
         return result;
+    }
+
+    // #14: enqueue the blocking part of a long operation on the worker pool.
+    // Must be called on the poll thread from inside a handler that has already
+    // passed auth, acquired its busy gate and parsed every parameter it needs
+    // into owning storage captured by the lambdas.
+    //   work     : worker thread; only script_timeout()/popen()/sleep() and
+    //              writing into captured owning storage. Never state/_tokens.
+    //   commit   : poll thread; mutate process-internal state and fill res,
+    //              return the reply status.
+    //   finalize : poll thread; release the endpoint busy gate (runs even if
+    //              the client disconnected).
+    // Returns API_STATUS_ASYNC when queued (propagate it); on saturation fills
+    // res with busy(-2), releases the gate and returns API_STATUS_OK.
+    static api_status_t submit_async(std::function<void()> work,
+        std::function<api_status_t(json&)> commit,
+        std::function<void()> finalize,
+        response_t res)
+    {
+        auto commit_res = std::move(commit);
+        return async_exec::instance().submit(conn_id(),
+            std::move(work),
+            [commit_res](async_exec::job& j) -> api_status_t { return commit_res(j.res); },
+            std::move(finalize), res);
+    }
+
+    // Raw variant: commit receives the async_exec::job so it can also produce a
+    // binary reply (job.reply_bytes/bytes_body/bytes_content_type), used by
+    // audioRecord to stream a WAV. Same threading contract as submit_async.
+    static api_status_t submit_async_raw(std::function<void()> work,
+        std::function<api_status_t(async_exec::job&)> commit,
+        std::function<void()> finalize,
+        response_t res)
+    {
+        return async_exec::instance().submit(conn_id(),
+            std::move(work), std::move(commit), std::move(finalize), res);
     }
 
     template <typename T>

@@ -390,89 +390,107 @@ bool api_app::write_config_file(const std::string& app_id, const json& values)
         values.dump(2) + "\n");
 }
 
-// Concurrency guard shared by every mutating handler: try-lock only, no
-// queueing. On contention the -2 "busy" response has already been written
-// and false is returned; on success lk owns _op_mutex.
-bool api_app::acquire_op_lock_or_busy(response_t res, std::unique_lock<std::timed_mutex>& lk)
-{
-    if (!_op_mutex.try_lock()) {
-        response(res, -2, "busy: another app operation is in progress");
-        return false;
-    }
-    lk = std::unique_lock<std::timed_mutex>(_op_mutex, std::adopt_lock);
-    return true;
-}
+// --- switch/stop building blocks ---
+//
+// #14: the camera hand-over (app_stop -> sleep 2 -> app_start -> app_status) is
+// the blocking part and now runs on a worker. The worker fills an app_op with
+// nothing but shell outcomes; ALL process-internal state (_state / _last_error)
+// and state.json commits stay on the poll thread (in the async commit). These
+// two helpers are the pure worker-side shell steps (no state, no response).
 
-// --- switch/stop building blocks (caller must hold _op_mutex) ---
-
-bool api_app::stop_current_locked(const std::string& script_path, response_t res)
+// worker thread: stop script_path if it is a live, valid init script (invalid
+// or vanished -> treat as already stopped). On success sleeps 2s for VPSS
+// release. Returns via app_op fields.
+void api_app::sh_stop(const std::string& script_path, app_op& o)
 {
     std::string err;
     if (!valid_init_script_path(script_path) || !check_init_script_fs(script_path, err)) {
-        // Script vanished or is invalid: treat as already stopped, just log.
-        LOGW("stop: skipping invalid current script '%s': %s", script_path.c_str(), err.c_str());
-        return true;
+        LOGW("stop: skipping invalid script '%s': %s", script_path.c_str(), err.c_str());
+        o.stop_ok = true;
+        return;
     }
-    _state = app_state::STOPPING;
     std::string r = script("app_stop", script_path); // main.sh: 10s timeout, TERM only
     if (r != STR_OK) {
-        _state = app_state::ERROR;
-        _last_error = "stop failed (" + r + "): " + script_path;
-        LOGE("%s", _last_error.c_str());
-        response(res, -1, _last_error, { { "state", state_str(_state) } });
-        return false;
+        o.stop_ok = false;
+        o.stop_err = "stop failed (" + r + "): " + script_path;
+        LOGE("%s", o.stop_err.c_str());
+        return;
     }
     // VPSS/camera release grace period (kernel driver is fragile, do not rush).
-    _state = app_state::WAIT_RELEASE;
     std::this_thread::sleep_for(std::chrono::seconds(2));
-    return true;
 }
 
-bool api_app::start_target_locked(const std::string& script_path, response_t res)
+// worker thread: start script_path (already fs-validated on the poll thread).
+// Runs app_start then the informational app_status probe. Returns via app_op.
+void api_app::sh_start(const std::string& script_path, app_op& o)
 {
+    std::string r = script("app_start", script_path); // main.sh: 15s timeout, TERM only
+    if (r != STR_OK) {
+        o.start_ok = false;
+        o.start_err = "start failed (" + r + "): " + script_path;
+        LOGE("%s", o.start_err.c_str());
+        return;
+    }
+    o.start_ok = true;
+    o.probe = parse_result(script("app_status", script_path)).value("status", "unknown");
+}
+
+// Restart app_id if it is the active app so a persisted change (model/config)
+// takes effect. See header. success_data gains "restarted".
+api_status_t api_app::restart_after_change(const json& app, const std::string& app_id,
+    json success_data, op_guard& g, response_t res)
+{
+    if (jstr(read_state(), "active_app") != app_id) {
+        success_data["restarted"] = false;
+        response(res, 0, STR_OK, success_data);
+        return API_STATUS_OK; // g releases the op gate on scope exit
+    }
+
+    std::string script_path = jstr(app, "init_script");
     std::string err;
     if (!check_init_script_fs(script_path, err)) {
         _state = app_state::ERROR;
         _last_error = err;
         response(res, -1, _last_error, { { "state", state_str(_state) } });
-        return false;
+        return API_STATUS_OK;
     }
-    _state = app_state::STARTING;
-    std::string r = script("app_start", script_path); // main.sh: 15s timeout, TERM only
-    if (r != STR_OK) {
-        _state = app_state::ERROR;
-        _last_error = "start failed (" + r + "): " + script_path;
-        LOGE("%s", _last_error.c_str());
-        // Deliberately no retry loop here: VPSS failures need a human decision.
-        response(res, -1, _last_error, { { "state", state_str(_state) } });
-        return false;
-    }
-    return true;
-}
 
-// Restart app_id if it is the active app (per state.json) so a persisted
-// change (model/config) takes effect. On failure the error response has
-// already been written and state.json is cleared; the caller must return.
-bool api_app::restart_if_active_locked(const json& app, const std::string& app_id, response_t res, bool& restarted)
-{
-    restarted = false;
-    if (jstr(read_state(), "active_app") != app_id) {
-        return true;
-    }
-    std::string script_path = jstr(app, "init_script");
-    if (!stop_current_locked(script_path, res)) {
-        return false;
-    }
-    if (!start_target_locked(script_path, res)) {
-        json st2 = read_state();
-        st2["active_app"] = nullptr;
-        st2["active_script"] = nullptr;
-        write_state(st2);
-        return false;
-    }
-    _state = app_state::RUNNING;
-    restarted = true;
-    return true;
+    // _state is committed only in the wakeup (see switchApp note).
+    auto op = std::make_shared<app_op>();
+    g.owns = false; // op gate ownership transfers to the async finalize
+    return submit_async(
+        [op, script_path]() {
+            sh_stop(script_path, *op);
+            if (op->stop_ok) {
+                sh_start(script_path, *op);
+            }
+        },
+        [op, success_data](json& res) -> api_status_t {
+            if (!op->stop_ok) {
+                _state = app_state::ERROR;
+                _last_error = op->stop_err;
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            if (!op->start_ok) {
+                _state = app_state::ERROR;
+                _last_error = op->start_err;
+                json st2 = read_state();
+                st2["active_app"] = nullptr;
+                st2["active_script"] = nullptr;
+                write_state(st2);
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            _state = app_state::RUNNING;
+            _last_error.clear();
+            json d = success_data;
+            d["restarted"] = true;
+            response(res, 0, STR_OK, d);
+            return API_STATUS_OK;
+        },
+        []() { op_release(); },
+        res);
 }
 
 // --- REST handlers ---
@@ -534,6 +552,8 @@ api_status_t api_app::current(request_t req, response_t res)
 
     json app = manifests[active];
     // Substitute {host} in rtsp_url with the host the client used to reach us.
+    // get_host(req) MUST be read here on the poll thread (req is only valid for
+    // this event); the resolved manifest is then owned by the job.
     std::string rtsp = jstr(app, "rtsp_url");
     const std::string ph = "{host}";
     size_t pos;
@@ -547,12 +567,21 @@ api_status_t api_app::current(request_t req, response_t res)
         app["current_model"] = app.value("default_model", "");
     }
 
-    // Live status probe via init script (5s timeout in main.sh).
-    json probe = parse_result(script("app_status", jstr(app, "init_script")));
-    data["probe"] = probe.value("status", "unknown");
-    data["app"] = app;
-    response(res, 0, STR_OK, data);
-    return API_STATUS_OK;
+    // #14: the live status probe (app_status, 5s in main.sh) is the only
+    // blocking part; run it on a worker. `data` and `app` are owning copies.
+    std::string init_script = jstr(app, "init_script");
+    auto probe = std::make_shared<json>();
+    return submit_async(
+        [probe, init_script]() { *probe = parse_result(script("app_status", init_script)); },
+        [data, app, probe](json& res) -> api_status_t {
+            json d = data;
+            d["probe"] = probe->value("status", "unknown");
+            d["app"] = app;
+            response(res, 0, STR_OK, d);
+            return API_STATUS_OK;
+        },
+        []() {},
+        res);
 }
 
 api_status_t api_app::switchApp(request_t req, response_t res)
@@ -564,8 +593,8 @@ api_status_t api_app::switchApp(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    std::unique_lock<std::timed_mutex> lk;
-    if (!acquire_op_lock_or_busy(res, lk)) {
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
     }
 
@@ -601,54 +630,86 @@ api_status_t api_app::switchApp(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    // stop current -> sleep 2 (VPSS release)
-    if (!active.empty() && !active_script.empty()) {
-        if (!stop_current_locked(active_script, res)) {
-            return API_STATUS_OK;
-        }
-    }
-
-    // start target
-    if (!start_target_locked(target_script, res)) {
-        // Camera is now free but nothing is running; persist that fact.
-        state["active_app"] = nullptr;
-        state["active_script"] = nullptr;
-        write_state(state);
-        return API_STATUS_OK;
-    }
-
-    // status probe (5s timeout in main.sh), informational only
-    json probe = parse_result(script("app_status", target_script));
-
-    state["active_app"] = app_id;
-    state["active_script"] = target_script;
-    if (!write_state(state)) {
-        // Persisting the selection failed (read-only or full filesystem). The
-        // new app is running but state.json does not record it; a reboot would
-        // then restore the wrong app (or none). Roll back the just-started
-        // process so process reality matches persisted state, and report the
-        // failure instead of a false success.
-        LOGE("failed to persist app state; rolling back '%s'", target_script.c_str());
-        script("app_stop", target_script); // best-effort: free the camera again
+    // Validate the target init script on the poll thread (fast fs stat) so an
+    // invalid target fails fast/synchronously before we go async.
+    std::string err;
+    if (!check_init_script_fs(target_script, err)) {
         _state = app_state::ERROR;
-        _last_error = "failed to persist app state (filesystem read-only or full)";
+        _last_error = err;
         response(res, -1, _last_error, { { "state", state_str(_state) } });
         return API_STATUS_OK;
     }
-    _state = app_state::RUNNING;
-    _last_error.clear();
 
-    response(res, 0, STR_OK,
-        { { "current", app_id },
-            { "state", state_str(_state) },
-            { "probe", probe.value("status", "unknown") } });
-    return API_STATUS_OK;
+    // #14: the camera hand-over (stop -> sleep 2 -> start -> probe) is blocking;
+    // run it on a worker. State/state.json commit happen on the poll thread.
+    // _state is left untouched until commit: in the old sync design the
+    // intermediate STOPPING/STARTING values were never observable to a
+    // concurrent reader (the poll thread was blocked), and deferring the write
+    // to commit also avoids leaking a transitional state if the pool saturates.
+    bool had_active = !active.empty() && !active_script.empty();
+    auto op = std::make_shared<app_op>();
+    g.owns = false; // ownership of the op gate transfers to the async finalize
+    return submit_async(
+        // worker thread: only shell + sleep.
+        [op, had_active, active_script, target_script]() {
+            if (had_active) {
+                sh_stop(active_script, *op);
+                if (!op->stop_ok) {
+                    return;
+                }
+            }
+            sh_start(target_script, *op);
+        },
+        // poll thread: map shell outcome to state/state.json + reply.
+        [op, app_id, target_script](json& res) -> api_status_t {
+            if (!op->stop_ok) {
+                _state = app_state::ERROR;
+                _last_error = op->stop_err;
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            if (!op->start_ok) {
+                // Camera is now free but nothing is running; persist that fact.
+                _state = app_state::ERROR;
+                _last_error = op->start_err;
+                json st = read_state();
+                st["active_app"] = nullptr;
+                st["active_script"] = nullptr;
+                write_state(st);
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            json st = read_state();
+            st["active_app"] = app_id;
+            st["active_script"] = target_script;
+            if (!write_state(st)) {
+                // Persisting the selection failed (read-only/full fs). The new
+                // app is running but state.json does not record it; roll it back
+                // so process reality matches persisted state. (Rare error path;
+                // this app_stop briefly runs on the poll thread.)
+                LOGE("failed to persist app state; rolling back '%s'", target_script.c_str());
+                script("app_stop", target_script);
+                _state = app_state::ERROR;
+                _last_error = "failed to persist app state (filesystem read-only or full)";
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            _state = app_state::RUNNING;
+            _last_error.clear();
+            response(res, 0, STR_OK,
+                { { "current", app_id },
+                    { "state", state_str(_state) },
+                    { "probe", op->probe } });
+            return API_STATUS_OK;
+        },
+        []() { op_release(); },
+        res);
 }
 
 api_status_t api_app::stop(request_t req, response_t res)
 {
-    std::unique_lock<std::timed_mutex> lk;
-    if (!acquire_op_lock_or_busy(res, lk)) {
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
     }
 
@@ -662,27 +723,38 @@ api_status_t api_app::stop(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    if (!stop_current_locked(active_script, res)) {
-        return API_STATUS_OK;
-    }
-
-    _state = app_state::STOPPED;
-    state["active_app"] = nullptr;
-    state["active_script"] = nullptr;
-    if (!write_state(state)) {
-        // The process is stopped but the cleared selection did not persist: a
-        // reboot would resurrect the app from the stale state.json. The camera
-        // is free now, so this is not fatal, but the user must be told the
-        // device is in an inconsistent (read-only / full) filesystem state.
-        LOGE("stop: failed to persist cleared app state");
-        _last_error = "app stopped but failed to persist state (filesystem read-only or full)";
-        response(res, -1, _last_error, { { "state", state_str(_state) } });
-        return API_STATUS_OK;
-    }
-    _last_error.clear();
-
-    response(res, 0, STR_OK, { { "state", state_str(_state) } });
-    return API_STATUS_OK;
+    // #14: app_stop (+2s VPSS release) is blocking; run it on a worker.
+    // _state is committed only in the wakeup (see switchApp note).
+    auto op = std::make_shared<app_op>();
+    g.owns = false; // op gate ownership transfers to the async finalize
+    return submit_async(
+        [op, active_script]() { sh_stop(active_script, *op); },
+        [op](json& res) -> api_status_t {
+            if (!op->stop_ok) {
+                _state = app_state::ERROR;
+                _last_error = op->stop_err;
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            _state = app_state::STOPPED;
+            json st = read_state();
+            st["active_app"] = nullptr;
+            st["active_script"] = nullptr;
+            if (!write_state(st)) {
+                // Stopped but the cleared selection did not persist: a reboot
+                // would resurrect the app from the stale state.json. Camera is
+                // free, so not fatal, but report the inconsistent fs state.
+                LOGE("stop: failed to persist cleared app state");
+                _last_error = "app stopped but failed to persist state (filesystem read-only or full)";
+                response(res, -1, _last_error, { { "state", state_str(_state) } });
+                return API_STATUS_OK;
+            }
+            _last_error.clear();
+            response(res, 0, STR_OK, { { "state", state_str(_state) } });
+            return API_STATUS_OK;
+        },
+        []() { op_release(); },
+        res);
 }
 
 api_status_t api_app::setModel(request_t req, response_t res)
@@ -695,8 +767,8 @@ api_status_t api_app::setModel(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    std::unique_lock<std::timed_mutex> lk;
-    if (!acquire_op_lock_or_busy(res, lk)) {
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
     }
 
@@ -749,14 +821,9 @@ api_status_t api_app::setModel(request_t req, response_t res)
     }
 
     // MVP semantics: persist + restart the app if it is the active one.
-    // (In-app hot model switching is Phase 2.)
-    bool restarted = false;
-    if (!restart_if_active_locked(app, app_id, res, restarted)) {
-        return API_STATUS_OK;
-    }
-
-    response(res, 0, STR_OK, { { "app_id", app_id }, { "model", model }, { "restarted", restarted } });
-    return API_STATUS_OK;
+    // (In-app hot model switching is Phase 2.) The restart, when needed, runs
+    // on a worker; the sync/no-restart path replies immediately.
+    return restart_after_change(app, app_id, { { "app_id", app_id }, { "model", model } }, g, res);
 }
 
 // GET/POST /api/appMgr/getConfig?app_id=<id>
@@ -816,8 +883,8 @@ api_status_t api_app::setConfig(request_t req, response_t res)
     }
     const json& values = body["values"];
 
-    std::unique_lock<std::timed_mutex> lk;
-    if (!acquire_op_lock_or_busy(res, lk)) {
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
     }
 
@@ -844,14 +911,9 @@ api_status_t api_app::setConfig(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    // Restart the app if it is the active one so the config takes effect.
-    bool restarted = false;
-    if (!restart_if_active_locked(app, app_id, res, restarted)) {
-        return API_STATUS_OK;
-    }
-
-    response(res, 0, STR_OK, { { "app_id", app_id }, { "values", values }, { "restarted", restarted } });
-    return API_STATUS_OK;
+    // Restart the app if it is the active one so the config takes effect (async
+    // when a restart is needed; immediate reply otherwise).
+    return restart_after_change(app, app_id, { { "app_id", app_id }, { "values", values } }, g, res);
 }
 
 // GET/POST /api/appMgr/getIntegrationDoc?app_id=<id>[&lang=zh|en]
@@ -1003,50 +1065,64 @@ api_status_t api_app::installApp(request_t req, response_t res)
     }
 
     // Installing while another operation switches/stops apps would race the
-    // camera hand-over; same try-lock/busy semantics as switch/setModel.
-    std::unique_lock<std::timed_mutex> lk;
-    if (!acquire_op_lock_or_busy(res, lk)) {
+    // camera hand-over; same busy semantics as switch/setModel. Acquired here
+    // on the poll thread, released in the async finalize (op_release).
+    if (!op_try_acquire()) {
+        response(res, -2, "busy: another app operation is in progress");
         return API_STATUS_OK;
     }
 
-    // main.sh output protocol: first line "EXIT:<code>" (124 = opkg timed
-    // out after 120s), then the tail of the opkg output. 130s here so the
-    // shell-side timeout always fires first.
-    std::string out = script_timeout(130, "app_install", deb);
+    // #14: opkg install has a 130s budget and used to freeze the whole
+    // management plane. Run it on a worker; commit + reply on the poll thread.
+    // `deb` is an owning std::string, captured by value into the worker.
+    auto out = std::make_shared<std::string>();
+    return submit_async(
+        // worker thread: only the blocking shell call.
+        [out, deb]() {
+            // main.sh output protocol: first line "EXIT:<code>" (124 = opkg
+            // timed out after 120s), then the tail of the opkg output. 130s
+            // here so the shell-side timeout always fires first.
+            *out = script_timeout(130, "app_install", deb);
+        },
+        // poll thread: parse, rescan manifests, build the exact same response.
+        [out, deb](json& res) -> api_status_t {
+            int exit_code = -1;
+            std::string opkg_out = *out;
+            if (out->rfind("EXIT:", 0) == 0) {
+                size_t nl = out->find('\n');
+                std::string code_str = out->substr(5, (nl == std::string::npos ? out->size() : nl) - 5);
+                try {
+                    exit_code = std::stoi(code_str);
+                } catch (const std::exception&) {
+                    exit_code = -1;
+                }
+                opkg_out = (nl == std::string::npos) ? "" : out->substr(nl + 1);
+            }
+            if (opkg_out.size() > MAX_OUTPUT_TAIL) {
+                opkg_out = opkg_out.substr(opkg_out.size() - MAX_OUTPUT_TAIL);
+            }
 
-    int exit_code = -1;
-    std::string opkg_out = out;
-    if (out.rfind("EXIT:", 0) == 0) {
-        size_t nl = out.find('\n');
-        std::string code_str = out.substr(5, (nl == std::string::npos ? out.size() : nl) - 5);
-        try {
-            exit_code = std::stoi(code_str);
-        } catch (const std::exception&) {
-            exit_code = -1;
-        }
-        opkg_out = (nl == std::string::npos) ? "" : out.substr(nl + 1);
-    }
-    if (opkg_out.size() > MAX_OUTPUT_TAIL) {
-        opkg_out = opkg_out.substr(opkg_out.size() - MAX_OUTPUT_TAIL);
-    }
+            // Rescan manifests: a well-behaved package drops its manifest into
+            // /userdata/local/apps/ (or ships a built-in one), so the count
+            // tells the frontend the gallery content may have changed.
+            int apps_count = (int)load_manifests().size();
 
-    // Rescan manifests: a well-behaved package drops its manifest into
-    // /userdata/local/apps/ (or ships a built-in one), so the count tells
-    // the frontend the gallery content may have changed.
-    int apps_count = (int)load_manifests().size();
+            json data = json::object();
+            data["path"] = deb;
+            data["exit_code"] = exit_code;
+            data["output"] = opkg_out;
+            data["apps_count"] = apps_count;
 
-    json data = json::object();
-    data["path"] = deb;
-    data["exit_code"] = exit_code;
-    data["output"] = opkg_out;
-    data["apps_count"] = apps_count;
-
-    if (exit_code == 0) {
-        response(res, 0, STR_OK, data);
-    } else if (exit_code == 124) {
-        response(res, -1, "opkg install timed out (120s)", data);
-    } else {
-        response(res, -1, "opkg install failed (exit " + std::to_string(exit_code) + ")", data);
-    }
-    return API_STATUS_OK;
+            if (exit_code == 0) {
+                response(res, 0, STR_OK, data);
+            } else if (exit_code == 124) {
+                response(res, -1, "opkg install timed out (120s)", data);
+            } else {
+                response(res, -1, "opkg install failed (exit " + std::to_string(exit_code) + ")", data);
+            }
+            return API_STATUS_OK;
+        },
+        // poll thread: release the op gate whatever happened.
+        []() { op_release(); },
+        res);
 }

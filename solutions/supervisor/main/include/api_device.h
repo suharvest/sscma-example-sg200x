@@ -226,6 +226,17 @@ private:
     static inline std::string _model_dir = "";
     static inline std::string _model_suffix = "";
     static inline std::mutex _battery_mutex;
+
+    // #14: unified busy gate shared by setRunMode AND forceConsole. Both mutate
+    // _serviced / _gallery_mode; once async they must never run concurrently or
+    // they would overwrite each other's state (spec hard-constraint 3, replaces
+    // the old two independent std::mutex-es). atomic_flag is lock-free without
+    // libatomic on this toolchain; test_and_set returns the previous value, so
+    // acquire succeeds only when the flag was clear. Acquired on the poll thread
+    // before enqueue, released on the poll thread in the wakeup finalize.
+    static inline std::atomic_flag _mode_busy = ATOMIC_FLAG_INIT;
+    static bool mode_try_acquire() { return !_mode_busy.test_and_set(std::memory_order_acquire); }
+    static void mode_release() { _mode_busy.clear(std::memory_order_release); }
 };
 
 #endif // API_DEVICE_H

@@ -1,9 +1,11 @@
 #ifndef API_AUDIO_H
 #define API_AUDIO_H
 
+#include <atomic>
 #include <cctype>
 #include <fstream>
-#include <mutex>
+#include <memory>
+#include <sstream>
 #include <string>
 
 #include "api_base.h"
@@ -23,10 +25,14 @@ class api_audio : public api_base {
 private:
     // One capture/playback operation at a time: arecord and aplay share the
     // codec path and overlapping invocations must not stack (two clicks on
-    // "record" must not start two arecords). Same busy contract as
-    // api_app::_op_mutex: try_lock, code -2 when busy. Volume get/set is
-    // instant and does not take this lock.
-    static inline std::mutex _audio_mutex;
+    // "record" must not start two arecords). Same busy contract (code -2 when
+    // busy). #14: an atomic busy gate (not a std::mutex) because the operation
+    // is now async — acquired on the poll thread before enqueue, released on
+    // the poll thread in the wakeup finalize. Volume get/set is instant and
+    // does not take this gate.
+    static inline std::atomic_flag _audio_busy = ATOMIC_FLAG_INIT;
+    static bool audio_try_acquire() { return !_audio_busy.test_and_set(std::memory_order_acquire); }
+    static void audio_release() { _audio_busy.clear(std::memory_order_release); }
 
     static constexpr const char* PROBE_WAV = "/tmp/audio_probe.wav";
 
@@ -103,43 +109,70 @@ private:
             return API_STATUS_OK;
         }
 
-        if (!_audio_mutex.try_lock()) {
+        if (!audio_try_acquire()) {
             response(res, -2, "busy: another audio operation is in progress");
             return API_STATUS_OK;
         }
-        std::lock_guard<std::mutex> lk(_audio_mutex, std::adopt_lock);
 
-        std::string result = script(__func__, secs);
-        if (result != STR_OK) {
-            response(res, -1, "Recording failed");
-            return API_STATUS_OK;
-        }
-        std::ifstream f(PROBE_WAV, std::ios::binary);
-        if (!f.is_open()) {
-            response(res, -1, "Recording produced no output");
-            return API_STATUS_OK;
-        }
-        response(res, 0, STR_OK, { { "file", PROBE_WAV } });
-        return API_STATUS_REPLY_FILE;
+        // #14: arecord blocks for `secs` seconds; run it on a worker. The worker
+        // records and slurps the WAV into memory; commit streams it back as
+        // audio/wav (preserving the old API_STATUS_REPLY_FILE behaviour, minus
+        // Range support which the probe UI does not use).
+        auto result = std::make_shared<std::string>();
+        auto wav = std::make_shared<std::string>();
+        return submit_async_raw(
+            [result, wav, secs]() {
+                *result = script("audioRecord", secs);
+                if (*result == STR_OK) {
+                    std::ifstream f(PROBE_WAV, std::ios::binary);
+                    if (f.is_open()) {
+                        std::ostringstream ss;
+                        ss << f.rdbuf();
+                        *wav = ss.str();
+                    }
+                }
+            },
+            [result, wav](async_exec::job& j) -> api_status_t {
+                if (*result != STR_OK) {
+                    response(j.res, -1, "Recording failed");
+                    return API_STATUS_OK;
+                }
+                if (wav->empty()) {
+                    response(j.res, -1, "Recording produced no output");
+                    return API_STATUS_OK;
+                }
+                j.reply_bytes = true;
+                j.bytes_body = std::move(*wav);
+                j.bytes_content_type = "audio/wav";
+                return API_STATUS_OK;
+            },
+            []() { audio_release(); },
+            res);
     }
 
     // POST /api/deviceMgr/audioPlayTest
     // Plays the packaged test tone (/usr/share/supervisor/sounds/
     // test_tone.wav) on hw:1,0. The user confirms audibility at the device.
     static api_status_t audioPlayTest(request_t req, response_t res) {
-        if (!_audio_mutex.try_lock()) {
+        if (!audio_try_acquire()) {
             response(res, -2, "busy: another audio operation is in progress");
             return API_STATUS_OK;
         }
-        std::lock_guard<std::mutex> lk(_audio_mutex, std::adopt_lock);
 
-        std::string result = script(__func__);
-        if (result != STR_OK) {
-            response(res, -1, "Playback failed");
-            return API_STATUS_OK;
-        }
-        response(res, 0, STR_OK);
-        return API_STATUS_OK;
+        // #14: aplay blocks for the tone duration; run it on a worker.
+        auto result = std::make_shared<std::string>();
+        return submit_async(
+            [result]() { *result = script("audioPlayTest"); },
+            [result](json& res) -> api_status_t {
+                if (*result != STR_OK) {
+                    response(res, -1, "Playback failed");
+                    return API_STATUS_OK;
+                }
+                response(res, 0, STR_OK);
+                return API_STATUS_OK;
+            },
+            []() { audio_release(); },
+            res);
     }
 
     // GET  /api/deviceMgr/audioVolume

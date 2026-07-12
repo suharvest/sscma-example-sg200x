@@ -63,18 +63,74 @@ private:
     static json read_config_file(const std::string& app_id);
     static bool write_config_file(const std::string& app_id, const json& values);
     static const char* state_str(app_state s);
-    static bool acquire_op_lock_or_busy(response_t res, std::unique_lock<std::timed_mutex>& lk);
-    static bool stop_current_locked(const std::string& script_path, response_t res);
-    static bool start_target_locked(const std::string& script_path, response_t res);
-    static bool restart_if_active_locked(const json& app, const std::string& app_id, response_t res, bool& restarted);
+
+    // Concurrency guard shared by every mutating appMgr handler (switch / stop /
+    // setModel / setConfig / installApp). #14: an atomic busy gate instead of a
+    // std::mutex, because an async operation acquires it on the poll thread
+    // (before enqueue) and releases it on the poll thread (in the wakeup
+    // finalize) — a std::mutex cannot be unlocked by a different lock/scope.
+    // The gate covers the WHOLE job lifecycle (enqueue -> worker -> commit) so
+    // the busy(-2) contract still holds while a long op runs on a worker.
+    // atomic_flag is the one type guaranteed lock-free everywhere (no libatomic
+    // needed on this riscv musl toolchain); test_and_set returns the previous
+    // value, so acquire succeeds only when the flag was clear.
+    static bool op_try_acquire() // poll thread
+    {
+        return !_op_busy.test_and_set(std::memory_order_acquire);
+    }
+    static void op_release() { _op_busy.clear(std::memory_order_release); } // poll thread
+    // RAII release for handlers that stay fully synchronous.
+    struct op_guard {
+        bool owns = false;
+        ~op_guard()
+        {
+            if (owns) {
+                op_release();
+            }
+        }
+    };
+    // Try to acquire for a synchronous handler; on contention writes the
+    // busy(-2) response and returns false.
+    static bool acquire_op_or_busy(response_t res, op_guard& g)
+    {
+        if (!op_try_acquire()) {
+            response(res, -2, "busy: another app operation is in progress");
+            return false;
+        }
+        g.owns = true;
+        return true;
+    }
+
+    // #14: worker-thread camera hand-over outcome. The worker fills only these
+    // shell results; the poll-thread commit maps them to _state / _last_error /
+    // state.json and the HTTP reply.
+    struct app_op {
+        bool stop_ok = true;   // no stop needed OR app_stop succeeded
+        std::string stop_err;  // set when stop_ok == false
+        bool start_ok = false;
+        std::string start_err; // set when start_ok == false
+        std::string probe = "unknown";
+    };
+    // Pure worker-thread shell steps (no process state, no HTTP response).
+    static void sh_stop(const std::string& script_path, app_op& o);
+    static void sh_start(const std::string& script_path, app_op& o);
+
+    // #14: shared by setModel/setConfig. If app_id is NOT the active app,
+    // replies success synchronously (restarted=false, g releases the op gate).
+    // If it IS active, restarts it (stop -> start) on a worker and replies from
+    // the wakeup (restarted=true); ownership of the op gate transfers to the
+    // async finalize. success_data is merged into the success reply.
+    static api_status_t restart_after_change(const json& app, const std::string& app_id,
+        json success_data, op_guard& g, response_t res);
 
     static constexpr const char* BUILTIN_APPS_DIR = "/usr/share/supervisor/apps";
     static constexpr const char* USER_APPS_DIR = "/userdata/local/apps";
     static constexpr const char* STATE_FILE = "/userdata/local/apps/state.json";
     static constexpr const char* INIT_DIR_PREFIX = "/etc/init.d/";
 
-    // Concurrency guard for switch/stop/setModel: try-lock only, no queueing.
-    static inline std::timed_mutex _op_mutex;
+    // #14: atomic busy gate (see op_try_acquire above), replaces the old
+    // std::timed_mutex so the gate can span an async job's whole lifecycle.
+    static inline std::atomic_flag _op_busy = ATOMIC_FLAG_INIT;
     static inline std::atomic<app_state> _state { app_state::STOPPED };
     static inline std::string _last_error;
 };
