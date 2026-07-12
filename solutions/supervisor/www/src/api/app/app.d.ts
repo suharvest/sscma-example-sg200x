@@ -33,7 +33,9 @@ export interface IAppManifest {
   name: string;
   name_zh?: string;
   scene?: string;
+  scene_zh?: string;
   description?: string;
+  description_zh?: string;
   type: AppType;
   init_script?: string;
   rtsp_url?: string; // may contain "{host}" placeholder
@@ -75,6 +77,93 @@ export interface IIntegrationDocResult {
   content: string;
   /** "user" | "builtin" | "" */
   source?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* App configuration (manifest config_schema, Phase 3)                 */
+/* ------------------------------------------------------------------ */
+
+export type ConfigItemType =
+  | "number"
+  | "boolean"
+  | "enum"
+  | "string"
+  | "zone"
+  | "line";
+
+/** Normalized [x, y] point, both coords in 0..1 (resolution independent). */
+export type NormPoint = [number, number];
+
+/** zone value: polygon vertices (3..maxPoints); null = explicitly cleared. */
+export type ZoneValue = NormPoint[] | null;
+
+export type LineDirection = "ab_in" | "ab_out";
+
+/** line value: two endpoints; direction required when item.directional. */
+export interface ILineValue {
+  a: NormPoint;
+  b: NormPoint;
+  direction?: LineDirection;
+}
+
+export type ConfigValue =
+  | number
+  | boolean
+  | string
+  | NormPoint[]
+  | ILineValue
+  | null;
+
+export interface IConfigItem {
+  key: string;
+  type: ConfigItemType;
+  title?: string;
+  title_zh?: string;
+  /** number */
+  min?: number;
+  max?: number;
+  /** number — UI-only granularity */
+  step?: number;
+  /** enum */
+  options?: string[];
+  /** string (backend default 256) */
+  maxLength?: number;
+  /** zone (backend default 8) */
+  maxPoints?: number;
+  /** line — when true, value.direction is required */
+  directional?: boolean;
+  default?: ConfigValue;
+}
+
+export interface IConfigGroup {
+  key: string;
+  title?: string;
+  title_zh?: string;
+  items: IConfigItem[];
+}
+
+export interface IConfigSchema {
+  groups: IConfigGroup[];
+}
+
+export type IConfigValues = Record<string, ConfigValue>;
+
+/** Result of /api/appMgr/getConfig. schema === null -> app not configurable. */
+export interface IAppConfigResult {
+  app_id: string;
+  schema: IConfigSchema | null;
+  /** Current /userdata/local/apps/<id>.config.json content ({} if unset). */
+  values: IConfigValues;
+  /** Per-key defaults declared in the schema. */
+  defaults: IConfigValues;
+}
+
+/** Result of /api/appMgr/setConfig (code 0). */
+export interface ISetConfigResult {
+  app_id: string;
+  values: IConfigValues;
+  /** True when the active app was restarted to apply the config. */
+  restarted: boolean;
 }
 
 export interface IAppCurrentResult {

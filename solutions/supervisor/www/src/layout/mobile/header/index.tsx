@@ -7,6 +7,7 @@ import { FormInstance } from "antd-mobile/es/components/form";
 import useConfigStore from "@/store/config";
 import { updateDeviceInfoApi, queryDeviceInfoApi } from "@/api/device/index";
 import { hostnameValidate } from "@/utils/validate";
+import { useTranslation } from "react-i18next";
 
 interface FormParams {
   deviceName: string;
@@ -16,6 +17,7 @@ function Header() {
   const [visible, setVisible] = useState(false);
   const formRef = useRef<FormInstance>(null);
   const { deviceInfo, updateDeviceInfo } = useConfigStore();
+  const { t } = useTranslation();
 
   const onQueryDeviceInfo = async () => {
     const res = await queryDeviceInfoApi();
@@ -52,7 +54,7 @@ function Header() {
         />
         <CommonPopup
           visible={visible}
-          title={"Edit Device Name"}
+          title={t("layout.editDeviceName")}
           onCancel={onCancel}
         >
           <Form
@@ -61,13 +63,13 @@ function Header() {
             initialValues={{ deviceName: deviceInfo?.deviceName }}
             footer={
               <Button block type="submit" color="primary">
-                Save
+                {t("common.save")}
               </Button>
             }
           >
             <Form.Item
               name="deviceName"
-              label="Name"
+              label={t("layout.name")}
               rules={[hostnameValidate(32)]}
             >
               <Input placeholder="recamera-132456" maxLength={32} clearable />

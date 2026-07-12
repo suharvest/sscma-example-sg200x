@@ -1,15 +1,19 @@
 /**
  * Shared sidebar menu definition (PC + mobile).
  * Gallery mode hides the Node-RED–backed Workspace/Dashboard entries.
+ *
+ * `label` / `title` are i18n keys — render with t(item.label) / t(section.title).
  */
 
 export interface MenuItem {
   key: string;
+  /** i18n key, e.g. "menu.applications" */
   label: string;
   route: string;
 }
 
 export interface MenuSection {
+  /** i18n key, e.g. "menu.sectionConsole" */
   title: string;
   items: MenuItem[];
 }
@@ -25,11 +29,11 @@ export function getMenuSections({
 }: MenuOptions): MenuSection[] {
   const sections: MenuSection[] = [
     {
-      title: "Console",
+      title: "menu.sectionConsole",
       items: [
-        { key: "applications", label: "Applications", route: "/" },
-        { key: "live", label: "Live", route: "/live" },
-        { key: "device", label: "Device", route: "/device" },
+        { key: "applications", label: "menu.applications", route: "/" },
+        { key: "live", label: "menu.live", route: "/live" },
+        { key: "device", label: "menu.device", route: "/device" },
       ],
     },
   ];
@@ -39,38 +43,38 @@ export function getMenuSections({
     if (isReCamera) {
       workspaceItems.push({
         key: "overview",
-        label: "Overview",
+        label: "menu.overview",
         route: "/overview",
       });
     }
     workspaceItems.push(
-      { key: "dashboard", label: "Dashboard", route: "/dashboard" },
-      { key: "workspace", label: "Workspace", route: "/workspace" }
+      { key: "dashboard", label: "menu.dashboard", route: "/dashboard" },
+      { key: "workspace", label: "menu.workspace", route: "/workspace" }
     );
-    sections.push({ title: "Workspace", items: workspaceItems });
+    sections.push({ title: "menu.sectionWorkspace", items: workspaceItems });
   } else if (isReCamera) {
     // Overview (camera preview) stays available in gallery mode.
     sections.push({
-      title: "Workspace",
-      items: [{ key: "overview", label: "Overview", route: "/overview" }],
+      title: "menu.sectionWorkspace",
+      items: [{ key: "overview", label: "menu.overview", route: "/overview" }],
     });
   }
 
   sections.push(
     {
-      title: "Configuration",
+      title: "menu.sectionConfiguration",
       items: [
-        { key: "files", label: "Files", route: "/files" },
-        { key: "security", label: "Security", route: "/security" },
-        { key: "network", label: "Network", route: "/network" },
+        { key: "files", label: "menu.files", route: "/files" },
+        { key: "security", label: "menu.security", route: "/security" },
+        { key: "network", label: "menu.network", route: "/network" },
       ],
     },
     {
-      title: "System",
+      title: "menu.sectionSystem",
       items: [
-        { key: "terminal", label: "Terminal", route: "/terminal" },
-        { key: "system", label: "System", route: "/system" },
-        { key: "power", label: "Power", route: "/power" },
+        { key: "terminal", label: "menu.terminal", route: "/terminal" },
+        { key: "system", label: "menu.system", route: "/system" },
+        { key: "power", label: "menu.power", route: "/power" },
       ],
     }
   );

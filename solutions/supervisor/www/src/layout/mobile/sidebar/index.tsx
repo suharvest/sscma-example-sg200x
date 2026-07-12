@@ -16,8 +16,10 @@ import ApplicationImg from "@/assets/images/svg/application.svg";
 import DashboardImg from "@/assets/images/svg/dashboard.svg";
 import FilesImg from "@/assets/images/svg/files.svg";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import useConfigStore from "@/store/config";
 import { getMenuSections } from "@/layout/menu";
+import LangToggle from "@/components/lang-toggle";
 
 const iconMap: Record<string, React.ReactNode> = {
   applications: <AppstoreOutlined style={{ fontSize: 16 }} />,
@@ -40,6 +42,7 @@ function Sidebar() {
   const [visible, setVisible] = useState(false);
   const navigate = useNavigate();
   const { deviceInfo, galleryMode } = useConfigStore();
+  const { t } = useTranslation();
 
   const menuSections = getMenuSections({
     galleryMode,
@@ -76,7 +79,7 @@ function Sidebar() {
           {menuSections.map((section) => (
             <div key={section.title}>
               <div className="rc-section-label px-10 pt-14 pb-6">
-                {section.title}
+                {t(section.title)}
               </div>
               {section.items.map((item) => (
                 <div
@@ -90,11 +93,14 @@ function Sidebar() {
                   }}
                 >
                   {iconMap[item.key]}
-                  <span>{item.label}</span>
+                  <span>{t(item.label)}</span>
                 </div>
               ))}
             </div>
           ))}
+          <div className="px-10 pt-16 mt-16 border-t border-line">
+            <LangToggle />
+          </div>
         </div>
       </Popup>
     </div>

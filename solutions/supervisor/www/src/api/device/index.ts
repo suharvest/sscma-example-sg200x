@@ -1,4 +1,7 @@
+import axios from "axios";
 import { supervisorRequest } from "@/utils/request";
+import { baseIP } from "@/utils/supervisorRequest";
+import { getToken } from "@/store/user";
 import { PowerMode, DeviceChannleMode, SystemUpdateStatus } from "@/enum";
 import {
   IDeviceInfo,
@@ -7,6 +10,7 @@ import {
   IIPDevice,
   IBatteryInfo,
   ISensorStatus,
+  IAudioVolume,
 } from "./device";
 
 // 获取设备信息
@@ -248,6 +252,112 @@ export const getTimestampApi = async () =>
       url: "api/deviceMgr/getTimestamp",
       method: "get",
       timeout: 5000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 设置设备时间戳（秒）。后端 setTimestamp 从 JSON body 里按字符串取
+// "timestamp"（body.value<string>），所以这里必须传字符串。
+export const setTimestampApi = async (timestamp: number) =>
+  supervisorRequest<{ timestamp: number }>(
+    {
+      url: "api/deviceMgr/setTimestamp",
+      method: "post",
+      data: { timestamp: String(Math.floor(timestamp)) },
+      timeout: 10000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 设置设备时区。后端校验 /usr/share/zoneinfo/<timezone> 是否存在，
+// 直接传 IANA 名称（如 "Asia/Shanghai"）。
+export const setTimezoneApi = async (timezone: string) =>
+  supervisorRequest<{ timezone: string }>(
+    {
+      url: "api/deviceMgr/setTimezone",
+      method: "post",
+      data: { timezone },
+      timeout: 10000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// NTP 时间同步（P3-B 后端：依次尝试多个 NTP 服务器，单个 10s 超时）。
+// 成功返回 data.timestamp（秒）。设备无外网时会失败。
+export const syncTimeNtpApi = async () =>
+  supervisorRequest<{ timestamp: number }>(
+    {
+      url: "api/deviceMgr/syncTime",
+      method: "post",
+      timeout: 45000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 麦克风录音探测（P3-E）。成功时后端以 audio/wav 二进制回传录音，所以
+// 不能走 supervisorRequest（那是 JSON 封装）；失败时后端返回 JSON
+// {code, msg}（code === -2 表示音频设备忙），这里解析后作为 reject
+// 原因抛出。duration 后端严格校验整数 1..10（按 setTimestamp 约定传
+// 字符串）。timeout 20s 覆盖最长 10s 录音 + 回传。
+export const audioRecordApi = async (duration: number): Promise<Blob> => {
+  const res = await axios.get(`${baseIP}/api/deviceMgr/audioRecord`, {
+    params: { duration: String(duration) },
+    responseType: "blob",
+    timeout: 20000,
+    headers: { Authorization: getToken() },
+  });
+  const blob = res.data as Blob;
+  if (blob.type.includes("application/json")) {
+    throw JSON.parse(await blob.text());
+  }
+  return blob;
+};
+
+// 扬声器测试音（P3-E）：设备端 aplay 播放随 deb 安装的 2s 提示音，
+// 成功仅代表播放命令执行完成，需要人在设备旁确认出声。
+export const audioPlayTestApi = async () =>
+  supervisorRequest(
+    {
+      url: "api/deviceMgr/audioPlayTest",
+      method: "post",
+      timeout: 15000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 获取音量控制项（P3-E）。supported=false 表示设备没有可用 mixer，
+// 前端不渲染音量滑条。
+export const getAudioVolumeApi = async () =>
+  supervisorRequest<IAudioVolume>(
+    {
+      url: "api/deviceMgr/audioVolume",
+      method: "get",
+      timeout: 8000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 设置音量（P3-E）。percent 按 setTimestamp 约定传字符串（后端从
+// JSON body 按字符串取值）。
+export const setAudioVolumeApi = async (control: string, percent: number) =>
+  supervisorRequest(
+    {
+      url: "api/deviceMgr/audioVolume",
+      method: "post",
+      data: { control, percent: String(Math.round(percent)) },
+      timeout: 8000,
     },
     {
       catchs: true,

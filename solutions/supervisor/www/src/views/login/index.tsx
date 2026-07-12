@@ -10,8 +10,11 @@ import useUserStore from "@/store/user";
 import { encryptPassword } from "@/utils";
 import { requiredTrimValidate, passwordRules } from "@/utils/validate";
 import { loginApi, updateUserPasswordApi } from "@/api/user";
+import { useTranslation } from "react-i18next";
+import LangToggle from "@/components/lang-toggle";
 
 const Login = () => {
+  const { t } = useTranslation();
   const { firstLogin, updateFirstLogin, updateUserInfo } = useUserStore();
 
   const [form] = Form.useForm();
@@ -38,10 +41,10 @@ const Login = () => {
         newPassword: encryptedNewPassword,
       });
       if (response.code == 0) {
-        messageApi.success("Password changed successfully");
+        messageApi.success(t("login.changeSuccess"));
         updateFirstLogin(false);
       } else {
-        messageApi.error("Password changed failed");
+        messageApi.error(t("login.changeFailed"));
       }
     }
   };
@@ -64,19 +67,19 @@ const Login = () => {
         return { success: true };
       }
       // 统一错误信息
-      let errorMsg = response.msg || "Login failed";
+      let errorMsg = response.msg || t("login.loginFailed");
       if (code === -1 && data && typeof data.retryCount !== "undefined") {
         errorMsg =
           data.retryCount > 0
-            ? `${data.retryCount} attempts remaining before temporary lock`
-            : "Account locked - Please retry later";
+            ? t("login.attemptsRemaining", { count: data.retryCount })
+            : t("login.accountLocked");
         return { success: false, errorMsg, usePasswordErrorMsg: true };
       }
       return { success: false, errorMsg, usePasswordErrorMsg: false };
     } catch (error) {
       return {
         success: false,
-        errorMsg: "Login failed",
+        errorMsg: t("login.loginFailed"),
         usePasswordErrorMsg: false,
       };
     }
@@ -106,17 +109,17 @@ const Login = () => {
   const agreementTitle = (
     <div className="flex items-center">
       <InfoCircleOutlined className="text-primary text-24 mr-12" />
-      <span>reCamera Connection Agreement</span>
+      <span>{t("login.agreementTitle")}</span>
     </div>
   );
 
   return (
-    <div className="h-full flex flex-col justify-center items-center text-18">
-      <img src={recameraLogo} className="w-300" />
-      <div className="text-16 w-500 mt-40 mb-40">
-        Welcome! Your exciting journey into the realm of Vision AI Platform
-        starts right here. Let reCamera redefine your vision of possibilities.
+    <div className="h-full flex flex-col justify-center items-center text-18 relative">
+      <div className="absolute right-16 top-16">
+        <LangToggle />
       </div>
+      <img src={recameraLogo} className="w-300" />
+      <div className="text-16 w-500 mt-40 mb-40">{t("login.welcome")}</div>
       <Form
         className="w-400"
         name="login"
@@ -127,27 +130,27 @@ const Login = () => {
       >
         <Form.Item
           name="username"
-          label="Username"
+          label={t("login.username")}
           rules={[
             {
               required: true,
-              message: "Please input Username",
+              message: t("login.usernameRequired"),
               whitespace: true,
             },
           ]}
         >
-          <Input prefix={<UserOutlined />} placeholder="Username" />
+          <Input prefix={<UserOutlined />} placeholder={t("login.username")} />
         </Form.Item>
         <Form.Item
           name="password"
-          label="Password"
+          label={t("login.password")}
           rules={[requiredTrimValidate()]}
           validateStatus={passwordErrorMsg ? "error" : undefined}
           help={passwordErrorMsg}
           extra={
             !passwordErrorMsg && (
               <>
-                * First time login password is&nbsp;
+                {t("login.firstTimeHintPrefix")}&nbsp;
                 <span className="font-bold text-primary">"recamera"</span>
               </>
             )
@@ -155,7 +158,7 @@ const Login = () => {
         >
           <Input.Password
             prefix={<LockOutlined />}
-            placeholder="Password"
+            placeholder={t("login.password")}
             visibilityToggle
             minLength={8}
             maxLength={32}
@@ -163,7 +166,7 @@ const Login = () => {
         </Form.Item>
         <Form.Item className="w-full" noStyle>
           <Button block type="primary" htmlType="submit" disabled={!agreed}>
-            Login
+            {t("login.loginBtn")}
           </Button>
         </Form.Item>
       </Form>
@@ -175,16 +178,14 @@ const Login = () => {
           className="mt-1"
         />
         <div className="ml-10 text-14">
-          Please view{" "}
+          {t("login.agreePrefix")}{" "}
           <span
             className="text-primary cursor-pointer underline"
             onClick={() => setShowAgreement(true)}
           >
-            reCamera Connection Agreement
+            {t("login.agreementTitle")}
           </span>
-          . By checking the box, users understand reCamera operates solely on
-          local networks and commit to maintaining enterprise-grade network
-          security for all vision AI operations.
+          {t("login.agreeSuffix")}
         </div>
       </div>
 
@@ -195,93 +196,61 @@ const Login = () => {
         onCancel={() => setShowAgreement(false)}
         footer={
           <Button type="primary" onClick={handleAcknowledge}>
-            Acknowledge
+            {t("login.acknowledge")}
           </Button>
         }
         width={1000}
       >
         <div className="text-left text-14 leading-relaxed ml-36">
           <p className="text-15 font-medium mb-16">
-            Welcome to reCamera Vision AI System. To ensure secure operation of
-            your AI-powered camera, please review and confirm:
+            {t("login.agreement.intro")}
           </p>
 
           <h3 className="text-15 font-semibold mb-8 mt-24">
-            Local Network Operation
+            {t("login.agreement.localTitle")}
           </h3>
-          <p className="mb-4">
-            This vision AI camera functions exclusively within local networks.
-            You agree:
-          </p>
+          <p className="mb-4">{t("login.agreement.localIntro")}</p>
           <ul className="list-none p-0 mt-4">
-            <li className="mb-4">
-              • Not to configure external/remote access capabilities
-            </li>
-            <li className="mb-4">
-              • To maintain all connections within your private network
-              environment
-            </li>
-            <li className="mb-4">
-              • To disable UPnP/WAN exposure features if present
-            </li>
+            <li className="mb-4">• {t("login.agreement.local1")}</li>
+            <li className="mb-4">• {t("login.agreement.local2")}</li>
+            <li className="mb-4">• {t("login.agreement.local3")}</li>
           </ul>
 
           <h3 className="text-15 font-semibold mb-8 mt-24">
-            Network Security Requirements
+            {t("login.agreement.netTitle")}
           </h3>
-          <p className="mb-4">By proceeding, you confirm that your network:</p>
+          <p className="mb-4">{t("login.agreement.netIntro")}</p>
           <ul className="list-none p-0 mt-4">
-            <li className="mb-4">
-              • Implements WPA2/WPA3 encryption standards
-            </li>
-            <li className="mb-4">
-              • Maintains updated firewall/security protocols
-            </li>
-            <li className="mb-4">• Restricts unauthorized device access</li>
-            <li className="mb-4">
-              • Uses strong unique credentials (recommended 12+ character
-              password)
-            </li>
+            <li className="mb-4">• {t("login.agreement.net1")}</li>
+            <li className="mb-4">• {t("login.agreement.net2")}</li>
+            <li className="mb-4">• {t("login.agreement.net3")}</li>
+            <li className="mb-4">• {t("login.agreement.net4")}</li>
           </ul>
 
           <h3 className="text-15 font-semibold mb-8 mt-24">
-            Data Protection Understanding
+            {t("login.agreement.dataTitle")}
           </h3>
-          <p className="mb-4">As a vision AI camera, reCamera:</p>
+          <p className="mb-4">{t("login.agreement.dataIntro")}</p>
           <ul className="list-none p-0 mt-4">
-            <li className="mb-4">
-              • Processes video data locally unless otherwise specified
-            </li>
-            <li className="mb-4">
-              • Requires user-configured storage solutions
-            </li>
-            <li className="mb-4">
-              • Excludes cloud connectivity by default design
-            </li>
+            <li className="mb-4">• {t("login.agreement.data1")}</li>
+            <li className="mb-4">• {t("login.agreement.data2")}</li>
+            <li className="mb-4">• {t("login.agreement.data3")}</li>
           </ul>
 
           <h3 className="text-15 font-semibold mb-8 mt-24">
-            User Responsibilities
+            {t("login.agreement.respTitle")}
           </h3>
-          <p className="mb-4">
-            You acknowledge that Seeed Studio is not liable for:
-          </p>
+          <p className="mb-4">{t("login.agreement.respIntro")}</p>
           <ul className="list-none p-0 mt-4">
-            <li className="mb-4">
-              • Security incidents from unsecured network environments
-            </li>
-            <li className="mb-4">
-              • Unauthorized access through compromised credentials
-            </li>
-            <li className="mb-4">
-              • Performance issues when used beyond local network parameters
-            </li>
+            <li className="mb-4">• {t("login.agreement.resp1")}</li>
+            <li className="mb-4">• {t("login.agreement.resp2")}</li>
+            <li className="mb-4">• {t("login.agreement.resp3")}</li>
           </ul>
         </div>
       </Modal>
 
       <Modal
-        title="Change password"
+        title={t("login.changePasswordTitle")}
         open={firstLogin}
         closable={false}
         footer={
@@ -290,7 +259,7 @@ const Login = () => {
             type="primary"
             onClick={handleChangePassword}
           >
-            Confirm
+            {t("common.confirm")}
           </Button>
         }
       >
@@ -303,11 +272,11 @@ const Login = () => {
         >
           <Form.Item
             name="oldpassword"
-            label="Old Password"
+            label={t("login.oldPassword")}
             rules={[requiredTrimValidate()]}
             extra={
               <>
-                For first time login, default password is&nbsp;
+                {t("login.oldPasswordExtraPrefix")}&nbsp;
                 <span className="font-bold text-primary">"recamera"</span>
               </>
             }
@@ -316,12 +285,12 @@ const Login = () => {
           </Form.Item>
           <Form.Item
             name="newpassword"
-            label="New Password"
+            label={t("login.newPassword")}
             rules={passwordRules}
-            extra="Password must be 8-32 characters and include letters, numbers, and symbols"
+            extra={t("login.newPasswordExtra")}
           >
             <Input.Password
-              placeholder="Enter new password here"
+              placeholder={t("login.newPasswordPlaceholder")}
               visibilityToggle
               minLength={8}
               maxLength={32}
@@ -330,7 +299,7 @@ const Login = () => {
 
           <Form.Item
             name="confirmpassword"
-            label="Confirm New Password"
+            label={t("login.confirmPassword")}
             dependencies={["newpassword"]}
             rules={[
               {
@@ -342,14 +311,14 @@ const Login = () => {
                     return Promise.resolve();
                   }
                   return Promise.reject(
-                    new Error("The new password that you entered do not match!")
+                    new Error(t("login.passwordMismatch"))
                   );
                 },
               }),
             ]}
           >
             <Input.Password
-              placeholder="Confirm new password"
+              placeholder={t("login.confirmPasswordPlaceholder")}
               visibilityToggle
               minLength={8}
               maxLength={32}

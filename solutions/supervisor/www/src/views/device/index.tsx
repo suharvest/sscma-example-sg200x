@@ -1,18 +1,31 @@
-import { useEffect, useState } from "react";
-import { Button, Modal, Progress, Switch, message } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Button, Modal, Progress, Slider, Switch, message } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
   PoweroffOutlined,
+  ClockCircleOutlined,
+  GlobalOutlined,
+  AudioOutlined,
+  SoundOutlined,
+  DownloadOutlined,
 } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 import {
   queryBatteryInfoApi,
   getSensorStatusApi,
   getTimestampApi,
   getTimezoneApi,
+  setTimestampApi,
+  setTimezoneApi,
+  syncTimeNtpApi,
   setDevicePowerApi,
+  audioRecordApi,
+  audioPlayTestApi,
+  getAudioVolumeApi,
+  setAudioVolumeApi,
 } from "@/api/device/index";
-import { ISensorStatus } from "@/api/device/device";
+import { ISensorStatus, IAudioVolume } from "@/api/device/device";
 import { setLedApi } from "@/api/led";
 import { PowerMode } from "@/enum";
 
@@ -21,6 +34,10 @@ import { PowerMode } from "@/enum";
 const LED_NAMES = ["white", "red", "blue"];
 
 type LedState = "unknown" | "on" | "off" | "unavailable";
+
+/** Device clock is considered "not set" below this year (no RTC battery
+ *  -> boots at 1970). */
+const CLOCK_SANE_YEAR = 2020;
 
 function formatStorage(value?: number): string {
   if (value === undefined || value === null || isNaN(value)) return "-";
@@ -32,6 +49,7 @@ function formatStorage(value?: number): string {
 }
 
 const DeviceTools = () => {
+  const { t } = useTranslation();
   const [ledStates, setLedStates] = useState<Record<string, LedState>>(
     Object.fromEntries(LED_NAMES.map((n) => [n, "unknown"]))
   );
@@ -42,6 +60,35 @@ const DeviceTools = () => {
   const [deviceTime, setDeviceTime] = useState<number | null>(null);
   const [timezone, setTimezone] = useState<string>("");
   const [powerLoading, setPowerLoading] = useState(false);
+  const [browserSyncing, setBrowserSyncing] = useState(false);
+  const [ntpSyncing, setNtpSyncing] = useState(false);
+  // Audio card (P3-E). recordUrl: object URL of the last mic capture.
+  const [recording, setRecording] = useState(false);
+  const [recordUrl, setRecordUrl] = useState<string | null>(null);
+  const [playTesting, setPlayTesting] = useState(false);
+  // undefined=loading, null=unsupported/unavailable
+  const [audioVolume, setAudioVolume] = useState<
+    IAudioVolume | null | undefined
+  >(undefined);
+  const recordUrlRef = useRef<string | null>(null);
+  const volumeTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const fetchTime = () => {
+    getTimestampApi()
+      .then((res) => {
+        if ((res.code === 0 || res.code === "0") && res.data?.timestamp) {
+          setDeviceTime(res.data.timestamp * 1000);
+        }
+      })
+      .catch(() => setDeviceTime(null));
+    getTimezoneApi()
+      .then((res) => {
+        if (res.code === 0 || res.code === "0") {
+          setTimezone(res.data?.timezone || "");
+        }
+      })
+      .catch(() => setTimezone(""));
+  };
 
   const fetchAll = async () => {
     setBattery(undefined);
@@ -66,26 +113,99 @@ const DeviceTools = () => {
         }
       })
       .catch(() => setSensor(null));
-    // Time / timezone
-    getTimestampApi()
+    fetchTime();
+    // Audio volume controls (P3-E endpoint; older firmware returns 404)
+    setAudioVolume(undefined);
+    getAudioVolumeApi()
       .then((res) => {
-        if ((res.code === 0 || res.code === "0") && res.data?.timestamp) {
-          setDeviceTime(res.data.timestamp * 1000);
+        if (
+          (res.code === 0 || res.code === "0") &&
+          res.data?.supported &&
+          res.data.controls?.length
+        ) {
+          setAudioVolume(res.data);
+        } else {
+          setAudioVolume(null);
         }
       })
-      .catch(() => setDeviceTime(null));
-    getTimezoneApi()
-      .then((res) => {
-        if (res.code === 0 || res.code === "0") {
-          setTimezone(res.data?.timezone || "");
-        }
-      })
-      .catch(() => setTimezone(""));
+      .catch(() => setAudioVolume(null));
   };
 
   useEffect(() => {
     fetchAll();
+    // Release the last recording's object URL on unmount.
+    return () => {
+      if (recordUrlRef.current) URL.revokeObjectURL(recordUrlRef.current);
+    };
   }, []);
+
+  /** Record 3 s from the on-board mic, get the WAV back as a blob and feed
+   *  it to an <audio> element. Backend enforces one audio op at a time
+   *  (code -2 = busy). */
+  const onRecord = async () => {
+    setRecording(true);
+    try {
+      const blob = await audioRecordApi(3);
+      if (recordUrlRef.current) URL.revokeObjectURL(recordUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      recordUrlRef.current = url;
+      setRecordUrl(url);
+    } catch (e) {
+      const code = (e as { code?: number | string })?.code;
+      if (code === -2 || code === "-2") {
+        message.warning(t("audio.busy"));
+      } else {
+        message.error(t("audio.recordFailed"));
+      }
+    } finally {
+      setRecording(false);
+    }
+  };
+
+  /** Play the packaged test tone on the device speaker; the user confirms
+   *  audibility at the device. */
+  const onPlayTest = async () => {
+    setPlayTesting(true);
+    try {
+      const res = await audioPlayTestApi();
+      if (res.code === 0 || res.code === "0") {
+        message.success(t("audio.playConfirm"));
+      } else if (res.code === -2 || res.code === "-2") {
+        message.warning(t("audio.busy"));
+      } else {
+        message.error(t("audio.playFailed"));
+      }
+    } catch (e) {
+      message.error(t("audio.playFailed"));
+    } finally {
+      setPlayTesting(false);
+    }
+  };
+
+  /** Slider onChange: update UI immediately, debounce the backend set. */
+  const onVolumeChange = (name: string, pct: number) => {
+    setAudioVolume((v) =>
+      v
+        ? {
+            ...v,
+            controls: v.controls.map((c) =>
+              c.name === name ? { ...c, percent: pct } : c
+            ),
+          }
+        : v
+    );
+    if (volumeTimer.current) clearTimeout(volumeTimer.current);
+    volumeTimer.current = setTimeout(async () => {
+      try {
+        const res = await setAudioVolumeApi(name, pct);
+        if (res.code !== 0 && res.code !== "0") {
+          message.error(t("audio.volumeFailed"));
+        }
+      } catch (e) {
+        message.error(t("audio.volumeFailed"));
+      }
+    }, 400);
+  };
 
   const onToggleLed = async (name: string, on: boolean) => {
     const prev = ledStates[name];
@@ -94,35 +214,86 @@ const DeviceTools = () => {
       const res = await setLedApi(name, on);
       if (res.code !== 0 && res.code !== "0") {
         setLedStates((s) => ({ ...s, [name]: "unavailable" }));
-        message.warning(`LED "${name}" is not available on this device`);
+        message.warning(t("device.ledUnavailableMsg", { name }));
       }
     } catch (e) {
       setLedStates((s) => ({
         ...s,
         [name]: prev === "unknown" ? "unavailable" : prev,
       }));
-      message.error(`Failed to set LED "${name}"`);
+      message.error(t("device.ledSetFailed", { name }));
+    }
+  };
+
+  /** Field-deployment path: copy the (correct) browser clock + timezone to
+   *  the device. Works fully offline. Backend expects seconds. */
+  const onSyncFromBrowser = async () => {
+    setBrowserSyncing(true);
+    try {
+      const res = await setTimestampApi(Math.floor(Date.now() / 1000));
+      if (res.code !== 0 && res.code !== "0") {
+        throw new Error(res.msg || "setTimestamp failed");
+      }
+      // IANA name, validated by the backend against /usr/share/zoneinfo.
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz) {
+        try {
+          const tzRes = await setTimezoneApi(tz);
+          if (tzRes.code !== 0 && tzRes.code !== "0") {
+            message.warning(t("device.timezoneNotApplied", { tz }));
+          }
+        } catch {
+          message.warning(t("device.timezoneNotApplied", { tz }));
+        }
+      }
+      message.success(t("device.syncSuccess"));
+    } catch (e) {
+      message.error(t("device.syncFailed"));
+    } finally {
+      setBrowserSyncing(false);
+      fetchTime();
+    }
+  };
+
+  /** NTP path (P3-B backend endpoint). Requires internet on the device;
+   *  failure/404 must not block the page. */
+  const onSyncNtp = async () => {
+    setNtpSyncing(true);
+    try {
+      const res = await syncTimeNtpApi();
+      if ((res.code === 0 || res.code === "0") && res.data?.timestamp) {
+        message.success(t("device.syncSuccess"));
+      } else {
+        message.error(t("device.ntpFailed"));
+      }
+    } catch (e) {
+      message.error(t("device.ntpFailed"));
+    } finally {
+      setNtpSyncing(false);
+      fetchTime();
     }
   };
 
   const onPower = (mode: PowerMode) => {
     const isReboot = mode === PowerMode.Restart;
     Modal.confirm({
-      title: isReboot ? "Reboot device?" : "Shut down device?",
+      title: isReboot ? t("device.rebootTitle") : t("device.shutdownTitle"),
       icon: <ExclamationCircleOutlined />,
       content: isReboot
-        ? "The device will restart. All running applications and streams will be interrupted."
-        : "The device will power off. You will need physical access to turn it back on.",
-      okText: isReboot ? "Reboot" : "Shut down",
+        ? t("device.rebootContent")
+        : t("device.shutdownContent"),
+      okText: isReboot ? t("device.reboot") : t("device.shutdownOk"),
       okButtonProps: { danger: true },
-      cancelText: "Cancel",
+      cancelText: t("common.cancel"),
       onOk: async () => {
         setPowerLoading(true);
         try {
           await setDevicePowerApi({ mode });
-          message.success(isReboot ? "Rebooting…" : "Shutting down…");
+          message.success(
+            isReboot ? t("device.rebooting") : t("device.shuttingDown")
+          );
         } catch (e) {
-          message.error("Operation failed");
+          message.error(t("device.opFailed"));
         } finally {
           setPowerLoading(false);
         }
@@ -136,27 +307,31 @@ const DeviceTools = () => {
       ? Math.min(Math.round((storage.used / storage.total) * 100), 100)
       : null;
 
+  const clockNotSet =
+    deviceTime !== null &&
+    new Date(deviceTime).getFullYear() < CLOCK_SANE_YEAR;
+
   return (
     <div className="py-24 pb-40">
       <div className="flex items-start justify-between gap-12 flex-wrap">
         <div>
-          <div className="rc-eyebrow mb-4">Solution Console</div>
+          <div className="rc-eyebrow mb-4">{t("common.console")}</div>
           <h1 className="font-display font-bold text-24 m-0 tracking-tight">
-            Device
+            {t("device.title")}
           </h1>
           <p className="text-muted text-13 mt-4 mb-0">
-            Low-level device controls and health.
+            {t("device.subtitle")}
           </p>
         </div>
         <Button icon={<ReloadOutlined />} onClick={fetchAll}>
-          Refresh
+          {t("common.refresh")}
         </Button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-16 mt-24">
         {/* LED control */}
         <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">LED Control</div>
+          <div className="rc-section-label mb-12">{t("device.ledControl")}</div>
           <div className="flex flex-col">
             {LED_NAMES.map((name, i) => (
               <div
@@ -166,12 +341,14 @@ const DeviceTools = () => {
                 }`}
               >
                 <div>
-                  <span className="text-14 font-medium capitalize">
-                    {name} LED
+                  <span className="text-14 font-medium">
+                    {t(`device.led.${name}`, {
+                      defaultValue: `${name} LED`,
+                    })}
                   </span>
                   {ledStates[name] === "unavailable" && (
                     <span className="text-12 text-muted ml-8">
-                      not available on this device
+                      {t("device.ledNotAvailable")}
                     </span>
                   )}
                 </div>
@@ -184,29 +361,25 @@ const DeviceTools = () => {
               </div>
             ))}
           </div>
-          <div className="text-12 text-muted mt-8">
-            Writes /sys/class/leds/&lt;name&gt;/brightness directly.
-          </div>
+          <div className="text-12 text-muted mt-8">{t("device.ledHint")}</div>
         </div>
 
         {/* Battery */}
         <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">Battery</div>
+          <div className="rc-section-label mb-12">{t("device.battery")}</div>
           {battery === undefined ? (
-            <div className="text-13 text-muted">Reading…</div>
+            <div className="text-13 text-muted">{t("common.reading")}</div>
           ) : battery === null ? (
-            <div className="text-13 text-muted">
-              No battery detected on this device.
-            </div>
+            <div className="text-13 text-muted">{t("device.noBattery")}</div>
           ) : (
             <div>
-              <div className="rc-kpi-label">Voltage</div>
+              <div className="rc-kpi-label">{t("device.voltage")}</div>
               <div className="rc-kpi-value">
                 {(battery / 1000).toFixed(2)}
                 <span className="text-14 font-medium text-muted ml-4">V</span>
               </div>
               <div className="rc-mono text-11 text-muted mt-2">
-                {battery} mV raw
+                {t("device.rawMv", { mv: battery })}
               </div>
             </div>
           )}
@@ -214,17 +387,17 @@ const DeviceTools = () => {
 
         {/* Temperature + storage */}
         <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">Health</div>
+          <div className="rc-section-label mb-12">{t("device.health")}</div>
           {sensor === undefined ? (
-            <div className="text-13 text-muted">Reading…</div>
+            <div className="text-13 text-muted">{t("common.reading")}</div>
           ) : sensor === null ? (
             <div className="text-13 text-muted">
-              Sensor endpoint unavailable on this firmware.
+              {t("device.sensorUnavailable")}
             </div>
           ) : (
             <div className="flex flex-col gap-16">
               <div>
-                <div className="rc-kpi-label">SoC Temperature</div>
+                <div className="rc-kpi-label">{t("device.socTemp")}</div>
                 <div className="rc-kpi-value">
                   {sensor.temperature_c !== undefined
                     ? sensor.temperature_c.toFixed(1)
@@ -235,7 +408,7 @@ const DeviceTools = () => {
                 </div>
               </div>
               <div>
-                <div className="rc-kpi-label">Storage (/userdata)</div>
+                <div className="rc-kpi-label">{t("device.storageLabel")}</div>
                 {storagePercent !== null ? (
                   <>
                     <Progress
@@ -244,9 +417,11 @@ const DeviceTools = () => {
                       strokeColor="#8fc31f"
                     />
                     <div className="rc-mono text-11 text-muted">
-                      {formatStorage(storage?.used)} used /{" "}
-                      {formatStorage(storage?.total)} ·{" "}
-                      {formatStorage(storage?.available)} free
+                      {t("device.storageDetail", {
+                        used: formatStorage(storage?.used),
+                        total: formatStorage(storage?.total),
+                        free: formatStorage(storage?.available),
+                      })}
                     </div>
                   </>
                 ) : (
@@ -259,22 +434,121 @@ const DeviceTools = () => {
 
         {/* Time */}
         <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">Time &amp; Timezone</div>
-          <div className="rc-kpi-label">Device time</div>
+          <div className="flex items-center justify-between gap-8 mb-12">
+            <div className="rc-section-label">{t("device.timeCard")}</div>
+            {clockNotSet && (
+              <span className="rc-badge accent">
+                <span className="dot" />
+                {t("device.clockNotSet")}
+              </span>
+            )}
+          </div>
+          <div className="rc-kpi-label">{t("device.deviceTime")}</div>
           <div className="rc-kpi-value" style={{ fontSize: 20 }}>
             {deviceTime ? new Date(deviceTime).toLocaleString() : "-"}
           </div>
           <div className="rc-mono text-11 text-muted mt-6">
-            timezone: {timezone || "-"}
+            {t("device.timezone", { tz: timezone || "-" })}
+          </div>
+          <div className="flex gap-8 mt-14 flex-wrap">
+            <Button
+              size="small"
+              type={clockNotSet ? "primary" : "default"}
+              icon={<ClockCircleOutlined />}
+              loading={browserSyncing}
+              disabled={ntpSyncing}
+              onClick={onSyncFromBrowser}
+            >
+              {t("device.syncFromBrowser")}
+            </Button>
+            <Button
+              size="small"
+              icon={<GlobalOutlined />}
+              loading={ntpSyncing}
+              disabled={browserSyncing}
+              onClick={onSyncNtp}
+            >
+              {t("device.syncViaNtp")}
+            </Button>
           </div>
           <div className="text-12 text-muted mt-10">
-            Change the timezone in System settings.
+            {t("device.timeHint")}
           </div>
+        </div>
+
+        {/* Audio (P3-E): microphone probe, speaker test tone, volume */}
+        <div className="rc-card p-20">
+          <div className="rc-section-label mb-12">{t("audio.card")}</div>
+
+          <div className="rc-kpi-label">{t("audio.microphone")}</div>
+          <div className="flex gap-8 mt-6 flex-wrap items-center">
+            <Button
+              size="small"
+              icon={<AudioOutlined />}
+              loading={recording}
+              disabled={playTesting}
+              onClick={onRecord}
+            >
+              {recording ? t("audio.recording") : t("audio.recordBtn")}
+            </Button>
+            {recordUrl && (
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                href={recordUrl}
+                download="audio_probe.wav"
+              >
+                {t("audio.download")}
+              </Button>
+            )}
+          </div>
+          {recordUrl && (
+            <audio
+              controls
+              src={recordUrl}
+              className="w-full mt-10"
+              style={{ height: 32 }}
+            />
+          )}
+
+          <div className="rc-kpi-label mt-16">{t("audio.speaker")}</div>
+          <div className="mt-6">
+            <Button
+              size="small"
+              icon={<SoundOutlined />}
+              loading={playTesting}
+              disabled={recording}
+              onClick={onPlayTest}
+            >
+              {t("audio.playBtn")}
+            </Button>
+          </div>
+
+          {audioVolume && audioVolume.controls.length > 0 && (
+            <>
+              <div className="rc-kpi-label mt-16">{t("audio.volume")}</div>
+              {audioVolume.controls.map((c) => (
+                <div key={c.name} className="mt-4">
+                  <div className="rc-mono text-11 text-muted">
+                    {c.name} · {c.percent}%
+                  </div>
+                  <Slider
+                    min={0}
+                    max={100}
+                    value={c.percent}
+                    onChange={(v) => onVolumeChange(c.name, v)}
+                  />
+                </div>
+              ))}
+            </>
+          )}
+
+          <div className="text-12 text-muted mt-10">{t("audio.micHint")}</div>
         </div>
 
         {/* Power */}
         <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">Power</div>
+          <div className="rc-section-label mb-12">{t("device.power")}</div>
           <div className="flex flex-col gap-10">
             <Button
               danger
@@ -282,7 +556,7 @@ const DeviceTools = () => {
               loading={powerLoading}
               onClick={() => onPower(PowerMode.Restart)}
             >
-              Reboot
+              {t("device.reboot")}
             </Button>
             <Button
               danger
@@ -290,11 +564,11 @@ const DeviceTools = () => {
               loading={powerLoading}
               onClick={() => onPower(PowerMode.Shutdown)}
             >
-              Shutdown
+              {t("device.shutdown")}
             </Button>
           </div>
           <div className="text-12 text-muted mt-10">
-            Both actions interrupt all running applications.
+            {t("device.powerHint")}
           </div>
         </div>
       </div>

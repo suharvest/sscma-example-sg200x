@@ -3,6 +3,9 @@ import {
   IAppListResult,
   IAppCurrentResult,
   IIntegrationDocResult,
+  IAppConfigResult,
+  ISetConfigResult,
+  IConfigValues,
 } from "./app";
 
 // List all registered applications + active app id + run status
@@ -61,13 +64,54 @@ export const stopAppApi = async () =>
 
 // Integration / output-format doc (markdown) for an app.
 // Empty content means "no doc installed" — hide the section.
-export const getIntegrationDocApi = async (app_id: string) =>
+// `lang` selects the doc variant ("zh" -> <id>.zh.md); the BACKEND falls
+// back to the English doc when the variant is missing — no retry here.
+export const getIntegrationDocApi = async (
+  app_id: string,
+  lang?: "zh" | "en"
+) =>
   supervisorRequest<IIntegrationDocResult>(
     {
       url: "api/appMgr/getIntegrationDoc",
       method: "get",
+      params: lang ? { app_id, lang } : { app_id },
+      timeout: 10000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// App configuration: manifest config_schema + current values + defaults.
+// data.schema === null means the app has no configuration capability
+// (the UI hides the configuration card entirely).
+export const getConfigApi = async (app_id: string) =>
+  supervisorRequest<IAppConfigResult>(
+    {
+      url: "api/appMgr/getConfig",
+      method: "get",
       params: { app_id },
       timeout: 10000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// Persist app configuration. Backend validates every key against the
+// schema (code -1 with a specific message on failure, code -2 when another
+// app operation holds the lock) and restarts the app when it is active —
+// hence the long timeout (same stop/start path as setModel).
+export const setConfigApi = async (data: {
+  app_id: string;
+  values: IConfigValues;
+}) =>
+  supervisorRequest<ISetConfigResult>(
+    {
+      url: "api/appMgr/setConfig",
+      method: "post",
+      data,
+      timeout: 45000,
     },
     {
       catchs: true,

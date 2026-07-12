@@ -1,5 +1,6 @@
 import ReactDOM from "react-dom/client";
 import App from "./App.tsx";
+import "@/i18n";
 import "antd-mobile/es/global";
 // latin subsets only — CJK text (e.g. name_zh) falls back to system fonts
 import "@fontsource/montserrat/latin-400.css";

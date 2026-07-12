@@ -3,7 +3,9 @@ import { Button, message } from "antd";
 import { CopyOutlined, DownloadOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useTranslation } from "react-i18next";
 import { getIntegrationDocApi } from "@/api/app";
+import { apiLang } from "@/i18n";
 
 /**
  * Integration / output-format documentation block for an application.
@@ -11,6 +13,10 @@ import { getIntegrationDocApi } from "@/api/app";
  * Fetches the markdown served by /api/appMgr/getIntegrationDoc and renders
  * it in the rc-card design language. Renders nothing while loading or when
  * the app has no doc installed (empty content).
+ *
+ * The current UI language is passed as `lang` (zh|en); the backend serves
+ * the <id>.zh.md variant when present and falls back to English itself —
+ * no second request from here.
  */
 const IntegrationDoc = ({
   appId,
@@ -19,13 +25,14 @@ const IntegrationDoc = ({
   appId?: string | null;
   className?: string;
 }) => {
+  const { t, i18n } = useTranslation();
   const [content, setContent] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setContent("");
     if (!appId) return;
-    getIntegrationDocApi(appId)
+    getIntegrationDocApi(appId, apiLang())
       .then((res) => {
         if (cancelled) return;
         if ((res.code === 0 || res.code === "0") && res.data?.content) {
@@ -38,15 +45,15 @@ const IntegrationDoc = ({
     return () => {
       cancelled = true;
     };
-  }, [appId]);
+  }, [appId, i18n.language]);
 
   if (!appId || !content) return null;
 
   const onCopy = () => {
     navigator.clipboard
       ?.writeText(content)
-      .then(() => message.success("Integration doc copied"))
-      .catch(() => message.error("Copy failed"));
+      .then(() => message.success(t("doc.copied")))
+      .catch(() => message.error(t("common.copyFailed")));
   };
 
   const onExport = () => {
@@ -66,17 +73,17 @@ const IntegrationDoc = ({
   return (
     <div className={`rc-card ${className}`}>
       <div className="flex items-center justify-between gap-8 flex-wrap px-20 py-14 border-b border-line">
-        <span className="rc-section-label">Integration</span>
+        <span className="rc-section-label">{t("doc.integration")}</span>
         <div className="flex gap-8">
           <Button size="small" icon={<CopyOutlined />} onClick={onCopy}>
-            Copy
+            {t("common.copy")}
           </Button>
           <Button
             size="small"
             icon={<DownloadOutlined />}
             onClick={onExport}
           >
-            Export .md
+            {t("doc.exportMd")}
           </Button>
         </div>
       </div>

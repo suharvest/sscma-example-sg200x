@@ -6,22 +6,18 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { getCurrentAppApi, getAppListApi, setAppModelApi } from "@/api/app";
-import { IAppInfo } from "@/api/app/app";
+import { IAppInfo, IConfigItem } from "@/api/app/app";
+import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
 import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
 import {
   resolveRtspUrl,
   resolveDebugVideoUrl,
   resolveDebugResultsUrl,
 } from "@/utils/appStream";
+import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
 import IntegrationDoc from "@/components/integration-doc";
-
-function copyText(text: string) {
-  navigator.clipboard
-    ?.writeText(text)
-    .then(() => message.success("Copied"))
-    .catch(() => message.error("Copy failed"));
-}
 
 interface ContentRect {
   left: number;
@@ -101,6 +97,7 @@ function BoxOverlay({
 }
 
 const Live = () => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [app, setApp] = useState<IAppInfo | null>(null);
   const [appStatus, setAppStatus] = useState<string>("");
@@ -118,6 +115,21 @@ const Live = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+
+  // App configuration (manifest config_schema) — schema null hides the card.
+  const appConfig = useAppConfig(app?.id);
+  // Spatial item (zone/line) currently being edited on the video, if any.
+  const [editingItem, setEditingItem] = useState<IConfigItem | null>(null);
+  useEffect(() => {
+    setEditingItem(null);
+  }, [app?.id]);
+
+  const copyText = (text: string) => {
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => message.success(t("common.copied")))
+      .catch(() => message.error(t("common.copyFailed")));
+  };
 
   const videoUrl = useMemo(() => resolveDebugVideoUrl(app), [app]);
   const resultsUrl = useMemo(() => resolveDebugResultsUrl(app), [app]);
@@ -226,12 +238,11 @@ const Live = () => {
   const onModelChange = (model: string) => {
     if (!app || model === currentModel) return;
     Modal.confirm({
-      title: `Switch model to "${model}"?`,
+      title: t("live.switchModelTitle", { model }),
       icon: <ExclamationCircleOutlined />,
-      content:
-        "The application will restart to load the new model. Streams will be briefly interrupted.",
-      okText: "Switch",
-      cancelText: "Cancel",
+      content: t("live.switchModelContent"),
+      okText: t("common.confirm"),
+      cancelText: t("common.cancel"),
       onOk: async () => {
         setModelSwitching(true);
         setDebugOn(false);
@@ -239,18 +250,35 @@ const Live = () => {
           const res = await setAppModelApi({ app_id: app.id, model });
           if (res.code === 0 || res.code === "0") {
             setCurrentModel(model);
-            message.success(
-              "Model updated. The application is restarting with the new model."
-            );
+            message.success(t("live.modelUpdated"));
           } else {
-            message.error(res.msg || "Failed to switch model");
+            message.error(res.msg || t("live.switchModelFailed"));
           }
         } catch (e) {
-          message.error("Failed to switch model");
+          message.error(t("live.switchModelFailed"));
         } finally {
           setModelSwitching(false);
           fetchCurrent();
         }
+      },
+    });
+  };
+
+  // Save the config draft: confirm (the active app restarts to apply it),
+  // drop the debug stream first (the restart would kill it mid-frame), then
+  // refresh the app status on success.
+  const onSaveConfig = () => {
+    Modal.confirm({
+      title: t("config.saveTitle"),
+      icon: <ExclamationCircleOutlined />,
+      content: t("config.saveContent"),
+      okText: t("common.confirm"),
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        setEditingItem(null);
+        setDebugOn(false);
+        const ok = await appConfig.save();
+        if (ok) fetchCurrent();
       },
     });
   };
@@ -261,27 +289,23 @@ const Live = () => {
 
   const rtspFallbackCard = (
     <div className="rc-card-surface p-24 max-w-[440px] text-left">
-      <div className="rc-section-label mb-8">RTSP direct access</div>
+      <div className="rc-section-label mb-8">{t("live.fallbackTitle")}</div>
       <div className="text-13 text-muted mb-12">
         {hasDebugWs
-          ? "The debug stream is unavailable right now. You can still open the application's RTSP stream directly:"
-          : "This application does not provide a browser debug stream. Open its RTSP stream with a player such as VLC:"}
+          ? t("live.fallbackDebugUnavailable")
+          : t("live.fallbackNoDebug")}
       </div>
       {rtspUrl ? (
         <div className="bg-white border border-line rounded-8 px-12 py-8 flex items-center justify-between gap-8">
           <span className="rc-mono text-12 break-all">{rtspUrl}</span>
           <Button size="small" onClick={() => copyText(rtspUrl)}>
-            Copy
+            {t("common.copy")}
           </Button>
         </div>
       ) : (
-        <div className="text-13 text-muted">
-          No RTSP address declared by this application.
-        </div>
+        <div className="text-13 text-muted">{t("live.fallbackNoRtsp")}</div>
       )}
-      <div className="text-12 text-muted mt-12">
-        VLC: Media → Open Network Stream → paste the address above.
-      </div>
+      <div className="text-12 text-muted mt-12">{t("live.vlcHint")}</div>
     </div>
   );
 
@@ -289,9 +313,9 @@ const Live = () => {
     <div className="py-24 pb-40">
       <div className="flex items-start justify-between gap-12 flex-wrap">
         <div>
-          <div className="rc-eyebrow mb-4">Solution Console</div>
+          <div className="rc-eyebrow mb-4">{t("common.console")}</div>
           <h1 className="font-display font-bold text-24 m-0 tracking-tight">
-            Live Debug
+            {t("live.title")}
           </h1>
         </div>
         <Button
@@ -299,7 +323,7 @@ const Live = () => {
           onClick={fetchCurrent}
           loading={loading}
         >
-          Refresh
+          {t("common.refresh")}
         </Button>
       </div>
 
@@ -307,12 +331,12 @@ const Live = () => {
         {!app ? (
           <div className="rc-card-surface mt-24 p-32 text-center">
             <VideoCameraOutlined style={{ fontSize: 28, color: "#666" }} />
-            <div className="mt-12 font-medium">No active application</div>
+            <div className="mt-12 font-medium">{t("live.noActive")}</div>
             <div className="text-muted text-13 mt-4 mb-16">
-              Activate an application to view and debug its output.
+              {t("live.noActiveHint")}
             </div>
             <Button type="primary" onClick={() => navigate("/")}>
-              Go to Applications
+              {t("live.goToApps")}
             </Button>
           </div>
         ) : (
@@ -321,22 +345,28 @@ const Live = () => {
             <div className="rc-card mt-24 px-20 py-14 flex items-center justify-between gap-12 flex-wrap">
               <div className="flex items-center gap-12 flex-wrap">
                 <span className="font-display font-semibold text-15">
-                  {app.name || app.id}
+                  {pickLocalized(app, "name") || app.id}
                 </span>
-                {app.name_zh && (
-                  <span className="text-muted text-13">{app.name_zh}</span>
+                {pickLocalizedAlt(app, "name") && (
+                  <span className="text-muted text-13">
+                    {pickLocalizedAlt(app, "name")}
+                  </span>
                 )}
                 <span className={`rc-badge ${running ? "accent" : ""}`}>
                   <span
                     className="dot"
                     style={{ background: running ? "#8fc31f" : "#bbbbbb" }}
                   />
-                  {appStatus ? appStatus.toLowerCase() : "unknown"}
+                  {appStatus
+                    ? t(`apps.status.${appStatus.toLowerCase()}`, {
+                        defaultValue: appStatus.toLowerCase(),
+                      })
+                    : t("common.unknown")}
                 </span>
               </div>
               {currentModel && (
                 <span className="rc-section-label">
-                  model: {currentModel}
+                  {t("live.modelLabel", { model: currentModel })}
                 </span>
               )}
             </div>
@@ -365,7 +395,7 @@ const Live = () => {
                         <div className="absolute inset-0 flex items-center justify-center">
                           <Spin />
                           <span className="text-white text-13 ml-12 opacity-80">
-                            Connecting to debug stream…
+                            {t("live.connecting")}
                           </span>
                         </div>
                       )}
@@ -385,8 +415,7 @@ const Live = () => {
                             style={{ fontSize: 32, color: "#555" }}
                           />
                           <div className="text-white opacity-60 text-13 mt-8">
-                            Debug stream is off. Toggle it on to preview the
-                            camera in the browser.
+                            {t("live.debugOffHint")}
                           </div>
                         </div>
                       ) : (
@@ -394,19 +423,47 @@ const Live = () => {
                       )}
                     </div>
                   )}
+
+                  {/* Zone/line spatial editor overlay (config_schema) */}
+                  {editingItem && (
+                    <SpatialEditor
+                      key={editingItem.key}
+                      item={editingItem}
+                      value={
+                        Object.prototype.hasOwnProperty.call(
+                          appConfig.draft,
+                          editingItem.key
+                        )
+                          ? appConfig.draft[editingItem.key]
+                          : appConfig.defaults[editingItem.key]
+                      }
+                      contentRect={contentRect}
+                      streaming={
+                        debugOn && hasDebugWs && status === "streaming"
+                      }
+                      onDone={(v) => {
+                        appConfig.setValue(editingItem.key, v);
+                        setEditingItem(null);
+                      }}
+                      onCancel={() => setEditingItem(null)}
+                    />
+                  )}
                 </div>
               </div>
 
               {/* Control panel */}
               <div className="flex flex-col gap-16">
                 <div className="rc-card p-20">
-                  <div className="rc-section-label mb-12">Debug Controls</div>
+                  <div className="rc-section-label mb-12">
+                    {t("live.debugControls")}
+                  </div>
                   <div className="flex items-center justify-between gap-12">
                     <div>
-                      <div className="text-14 font-medium">Debug stream</div>
+                      <div className="text-14 font-medium">
+                        {t("live.debugStream")}
+                      </div>
                       <div className="text-12 text-muted mt-2">
-                        Taps H.264 from the device only while enabled — zero
-                        overhead when off.
+                        {t("live.debugStreamHint")}
                       </div>
                     </div>
                     <Switch
@@ -418,10 +475,10 @@ const Live = () => {
                   <div className="flex items-center justify-between gap-12 mt-16 pt-16 border-t border-line">
                     <div>
                       <div className="text-14 font-medium">
-                        Result overlay
+                        {t("live.resultOverlay")}
                       </div>
                       <div className="text-12 text-muted mt-2">
-                        Draw inference boxes over the video.
+                        {t("live.resultOverlayHint")}
                       </div>
                     </div>
                     <Switch
@@ -432,7 +489,9 @@ const Live = () => {
                   </div>
                   {(app.models?.length ?? 0) >= 2 && !!app.models && (
                     <div className="mt-16 pt-16 border-t border-line">
-                      <div className="text-14 font-medium mb-8">Model</div>
+                      <div className="text-14 font-medium mb-8">
+                        {t("live.model")}
+                      </div>
                       <Select
                         className="w-full"
                         value={currentModel}
@@ -445,31 +504,58 @@ const Live = () => {
                         }))}
                       />
                       <div className="text-12 text-muted mt-6">
-                        Switching restarts the application.
+                        {t("live.switchRestarts")}
                       </div>
                     </div>
                   )}
                 </div>
 
+                {/* Application configuration (manifest config_schema) */}
+                {appConfig.schema && (
+                  <SchemaForm
+                    schema={appConfig.schema}
+                    draft={appConfig.draft}
+                    defaults={appConfig.defaults}
+                    dirty={appConfig.dirty}
+                    saving={appConfig.saving}
+                    editingKey={editingItem?.key ?? null}
+                    onChange={appConfig.setValue}
+                    onEditSpatial={(item) => setEditingItem(item)}
+                    onSave={onSaveConfig}
+                    onReset={() => {
+                      setEditingItem(null);
+                      appConfig.reset();
+                    }}
+                  />
+                )}
+
                 <div className="rc-card p-20">
-                  <div className="rc-section-label mb-12">Endpoints</div>
+                  <div className="rc-section-label mb-12">
+                    {t("live.endpoints")}
+                  </div>
                   <div className="mb-12">
-                    <div className="text-12 text-muted mb-4">RTSP stream</div>
+                    <div className="text-12 text-muted mb-4">
+                      {t("live.rtspStream")}
+                    </div>
                     {rtspUrl ? (
                       <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
                         <span className="rc-mono text-12 break-all">
                           {rtspUrl}
                         </span>
                         <Button size="small" onClick={() => copyText(rtspUrl)}>
-                          Copy
+                          {t("common.copy")}
                         </Button>
                       </div>
                     ) : (
-                      <div className="text-12 text-muted">Not declared.</div>
+                      <div className="text-12 text-muted">
+                        {t("common.notDeclared")}
+                      </div>
                     )}
                   </div>
                   <div>
-                    <div className="text-12 text-muted mb-4">MQTT topic</div>
+                    <div className="text-12 text-muted mb-4">
+                      {t("live.mqttTopic")}
+                    </div>
                     {app.mqtt_topic ? (
                       <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
                         <span className="rc-mono text-12 break-all">
@@ -479,11 +565,13 @@ const Live = () => {
                           size="small"
                           onClick={() => copyText(app.mqtt_topic || "")}
                         >
-                          Copy
+                          {t("common.copy")}
                         </Button>
                       </div>
                     ) : (
-                      <div className="text-12 text-muted">Not declared.</div>
+                      <div className="text-12 text-muted">
+                        {t("common.notDeclared")}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -491,7 +579,7 @@ const Live = () => {
                 {!!app.pipeline?.length && (
                   <div className="rc-card p-20">
                     <div className="rc-section-label mb-12">
-                      Pipeline (fixed)
+                      {t("live.pipelineFixed")}
                     </div>
                     <div className="flex flex-col gap-6">
                       {app.pipeline.map((m, idx) => (
@@ -502,13 +590,14 @@ const Live = () => {
                           <span className="rc-mono text-12">
                             {idx + 1}. {m.name}
                           </span>
-                          <span className="rc-badge">{m.task || "model"}</span>
+                          <span className="rc-badge">
+                            {m.task || t("common.model")}
+                          </span>
                         </div>
                       ))}
                     </div>
                     <div className="text-12 text-muted mt-8">
-                      This application runs a fixed multi-model pipeline —
-                      its components cannot be switched.
+                      {t("live.pipelineHint")}
                     </div>
                   </div>
                 )}
@@ -519,10 +608,12 @@ const Live = () => {
             <div className="rc-card mt-16">
               <div className="flex items-baseline justify-between px-20 py-14 border-b border-line">
                 <span className="rc-section-label">
-                  Recent Inference Messages
+                  {t("live.recentMessages")}
                 </span>
                 <span className="rc-mono text-11 text-muted">
-                  {messages.length ? `${messages.length} / 100` : "live"}
+                  {messages.length
+                    ? `${messages.length} / 100`
+                    : t("live.liveTag")}
                 </span>
               </div>
               {messages.length ? (
@@ -544,8 +635,8 @@ const Live = () => {
               ) : (
                 <div className="px-20 py-32 text-center text-13 text-muted">
                   {debugOn
-                    ? "No messages received yet — waiting for inference results."
-                    : "Enable the debug stream to see live inference results here."}
+                    ? t("live.noMessages")
+                    : t("live.enableDebugHint")}
                 </div>
               )}
             </div>

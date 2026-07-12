@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { ServiceStatus } from "@/enum";
 import { Progress, Alert } from "antd";
+import { useTranslation } from "react-i18next";
 import { queryServiceStatusApi } from "@/api/device";
 import gif from "@/assets/gif/loading.gif";
 
@@ -11,6 +12,7 @@ const Loading = ({
 }: {
   onServiceStatusChange?: (serviceStatus: ServiceStatus) => void;
 }) => {
+  const { t } = useTranslation();
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>(
     ServiceStatus.STARTING
   );
@@ -89,26 +91,24 @@ const Loading = ({
             />
           )}
           <div className="text-16 mx-12 text-center">
-            Please wait for node-red service to get start, it takes around 1 and
-            an half minutes.
+            {t("loading.waiting")}
           </div>
         </div>
       )}
       {serviceStatus == ServiceStatus.FAILED && (
         <div className="w-1/2">
           <Alert
-            message="System Error"
+            message={t("loading.errorTitle")}
             description={
               <span>
-                Looks like something went wrong with system. Please check system
-                and restart, or contact{" "}
+                {t("loading.errorBefore")}{" "}
                 <a
                   href="mailto:techsupport@seeed.io"
                   style={{ color: "#4096ff" }}
                 >
                   techsupport@seeed.io
                 </a>{" "}
-                for support.
+                {t("loading.errorAfter")}
               </span>
             }
             type="error"

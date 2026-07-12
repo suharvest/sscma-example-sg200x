@@ -19,7 +19,9 @@ import DashboardImg from "@/assets/images/svg/dashboard.svg";
 import { updateDeviceInfoApi, queryDeviceInfoApi } from "@/api/device/index";
 import { hostnameValidate } from "@/utils/validate";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { getMenuSections } from "@/layout/menu";
+import LangToggle from "@/components/lang-toggle";
 
 interface Props {
   children: React.ReactNode;
@@ -42,6 +44,7 @@ const iconMap: Record<string, React.ReactNode> = {
 
 const PCLayout: React.FC<Props> = ({ children }) => {
   const { deviceInfo, galleryMode, updateDeviceInfo } = useConfigStore();
+  const { t } = useTranslation();
   const [isEditNameModalOpen, setIsEditNameModalOpen] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const location = useLocation();
@@ -98,6 +101,12 @@ const PCLayout: React.FC<Props> = ({ children }) => {
             src={EditImg}
             alt=""
           />
+          <div
+            className="absolute right-16"
+            style={{ top: "50%", transform: "translateY(-50%)" }}
+          >
+            <LangToggle />
+          </div>
         </div>
         <div className="mt-2 rc-mono text-11 text-muted">{deviceInfo?.ip}</div>
       </div>
@@ -110,7 +119,7 @@ const PCLayout: React.FC<Props> = ({ children }) => {
           {menuSections.map((section) => (
             <div key={section.title}>
               <div className="rc-section-label px-10 pt-14 pb-6">
-                {section.title}
+                {t(section.title)}
               </div>
               {section.items.map((item) => (
                 <div
@@ -123,7 +132,7 @@ const PCLayout: React.FC<Props> = ({ children }) => {
                   }}
                 >
                   {iconMap[item.key]}
-                  <span>{item.label}</span>
+                  <span>{t(item.label)}</span>
                 </div>
               ))}
             </div>
@@ -136,7 +145,7 @@ const PCLayout: React.FC<Props> = ({ children }) => {
       </div>
 
       <Modal
-        title="Edit Device Name"
+        title={t("layout.editDeviceName")}
         open={isEditNameModalOpen}
         confirmLoading={confirmLoading}
         onOk={handleEditNameOk}
@@ -151,7 +160,7 @@ const PCLayout: React.FC<Props> = ({ children }) => {
         >
           <Form.Item
             name="deviceName"
-            label="Name"
+            label={t("layout.name")}
             rules={[hostnameValidate(32)]}
           >
             <Input placeholder="recamera-132456" maxLength={32} allowClear />

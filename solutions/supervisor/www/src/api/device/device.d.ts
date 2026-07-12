@@ -59,3 +59,13 @@ interface ISensorStatus {
   temperature_c?: number;   // SoC temperature in Celsius
   storage?: ISensorStorage; // /userdata usage
 }
+
+interface IAudioControl {
+  name: string;    // amixer simple control name
+  percent: number; // current volume 0..100
+}
+
+interface IAudioVolume {
+  supported: boolean;        // false: no amixer / no volume controls
+  controls: IAudioControl[];
+}
