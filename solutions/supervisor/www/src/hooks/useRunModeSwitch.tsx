@@ -2,7 +2,11 @@ import { useRef, useState } from "react";
 import { Modal, message } from "antd";
 import { ExclamationCircleOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
-import { queryDeviceInfoApi, setRunModeApi } from "@/api/device/index";
+import {
+  queryDeviceInfoApi,
+  setRunModeApi,
+  forceConsoleApi,
+} from "@/api/device/index";
 import { isOk, isBusy } from "@/utils/api";
 
 export type RunMode = "console" | "nodered";
@@ -83,7 +87,48 @@ export function useRunModeSwitch() {
     });
   };
 
-  return { switching, requestSwitch };
+  // #20 hard escape hatch: force console without the graceful hand-over. Used
+  // when Node-RED mode has wedged the device; the supervisor HTTP path is
+  // protected from the OOM killer (#19) so it stays reachable.
+  const [forcing, setForcing] = useState(false);
+
+  const doForceConsole = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setForcing(true);
+    try {
+      const res = await forceConsoleApi();
+      if (!isOk(res)) {
+        message.error(res.msg || t("runtimeMode.forceConsoleFailed"));
+        return;
+      }
+      message.success(t("runtimeMode.forceConsoleDone"));
+      // The flip already happened in-process; reload so menu/pages re-render
+      // from a clean store reflecting console mode.
+      setTimeout(() => window.location.reload(), 800);
+    } catch (e) {
+      message.error(t("runtimeMode.forceConsoleFailed"));
+    } finally {
+      busyRef.current = false;
+      setForcing(false);
+    }
+  };
+
+  /** Confirm dialog + force console. No-op when an operation is in flight. */
+  const requestForceConsole = () => {
+    if (busyRef.current) return;
+    Modal.confirm({
+      title: t("runtimeMode.forceConsoleConfirmTitle"),
+      icon: <ExclamationCircleOutlined />,
+      content: t("runtimeMode.forceConsoleConfirmContent"),
+      okText: t("common.confirm"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      onOk: () => doForceConsole(),
+    });
+  };
+
+  return { switching, requestSwitch, forcing, requestForceConsole };
 }
 
 export default useRunModeSwitch;

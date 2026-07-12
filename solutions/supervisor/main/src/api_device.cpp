@@ -1014,6 +1014,50 @@ api_status_t api_device::setRunMode(request_t req, response_t res)
     return API_STATUS_OK;
 }
 
+// POST /api/deviceMgr/forceConsole
+//
+// Hard escape hatch (#20): unconditionally return the device to console mode
+// WITHOUT setRunMode's graceful, health-gated hand-over. The exit path must be
+// independent of Node-RED health, so this works even when a runaway flow has
+// wedged the device (the supervisor process is protected from the OOM killer,
+// see #19, so this HTTP path stays reachable when SSH may not be).
+//
+// Sequence:
+//   1. main.sh forceConsole: drop a .force_console boot backstop FIRST (so a
+//      mid-way kill still recovers on the next reboot via S93 reconciliation),
+//      then kill -9 the node stack, S->K park the init scripts, and persist
+//      console mode.
+//   2. Flip the in-process state immediately: destroy the serviced watchdog so
+//      it stops trying to resurrect Node-RED, galleryMode = true, then
+//      best-effort app_restore to bring the persisted gallery app back.
+//
+// Idempotent: already-console is a success no-op. Distinct mutex from
+// setRunMode so a stuck graceful switch cannot block the emergency path.
+api_status_t api_device::forceConsole(request_t req, response_t res)
+{
+    static std::mutex _force_mutex;
+    if (!_force_mutex.try_lock()) {
+        response(res, -2, "busy: a mode reset is already in progress");
+        return API_STATUS_OK;
+    }
+    std::lock_guard<std::mutex> lk(_force_mutex, std::adopt_lock);
+
+    // Budget: kill + 2x fast park (best-effort stop, no long wait) + mode
+    // write. Well under the default 30s, but give slack for a slow stop.
+    std::string result = script_timeout(45, __func__);
+
+    // The shell side is best-effort by design; flip the in-process state
+    // regardless so the running supervisor stops watchdogging Node-RED at once
+    // and reports gallery mode.
+    _serviced.reset(); // joins the watchdog thread cleanly (no-op if null)
+    _gallery_mode = true;
+    script("app_restore"); // best-effort: bring the persisted gallery app back
+    LOGI("forceConsole: forced to console (galleryMode=1), shell result='%s'", result.c_str());
+
+    response(res, 0, STR_OK, { { "mode", "console" }, { "galleryMode", _gallery_mode }, { "detail", result } });
+    return API_STATUS_OK;
+}
+
 // Read battery voltage once (called by collector thread)
 api_device::BatteryVoltageData api_device::read_battery_voltage()
 {

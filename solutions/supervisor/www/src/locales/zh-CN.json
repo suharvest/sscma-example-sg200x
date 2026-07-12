@@ -387,7 +387,13 @@
     "busy": "已有一个模式切换正在进行，请稍候",
     "failed": "运行模式切换失败",
     "noderedBanner": "设备当前处于 Node-RED 模式，Console 应用已停止且不可用。",
-    "switchBack": "切回 Console 模式"
+    "switchBack": "切回 Console 模式",
+    "forceConsole": "强制恢复 Console",
+    "forceConsoleDesc": "紧急恢复：当 Node-RED 模式无响应时，强制杀掉相关服务并切回 Console 模式。",
+    "forceConsoleConfirmTitle": "强制恢复到 Console 模式？",
+    "forceConsoleConfirmContent": "将立即强制停止 Node-RED / sscma-node（不等待优雅退出）并切回 Console 模式，同时写入下次重启也回 Console 的兜底标志。仅在设备卡在 Node-RED 模式无法正常切回时使用。完成后页面会自动刷新。",
+    "forceConsoleDone": "已强制恢复到 Console 模式",
+    "forceConsoleFailed": "强制恢复 Console 模式失败"
   },
   "system": {
     "update": "系统更新",

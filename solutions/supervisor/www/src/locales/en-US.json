@@ -389,7 +389,13 @@
     "busy": "A mode switch is already in progress, please wait",
     "failed": "Failed to switch the runtime mode",
     "noderedBanner": "The device is running in Node-RED mode — console applications are stopped and unavailable.",
-    "switchBack": "Switch to Console"
+    "switchBack": "Switch to Console",
+    "forceConsole": "Force Console",
+    "forceConsoleDesc": "Emergency recovery: if Node-RED mode stops responding, forcibly kill its services and return to Console mode.",
+    "forceConsoleConfirmTitle": "Force recovery to Console mode?",
+    "forceConsoleConfirmContent": "This immediately kills Node-RED / sscma-node (no graceful shutdown) and returns to Console mode, and drops a backstop flag so the next reboot also returns to Console. Use only when the device is stuck in Node-RED mode and cannot switch back normally. The page will reload when it completes.",
+    "forceConsoleDone": "Forced back to Console mode",
+    "forceConsoleFailed": "Failed to force Console mode"
   },
   "system": {
     "update": "Update",

@@ -88,6 +88,9 @@ private:
     // Runtime mode (P4-D): console (gallery apps) <-> Node-RED.
     static api_status_t getRunMode(request_t req, response_t res);
     static api_status_t setRunMode(request_t req, response_t res);
+    // Hard escape hatch (#20): force console without the graceful hand-over,
+    // independent of Node-RED health. Used to recover a wedged device.
+    static api_status_t forceConsole(request_t req, response_t res);
     // Reads /userdata/local/apps/mode; anything but "nodered" -> "console".
     static std::string read_run_mode_file();
 
@@ -186,6 +189,7 @@ public:
 
         REG_API_NO_AUTH(getRunMode); // read-only, same trust level as queryDeviceInfo
         REG_API(setRunMode); // security: token required (starts/stops services)
+        REG_API(forceConsole); // security: token required (hard mode reset)
 
         // Check ADC availability before starting battery collector
         _adc_available = check_adc_available();

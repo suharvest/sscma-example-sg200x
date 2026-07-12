@@ -3,6 +3,64 @@
 DAEMON=supervisor
 DAEMON_PATH=/usr/local/bin
 
+APPS_DIR=/userdata/local/apps
+MODE_FILE="$APPS_DIR/mode"
+FORCE_CONSOLE_FLAG="$APPS_DIR/.force_console"
+MAIN_SH=/usr/share/supervisor/scripts/main.sh
+
+# --- #18 boot reconciliation ------------------------------------------------
+# The exit path must be independent of mode health: whatever state the previous
+# session left behind (a rename interrupted by power loss, a Node-RED mode that
+# wedged the device, a rescue operator's escape flag), one reboot brings the
+# device back to a coherent, controllable state. Runs BEFORE the supervisor is
+# started. Must be fast, idempotent and never fatal — any failure is swallowed
+# so it can never block boot.
+#
+# Note on ordering: init runs S03node-red/S91sscma-node (if S-prefixed) before
+# S93 here, so a stale S prefix in console mode means those services already
+# started and grabbed the camera; parking them here stops+releases them before
+# the gallery app is restored.
+_svc_park() { # base e.g. 03node-red : stop S<base>, rename S<base> -> K<base>
+    if [ -f "/etc/init.d/S$1" ]; then
+        "/etc/init.d/S$1" stop >/dev/null 2>&1 || true
+        mv "/etc/init.d/S$1" "/etc/init.d/K$1" 2>/dev/null || true
+    fi
+}
+_svc_arm() { # base : rename K<base> -> S<base> (init/setRunMode does the start)
+    if [ -f "/etc/init.d/K$1" ] && [ ! -f "/etc/init.d/S$1" ]; then
+        mv "/etc/init.d/K$1" "/etc/init.d/S$1" 2>/dev/null || true
+    fi
+}
+
+reconcile_run_mode() {
+    RUN_MODE="$(head -n 1 "$MODE_FILE" 2>/dev/null | tr -d ' \t\r\n')"
+    [ "$RUN_MODE" = "nodered" ] || RUN_MODE=console
+
+    # One-shot escape hatch (#18/#20): force console regardless of persisted
+    # mode, then consume the flag so it only fires once.
+    if [ -f "$FORCE_CONSOLE_FLAG" ]; then
+        killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
+        RUN_MODE=console
+        mkdir -p "$APPS_DIR" 2>/dev/null || true
+        printf 'console\n' >"$MODE_FILE" 2>/dev/null || true
+        sync 2>/dev/null || true
+        rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
+    fi
+
+    # Repair prefix drift so the actual init state matches the intent.
+    if [ "$RUN_MODE" = "nodered" ]; then
+        # A cold boot directly into Node-RED launches the stock init scripts
+        # (already ordered before S93) without our ulimit cap; that gap is
+        # covered by choom below (ops channel stays protected) and by the
+        # serviced watchdog, which relaunches a failed node stack under the cap.
+        _svc_arm 03node-red
+        _svc_arm 91sscma-node
+    else
+        _svc_park 03node-red
+        _svc_park 91sscma-node
+    fi
+}
+
 JOYSTICK_SRC="/usr/share/supervisor/nipplejs.min.js"
 JOYSTICK_DIR="/home/recamera/.node-red/public"
 if [ -f $JOYSTICK_SRC ]; then
@@ -31,6 +89,11 @@ check_avahi() {
 check_avahi
 
 start() {
+    # #18: reconcile the run mode BEFORE anything else — repair S/K prefix
+    # drift and honor the one-shot .force_console flag so the device always
+    # boots into a coherent, controllable state independent of mode health.
+    reconcile_run_mode 2>/dev/null || true
+
     printf 'Starting Supervisor Service: '
     PID="$(pidof $DAEMON)"
 
@@ -45,6 +108,12 @@ start() {
         # at runtime without restarting this service.
         $DAEMON_PATH/$DAEMON -g >/dev/null 2>&1 &
         [ $? = 0 ] && echo "OK" || echo "FAIL"
+
+        # #19: set the OOM policy AFTER the daemon exists (so pidof supervisor
+        # resolves) — supervisor + sshd near-immune, node stack the preferred
+        # victim — so the maintenance channel survives memory pressure and the
+        # device is always recoverable. Best-effort, backgrounded.
+        (sleep 1 && [ -x "$MAIN_SH" ] && "$MAIN_SH" protect_ops_channel) >/dev/null 2>&1 &
 
         # Restore the last active gallery app asynchronously — console mode
         # only: in Node-RED mode the camera belongs to the Node-RED stack.

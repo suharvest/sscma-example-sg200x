@@ -384,6 +384,22 @@ export const setRunModeApi = async (mode: "console" | "nodered") =>
     }
   );
 
+// 强制恢复 Console 模式（#20 硬脱困）：不走 setRunMode 的优雅停止，直接
+// kill node-red/sscma + S→K + 写 mode=console + 进程内翻转为画廊模式 +
+// app_restore，并写 .force_console 兜底（下次重启也回 console）。用于
+// Node-RED 模式把设备拖死时的急救。supervisor 进程受 OOM 保护，比 SSH 可靠。
+export const forceConsoleApi = async () =>
+  supervisorRequest<{ mode: string; galleryMode: boolean; detail?: string }>(
+    {
+      url: "api/deviceMgr/forceConsole",
+      method: "post",
+      timeout: 60000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
 // 获取设备时区
 export const getTimezoneApi = async () =>
   supervisorRequest<{ timezone: string }>(

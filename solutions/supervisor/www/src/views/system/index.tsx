@@ -69,7 +69,8 @@ function System() {
   // mode is only trustworthy once queryDeviceInfo has populated the store.
   const modeKnown = Boolean(deviceInfo?.appName);
   const currentMode: RunMode = galleryMode ? "console" : "nodered";
-  const { switching, requestSwitch } = useRunModeSwitch();
+  const { switching, requestSwitch, forcing, requestForceConsole } =
+    useRunModeSwitch();
 
   const [isDashboard, setIsDashboard] = useState(false);
   useEffect(() => {
@@ -147,6 +148,25 @@ function System() {
                 </div>
               );
             })}
+            {/* #20 hard escape hatch: unobtrusive danger link to force console
+                mode when Node-RED has wedged the device. */}
+            <div className="flex justify-between items-center py-16 border-t">
+              <div className="flex-1 mr-16">
+                <div className="text-12 opacity-60">
+                  {t("runtimeMode.forceConsoleDesc")}
+                </div>
+              </div>
+              <Button
+                type="link"
+                danger
+                size="small"
+                loading={forcing}
+                disabled={!modeKnown || switching !== null}
+                onClick={requestForceConsole}
+              >
+                {t("runtimeMode.forceConsole")}
+              </Button>
+            </div>
           </div>
         </>
       )}

@@ -1037,7 +1037,8 @@ function start_service() {
     local service="$2"
     case "$service" in
     "sscma")
-        /etc/init.d/S91sscma-node restart >/dev/null 2>&1
+        # Watchdog auto-restart: keep the #19 memory cap on the relaunch too.
+        _svc_run_limited "/etc/init.d/S91sscma-node" restart
         [ $? -ne 0 ] && {
             echo "$STR_FAILED"
             return
@@ -1047,7 +1048,7 @@ function start_service() {
     "nodered")
         _stop_pidname "sscma-node" 1
         _stop_pidname "node"
-        /etc/init.d/S03node-red restart >/dev/null 2>&1
+        _svc_run_limited "/etc/init.d/S03node-red" restart
         [ $? -ne 0 ] && {
             echo "$STR_FAILED"
             return
@@ -1286,6 +1287,82 @@ function app_install() {
 ##################################################
 
 ##################################################
+# memory protection (#19) — no cgroups on this kernel (CONFIG_CGROUPS unset),
+# so a runaway Node-RED flow on the 256MB device can thrash RAM+swap and
+# starve sshd/supervisor (the self-lock incident). Two independent layers:
+#   1. ulimit -v : bound the Node-RED/sscma-node virtual-address-space so a
+#      single process cannot balloon without limit. Verified on this BSP that
+#      the cap propagates through start-stop-daemon to the backgrounded daemon
+#      and that node starts comfortably under it (lean musl build).
+#   2. choom (oom_score_adj) : make the node stack the preferred OOM victim
+#      (+800) while the operations lifelines — supervisor (-900) and sshd
+#      (-800) — are near-immune. This is the GUARANTEED backstop: even under
+#      thrash the maintenance/HTTP channel is the last thing the kernel kills,
+#      so the device is always recoverable (HTTP forceConsole / SSH).
+# ulimit -v value is in KiB. V8 heap is separately capped at 64MB
+# (--max-old-space-size in the stock init scripts); this bounds native + mmap
+# growth on top of that.
+readonly NODE_STACK_VSZ_KB=180000
+readonly OOM_ADJ_NODE=800
+readonly OOM_ADJ_SUPERVISOR=-900
+readonly OOM_ADJ_SSHD=-800
+
+# _choom_pid <adj> <pid...> : best-effort oom_score_adj via choom, falling back
+# to a direct /proc write. Never fails the caller. Negative values need root
+# (CAP_SYS_RESOURCE); positive values work for the owning user.
+_choom_pid() {
+    local adj="$1"
+    shift
+    local pid
+    for pid in "$@"; do
+        [ -n "$pid" ] && [ -d "/proc/$pid" ] || continue
+        if command -v choom >/dev/null 2>&1 && choom -n "$adj" -p "$pid" >/dev/null 2>&1; then
+            continue
+        fi
+        echo "$adj" >"/proc/$pid/oom_score_adj" 2>/dev/null || true
+    done
+}
+
+# _choom_name <adj> <procname...> : resolve pids by name, then adjust.
+_choom_name() {
+    local adj="$1"
+    shift
+    local name pids
+    for name in "$@"; do
+        pids=$(pidof "$name" 2>/dev/null)
+        [ -n "$pids" ] && _choom_pid "$adj" $pids
+    done
+}
+
+# protect_ops_channel : apply the full OOM policy — lower supervisor + sshd
+# (maintenance channel survives memory pressure) and, if a node stack is
+# already running (e.g. a cold boot straight into Node-RED mode), raise it to
+# the top of the kill list. Called once from S93 start (root at boot).
+# Idempotent, best-effort. This is the #19 minimum, always applied regardless
+# of the ulimit layer.
+function protect_ops_channel() {
+    _choom_name "$OOM_ADJ_SUPERVISOR" supervisor
+    _choom_name "$OOM_ADJ_SSHD" sshd dropbear
+    _choom_name "$OOM_ADJ_NODE" node-red node-red-pi node sscma-node
+    echo "$STR_OK"
+}
+
+# _svc_run_limited <script> <action> : run a Node-RED/sscma-node init-script
+# action under the virtual-memory cap (inherited by the daemon child), then
+# push the node stack to the top of the OOM kill list. Returns the init
+# script's exit code (124 on timeout). Used everywhere the node stack is
+# (re)started so the protection can never be bypassed.
+_svc_run_limited() {
+    local script="$1" action="${2:-start}"
+    _app_run_timeout 15 sh -c 'ulimit -v '"$NODE_STACK_VSZ_KB"' 2>/dev/null; exec "$1" "$2"' _ "$script" "$action" >/dev/null 2>&1
+    local ret=$?
+    _choom_name "$OOM_ADJ_NODE" node-red node-red-pi node sscma-node >/dev/null 2>&1
+    return $ret
+}
+# memory protection
+##################################################
+
+##################################################
 # run mode (deviceMgr/getRunMode | setRunMode), P4-D
 # Mode file: /userdata/local/apps/mode — one line, "console" or "nodered".
 # Missing / unreadable / unknown content always degrades to "console".
@@ -1297,6 +1374,10 @@ function app_install() {
 # setRunMode) flips _gallery_mode and creates/destroys the serviced watchdog
 # in-process after this script returns OK.
 readonly RUN_MODE_FILE="$APPS_USER_DIR/mode"
+# One-shot boot escape flag (#18/#20): its presence forces console on the next
+# S93 reconciliation (which then deletes it). Written by forceConsole as a
+# crash backstop; removed when the user explicitly selects Node-RED.
+readonly FORCE_CONSOLE_FLAG="$APPS_USER_DIR/.force_console"
 
 _run_mode_read() {
     local mode
@@ -1402,14 +1483,19 @@ function setRunMode() {
             fi
         fi
 
-        # Enable + start each service; a failed rename or start aborts.
+        # Explicitly choosing Node-RED cancels any pending one-shot
+        # force-console backstop (#20) so the next reboot honors this choice.
+        rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
+
+        # Enable + start each service under the #19 memory cap (ulimit -v +
+        # choom); a failed rename or start aborts.
         local s
         s=$(_svc_enable "03node-red")
         if [ -z "$s" ]; then
             echo "$STR_FAILED"
             return 1
         fi
-        if ! _app_run_timeout 15 "$s" start >/dev/null 2>&1; then
+        if ! _svc_run_limited "$s" start; then
             echo "$STR_FAILED"
             return 1
         fi
@@ -1418,7 +1504,7 @@ function setRunMode() {
             echo "$STR_FAILED"
             return 1
         fi
-        if ! _app_run_timeout 15 "$s" start >/dev/null 2>&1; then
+        if ! _svc_run_limited "$s" start; then
             echo "$STR_FAILED"
             return 1
         fi
@@ -1448,6 +1534,42 @@ function setRunMode() {
         app_restore >/dev/null 2>&1 || true
     fi
 
+    echo "$STR_OK"
+}
+
+# _svc_park_now <base> : fast, unconditional park — best-effort stop then
+# S<base> -> K<base> rename, no wait/verify (used by the hard escape hatch
+# where the node stack may already be wedged). Idempotent.
+_svc_park_now() {
+    local base="$1"
+    if [ -f "/etc/init.d/S$base" ]; then
+        "/etc/init.d/S$base" stop >/dev/null 2>&1 || true
+        mv "/etc/init.d/S$base" "/etc/init.d/K$base" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# forceConsole (#20) : hard escape hatch (deviceMgr/forceConsole, also usable
+# by a rescue operator). Unlike setRunMode's graceful hand-over this never
+# verifies or waits — the exit path must be independent of Node-RED health.
+# Order matters: drop the boot backstop FIRST so that even if this script is
+# killed mid-way (e.g. the device is thrashing) the next reboot still recovers
+# to console via S93 reconciliation. Then kill the node stack outright, park
+# the init scripts, and persist console mode. The C++ caller completes the
+# recovery in-process (destroy watchdog + galleryMode=true + app_restore).
+function forceConsole() {
+    mkdir -p "$APPS_USER_DIR" 2>/dev/null || true
+    # 1. Boot-time backstop first (survives a mid-way kill).
+    : >"$FORCE_CONSOLE_FLAG" 2>/dev/null || true
+    sync 2>/dev/null || true
+    # 2. Kill the Node-RED stack outright (no graceful VPSS release: a wedged
+    #    node stack does not hand the camera back cleanly anyway).
+    killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
+    # 3. Park both init scripts as K (idempotent).
+    _svc_park_now "03node-red"
+    _svc_park_now "91sscma-node"
+    # 4. Persist console mode.
+    _run_mode_write console || true
     echo "$STR_OK"
 }
 # run mode
