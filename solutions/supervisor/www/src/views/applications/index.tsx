@@ -1,14 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Drawer, Modal, Spin, message } from "antd";
+import { Alert, Button, Drawer, Modal, Progress, Spin, Upload, message } from "antd";
+import type { UploadFile, UploadProps } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
   AppstoreOutlined,
+  InboxOutlined,
+  DownloadOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { getAppListApi, switchAppApi, stopAppApi } from "@/api/app";
-import { IAppInfo } from "@/api/app/app";
+import {
+  getAppListApi,
+  switchAppApi,
+  stopAppApi,
+  installAppApi,
+} from "@/api/app";
+import { IAppInfo, IInstallAppResult } from "@/api/app/app";
+import { uploadFiles, ensureDirectory } from "@/api/files";
 import { resolveRtspUrl } from "@/utils/appStream";
 import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
 import IntegrationDoc from "@/components/integration-doc";
@@ -28,6 +37,204 @@ function statusText(app: IAppInfo, isActive: boolean): string {
   return isActive ? "active" : "stopped";
 }
 
+/* ------------------------------------------------------------------ */
+/* Install App modal: chunked upload (fileMgr) -> appMgr/installApp    */
+/* ------------------------------------------------------------------ */
+
+/** Upload destination, relative to the fileMgr "local" storage (/userdata). */
+const INSTALL_UPLOAD_DIR = "apps_upload";
+const MAX_DEB_SIZE = 200 * 1024 * 1024; // keep in sync with backend installApp
+/** Backend passes the path through a quoted shell arg — same whitelist. */
+const SAFE_NAME_RE = /^[A-Za-z0-9._+-]+$/;
+
+type InstallStage = "idle" | "uploading" | "installing" | "success" | "failed";
+
+const InstallAppModal = ({
+  open,
+  onClose,
+  onInstalled,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onInstalled: () => void;
+}) => {
+  const { t } = useTranslation();
+  const [stage, setStage] = useState<InstallStage>("idle");
+  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [uploadPercent, setUploadPercent] = useState(0);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [output, setOutput] = useState("");
+
+  const busy = stage === "uploading" || stage === "installing";
+
+  const reset = () => {
+    setStage("idle");
+    setFileList([]);
+    setUploadPercent(0);
+    setErrorMsg("");
+    setOutput("");
+  };
+
+  const close = () => {
+    if (busy) return; // never abandon a running install silently
+    reset();
+    onClose();
+  };
+
+  const beforeUpload: UploadProps["beforeUpload"] = (file) => {
+    if (!file.name.toLowerCase().endsWith(".deb")) {
+      message.error(t("apps.install.onlyDeb"));
+      return Upload.LIST_IGNORE;
+    }
+    if (!SAFE_NAME_RE.test(file.name)) {
+      message.error(t("apps.install.badChars"));
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size >= MAX_DEB_SIZE) {
+      message.error(t("apps.install.tooLarge"));
+      return Upload.LIST_IGNORE;
+    }
+    return false; // valid: keep in the list, upload manually on Install
+  };
+
+  const handleInstall = async () => {
+    const raw = fileList[0]?.originFileObj;
+    if (!raw) return;
+
+    // Stage 1: chunked upload to local:/apps_upload/ (existing fileMgr
+    // protocol — 1MB offset chunks — reused as-is via uploadFiles()).
+    setStage("uploading");
+    setUploadPercent(0);
+    setErrorMsg("");
+    setOutput("");
+    try {
+      await ensureDirectory("local", INSTALL_UPLOAD_DIR);
+      const dt = new DataTransfer();
+      dt.items.add(raw);
+      await uploadFiles("local", INSTALL_UPLOAD_DIR, dt.files, (info) => {
+        setUploadPercent(info.currentFileProgress);
+      });
+    } catch (e) {
+      setStage("failed");
+      setErrorMsg(t("apps.install.uploadFailed"));
+      return;
+    }
+
+    // Stage 2: opkg install on the device (up to ~2 minutes).
+    setStage("installing");
+    try {
+      const res = await installAppApi({
+        path: `/userdata/${INSTALL_UPLOAD_DIR}/${raw.name}`,
+      });
+      const data = res.data as IInstallAppResult | undefined;
+      setOutput(data?.output || "");
+      if (res.code === 0 || res.code === "0") {
+        setStage("success");
+        onInstalled();
+      } else if (res.code === -2 || res.code === "-2") {
+        setStage("failed");
+        setErrorMsg(t("apps.install.busy"));
+      } else {
+        setStage("failed");
+        setErrorMsg(res.msg || t("apps.install.failed"));
+      }
+    } catch (e) {
+      setStage("failed");
+      setErrorMsg(t("apps.install.failed"));
+    }
+  };
+
+  return (
+    <Modal
+      title={t("apps.install.title")}
+      open={open}
+      onCancel={close}
+      maskClosable={false}
+      closable={!busy}
+      keyboard={!busy}
+      footer={
+        stage === "idle" ? (
+          <>
+            <Button onClick={close}>{t("common.cancel")}</Button>
+            <Button
+              type="primary"
+              disabled={!fileList.length}
+              onClick={handleInstall}
+            >
+              {t("apps.install.start")}
+            </Button>
+          </>
+        ) : busy ? null : (
+          <>
+            <Button onClick={reset}>{t("apps.install.installAnother")}</Button>
+            <Button type="primary" onClick={close}>
+              {t("apps.install.close")}
+            </Button>
+          </>
+        )
+      }
+    >
+      {stage === "idle" && (
+        <div className="flex flex-col gap-12">
+          <p className="text-muted text-13 m-0">{t("apps.install.hint")}</p>
+          <Upload.Dragger
+            accept=".deb"
+            maxCount={1}
+            fileList={fileList}
+            beforeUpload={beforeUpload}
+            onRemove={() => setFileList([])}
+            onChange={({ fileList: fl }) => setFileList(fl.slice(-1))}
+          >
+            <p className="ant-upload-drag-icon">
+              <InboxOutlined />
+            </p>
+            <p className="ant-upload-text">{t("apps.install.selectFile")}</p>
+          </Upload.Dragger>
+          <Alert type="warning" showIcon message={t("apps.install.trust")} />
+        </div>
+      )}
+
+      {stage === "uploading" && (
+        <div className="py-8">
+          <div className="text-13 mb-8">
+            {t("apps.install.uploading", { percent: uploadPercent })}
+          </div>
+          <Progress percent={uploadPercent} status="active" />
+        </div>
+      )}
+
+      {stage === "installing" && (
+        <div className="py-8">
+          <div className="text-13 mb-8">{t("apps.install.installing")}</div>
+          <Progress percent={100} status="active" showInfo={false} />
+        </div>
+      )}
+
+      {(stage === "success" || stage === "failed") && (
+        <div className="flex flex-col gap-12">
+          <Alert
+            type={stage === "success" ? "success" : "error"}
+            showIcon
+            message={
+              stage === "success" ? t("apps.install.success") : errorMsg
+            }
+          />
+          {output && (
+            <div>
+              <div className="rc-section-label mb-4">
+                {t("apps.install.output")}
+              </div>
+              <pre className="rc-mono text-12 rc-card-surface p-12 m-0 max-h-[240px] overflow-auto whitespace-pre-wrap break-all">
+                {output}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+};
+
 const Applications = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
@@ -36,6 +243,7 @@ const Applications = () => {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detailApp, setDetailApp] = useState<IAppInfo | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
   const navigate = useNavigate();
 
   const copyText = (text: string) => {
@@ -156,14 +364,29 @@ const Applications = () => {
             {t("apps.subtitle")}
           </p>
         </div>
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => fetchList()}
-          loading={loading}
-        >
-          {t("common.refresh")}
-        </Button>
+        <div className="flex gap-8">
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            onClick={() => setInstallOpen(true)}
+          >
+            {t("apps.install.button")}
+          </Button>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => fetchList()}
+            loading={loading}
+          >
+            {t("common.refresh")}
+          </Button>
+        </div>
       </div>
+
+      <InstallAppModal
+        open={installOpen}
+        onClose={() => setInstallOpen(false)}
+        onInstalled={() => fetchList(true)}
+      />
 
       <Spin spinning={loading}>
         {loadError && !apps.length ? (

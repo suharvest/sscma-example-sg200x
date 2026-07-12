@@ -59,6 +59,27 @@ export const makeDirectory = async (storage: StorageType, path: string) => {
   return res.data;
 };
 
+// 确保目录存在：目录已存在时不视为错误（供应用安装等流程在上传前调用）。
+export const ensureDirectory = async (
+  storage: StorageType,
+  path: string
+): Promise<void> => {
+  const res = await supervisorRequest<object>(
+    {
+      url: `/api/fileMgr/mkdir`,
+      method: "post",
+      data: { storage, path },
+    },
+    { catchs: true }
+  );
+  if (res.code !== 0 && res.code !== "0") {
+    const msg = res.msg || "";
+    if (!/already exists/i.test(msg)) {
+      throw new Error(msg || "Failed to create directory");
+    }
+  }
+};
+
 export const removeEntry = async (storage: StorageType, path: string) => {
   const res = await supervisorRequest<object>({
     url: `/api/fileMgr/remove`,

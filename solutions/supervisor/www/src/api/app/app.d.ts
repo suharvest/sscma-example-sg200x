@@ -166,6 +166,21 @@ export interface ISetConfigResult {
   restarted: boolean;
 }
 
+/**
+ * Result of /api/appMgr/installApp (present on code 0 and code -1; code -2
+ * means "busy" and carries no data).
+ */
+export interface IInstallAppResult {
+  /** Canonical (realpath) package path that was installed. */
+  path: string;
+  /** opkg exit code; 124 = timed out after 120s. */
+  exit_code: number;
+  /** Tail (up to 2KB) of the opkg install output. */
+  output: string;
+  /** Number of app manifests visible after the install (refresh hint). */
+  apps_count: number;
+}
+
 export interface IAppCurrentResult {
   app?: IAppInfo | null;
   active_app?: string | null;

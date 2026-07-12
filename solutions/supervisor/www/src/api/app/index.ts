@@ -6,6 +6,7 @@ import {
   IAppConfigResult,
   ISetConfigResult,
   IConfigValues,
+  IInstallAppResult,
 } from "./app";
 
 // List all registered applications + active app id + run status
@@ -112,6 +113,24 @@ export const setConfigApi = async (data: {
       method: "post",
       data,
       timeout: 45000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// Install an uploaded application package (.deb). The path must point at a
+// file under /userdata (use fileMgr/upload first). Backend runs
+// `opkg install --force-reinstall` with a 120s budget — hence the 150s
+// timeout. code 0 ok, -1 failed (data.output = opkg tail), -2 busy (another
+// app operation holds the lock).
+export const installAppApi = async (data: { path: string }) =>
+  supervisorRequest<IInstallAppResult>(
+    {
+      url: "api/appMgr/installApp",
+      method: "post",
+      data,
+      timeout: 150000,
     },
     {
       catchs: true,
