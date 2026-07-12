@@ -319,52 +319,18 @@ json api_app::read_state()
     return st;
 }
 
-// Atomic persist: write tmp -> fsync -> rename over state.json.
-bool api_app::write_state(json& state)
+// Atomic write into USER_APPS_DIR: write tmp -> fsync -> rename over dst.
+// On any failure the tmp file is removed, the error logged, false returned.
+bool api_app::write_file_atomic(const std::string& dst, const std::string& tmp, const std::string& data)
 {
-    state["updated_at"] = timestamp();
-
     std::error_code ec;
     fs::create_directories(USER_APPS_DIR, ec);
 
-    std::string tmp = std::string(USER_APPS_DIR) + "/.state.json.tmp";
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         LOGE("open(%s) failed: %s", tmp.c_str(), strerror(errno));
         return false;
     }
-    std::string data = state.dump(2);
-    ssize_t n = ::write(fd, data.data(), data.size());
-    ::fsync(fd);
-    ::close(fd);
-    if (n != (ssize_t)data.size()) {
-        LOGE("short write to %s", tmp.c_str());
-        ::unlink(tmp.c_str());
-        return false;
-    }
-    if (::rename(tmp.c_str(), STATE_FILE) != 0) {
-        LOGE("rename(%s -> %s) failed: %s", tmp.c_str(), STATE_FILE, strerror(errno));
-        ::unlink(tmp.c_str());
-        return false;
-    }
-    return true;
-}
-
-// Atomic write of /userdata/local/apps/<app_id>.model (one line: model path).
-// Same tmp + fsync + rename pattern as write_state().
-bool api_app::write_model_override(const std::string& app_id, const std::string& model_path)
-{
-    std::error_code ec;
-    fs::create_directories(USER_APPS_DIR, ec);
-
-    std::string dst = std::string(USER_APPS_DIR) + "/" + app_id + ".model";
-    std::string tmp = std::string(USER_APPS_DIR) + "/." + app_id + ".model.tmp";
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", tmp.c_str(), strerror(errno));
-        return false;
-    }
-    std::string data = model_path + "\n";
     ssize_t n = ::write(fd, data.data(), data.size());
     ::fsync(fd);
     ::close(fd);
@@ -379,6 +345,21 @@ bool api_app::write_model_override(const std::string& app_id, const std::string&
         return false;
     }
     return true;
+}
+
+// Atomic persist of state.json.
+bool api_app::write_state(json& state)
+{
+    state["updated_at"] = timestamp();
+    return write_file_atomic(STATE_FILE, std::string(USER_APPS_DIR) + "/.state.json.tmp", state.dump(2));
+}
+
+// Atomic write of /userdata/local/apps/<app_id>.model (one line: model path).
+bool api_app::write_model_override(const std::string& app_id, const std::string& model_path)
+{
+    return write_file_atomic(std::string(USER_APPS_DIR) + "/" + app_id + ".model",
+        std::string(USER_APPS_DIR) + "/." + app_id + ".model.tmp",
+        model_path + "\n");
 }
 
 // Current config values of an app: /userdata/local/apps/<id>.config.json.
@@ -402,33 +383,23 @@ json api_app::read_config_file(const std::string& app_id)
 }
 
 // Atomic write of /userdata/local/apps/<id>.config.json.
-// Same tmp + fsync + rename pattern as write_state().
 bool api_app::write_config_file(const std::string& app_id, const json& values)
 {
-    std::error_code ec;
-    fs::create_directories(USER_APPS_DIR, ec);
+    return write_file_atomic(std::string(USER_APPS_DIR) + "/" + app_id + ".config.json",
+        std::string(USER_APPS_DIR) + "/." + app_id + ".config.json.tmp",
+        values.dump(2) + "\n");
+}
 
-    std::string dst = std::string(USER_APPS_DIR) + "/" + app_id + ".config.json";
-    std::string tmp = std::string(USER_APPS_DIR) + "/." + app_id + ".config.json.tmp";
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", tmp.c_str(), strerror(errno));
+// Concurrency guard shared by every mutating handler: try-lock only, no
+// queueing. On contention the -2 "busy" response has already been written
+// and false is returned; on success lk owns _op_mutex.
+bool api_app::acquire_op_lock_or_busy(response_t res, std::unique_lock<std::timed_mutex>& lk)
+{
+    if (!_op_mutex.try_lock()) {
+        response(res, -2, "busy: another app operation is in progress");
         return false;
     }
-    std::string data = values.dump(2) + "\n";
-    ssize_t n = ::write(fd, data.data(), data.size());
-    ::fsync(fd);
-    ::close(fd);
-    if (n != (ssize_t)data.size()) {
-        LOGE("short write to %s", tmp.c_str());
-        ::unlink(tmp.c_str());
-        return false;
-    }
-    if (::rename(tmp.c_str(), dst.c_str()) != 0) {
-        LOGE("rename(%s -> %s) failed: %s", tmp.c_str(), dst.c_str(), strerror(errno));
-        ::unlink(tmp.c_str());
-        return false;
-    }
+    lk = std::unique_lock<std::timed_mutex>(_op_mutex, std::adopt_lock);
     return true;
 }
 
@@ -476,6 +447,31 @@ bool api_app::start_target_locked(const std::string& script_path, response_t res
         response(res, -1, _last_error, { { "state", state_str(_state) } });
         return false;
     }
+    return true;
+}
+
+// Restart app_id if it is the active app (per state.json) so a persisted
+// change (model/config) takes effect. On failure the error response has
+// already been written and state.json is cleared; the caller must return.
+bool api_app::restart_if_active_locked(const json& app, const std::string& app_id, response_t res, bool& restarted)
+{
+    restarted = false;
+    if (jstr(read_state(), "active_app") != app_id) {
+        return true;
+    }
+    std::string script_path = jstr(app, "init_script");
+    if (!stop_current_locked(script_path, res)) {
+        return false;
+    }
+    if (!start_target_locked(script_path, res)) {
+        json st2 = read_state();
+        st2["active_app"] = nullptr;
+        st2["active_script"] = nullptr;
+        write_state(st2);
+        return false;
+    }
+    _state = app_state::RUNNING;
+    restarted = true;
     return true;
 }
 
@@ -568,11 +564,10 @@ api_status_t api_app::switchApp(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    if (!_op_mutex.try_lock()) {
-        response(res, -2, "busy: another app operation is in progress");
+    std::unique_lock<std::timed_mutex> lk;
+    if (!acquire_op_lock_or_busy(res, lk)) {
         return API_STATUS_OK;
     }
-    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
 
     json manifests = load_manifests();
     if (!manifests.contains(app_id)) {
@@ -642,11 +637,10 @@ api_status_t api_app::switchApp(request_t req, response_t res)
 
 api_status_t api_app::stop(request_t req, response_t res)
 {
-    if (!_op_mutex.try_lock()) {
-        response(res, -2, "busy: another app operation is in progress");
+    std::unique_lock<std::timed_mutex> lk;
+    if (!acquire_op_lock_or_busy(res, lk)) {
         return API_STATUS_OK;
     }
-    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
 
     json state = read_state();
     std::string active = jstr(state, "active_app");
@@ -682,11 +676,10 @@ api_status_t api_app::setModel(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    if (!_op_mutex.try_lock()) {
-        response(res, -2, "busy: another app operation is in progress");
+    std::unique_lock<std::timed_mutex> lk;
+    if (!acquire_op_lock_or_busy(res, lk)) {
         return API_STATUS_OK;
     }
-    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
 
     json manifests = load_manifests();
     if (!manifests.contains(app_id)) {
@@ -739,20 +732,8 @@ api_status_t api_app::setModel(request_t req, response_t res)
     // MVP semantics: persist + restart the app if it is the active one.
     // (In-app hot model switching is Phase 2.)
     bool restarted = false;
-    if (jstr(state, "active_app") == app_id) {
-        std::string script_path = jstr(app, "init_script");
-        if (!stop_current_locked(script_path, res)) {
-            return API_STATUS_OK;
-        }
-        if (!start_target_locked(script_path, res)) {
-            json st2 = read_state();
-            st2["active_app"] = nullptr;
-            st2["active_script"] = nullptr;
-            write_state(st2);
-            return API_STATUS_OK;
-        }
-        _state = app_state::RUNNING;
-        restarted = true;
+    if (!restart_if_active_locked(app, app_id, res, restarted)) {
+        return API_STATUS_OK;
     }
 
     response(res, 0, STR_OK, { { "app_id", app_id }, { "model", model }, { "restarted", restarted } });
@@ -816,11 +797,10 @@ api_status_t api_app::setConfig(request_t req, response_t res)
     }
     const json& values = body["values"];
 
-    if (!_op_mutex.try_lock()) {
-        response(res, -2, "busy: another app operation is in progress");
+    std::unique_lock<std::timed_mutex> lk;
+    if (!acquire_op_lock_or_busy(res, lk)) {
         return API_STATUS_OK;
     }
-    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
 
     json manifests = load_manifests();
     if (!manifests.contains(app_id)) {
@@ -847,21 +827,8 @@ api_status_t api_app::setConfig(request_t req, response_t res)
 
     // Restart the app if it is the active one so the config takes effect.
     bool restarted = false;
-    json state = read_state();
-    if (jstr(state, "active_app") == app_id) {
-        std::string script_path = jstr(app, "init_script");
-        if (!stop_current_locked(script_path, res)) {
-            return API_STATUS_OK;
-        }
-        if (!start_target_locked(script_path, res)) {
-            json st2 = read_state();
-            st2["active_app"] = nullptr;
-            st2["active_script"] = nullptr;
-            write_state(st2);
-            return API_STATUS_OK;
-        }
-        _state = app_state::RUNNING;
-        restarted = true;
+    if (!restart_if_active_locked(app, app_id, res, restarted)) {
+        return API_STATUS_OK;
     }
 
     response(res, 0, STR_OK, { { "app_id", app_id }, { "values", values }, { "restarted", restarted } });
@@ -1018,11 +985,10 @@ api_status_t api_app::installApp(request_t req, response_t res)
 
     // Installing while another operation switches/stops apps would race the
     // camera hand-over; same try-lock/busy semantics as switch/setModel.
-    if (!_op_mutex.try_lock()) {
-        response(res, -2, "busy: another app operation is in progress");
+    std::unique_lock<std::timed_mutex> lk;
+    if (!acquire_op_lock_or_busy(res, lk)) {
         return API_STATUS_OK;
     }
-    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
 
     // main.sh output protocol: first line "EXIT:<code>" (124 = opkg timed
     // out after 120s), then the tail of the opkg output. 130s here so the

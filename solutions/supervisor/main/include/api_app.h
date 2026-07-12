@@ -57,13 +57,16 @@ private:
     static json load_manifest_file(const std::string& path);
     static json load_manifests(); // object: id -> manifest
     static json read_state();
+    static bool write_file_atomic(const std::string& dst, const std::string& tmp, const std::string& data);
     static bool write_state(json& state);
     static bool write_model_override(const std::string& app_id, const std::string& model_path);
     static json read_config_file(const std::string& app_id);
     static bool write_config_file(const std::string& app_id, const json& values);
     static const char* state_str(app_state s);
+    static bool acquire_op_lock_or_busy(response_t res, std::unique_lock<std::timed_mutex>& lk);
     static bool stop_current_locked(const std::string& script_path, response_t res);
     static bool start_target_locked(const std::string& script_path, response_t res);
+    static bool restart_if_active_locked(const json& app, const std::string& app_id, response_t res, bool& restarted);
 
     static constexpr const char* BUILTIN_APPS_DIR = "/usr/share/supervisor/apps";
     static constexpr const char* USER_APPS_DIR = "/userdata/local/apps";

@@ -26,6 +26,7 @@ import {
   setAudioVolumeApi,
 } from "@/api/device/index";
 import { ISensorStatus, IAudioVolume } from "@/api/device/device";
+import { isOk, isBusy } from "@/utils/api";
 import { setLedApi } from "@/api/led";
 import { PowerMode } from "@/enum";
 import useCapabilitiesStore from "@/store/capabilities";
@@ -96,14 +97,14 @@ const DeviceTools = () => {
   const fetchTime = () => {
     getTimestampApi()
       .then((res) => {
-        if ((res.code === 0 || res.code === "0") && res.data?.timestamp) {
+        if (isOk(res) && res.data?.timestamp) {
           setDeviceTime(res.data.timestamp * 1000);
         }
       })
       .catch(() => setDeviceTime(null));
     getTimezoneApi()
       .then((res) => {
-        if (res.code === 0 || res.code === "0") {
+        if (isOk(res)) {
           setTimezone(res.data?.timezone || "");
         }
       })
@@ -116,7 +117,7 @@ const DeviceTools = () => {
     // Battery
     queryBatteryInfoApi()
       .then((res) => {
-        if ((res.code === 0 || res.code === "0") && res.data?.voltage) {
+        if (isOk(res) && res.data?.voltage) {
           setBattery(res.data.voltage);
         } else {
           setBattery(null);
@@ -126,7 +127,7 @@ const DeviceTools = () => {
     // Temperature + storage (new endpoint, may not exist on older firmware)
     getSensorStatusApi()
       .then((res) => {
-        if ((res.code === 0 || res.code === "0") && res.data) {
+        if (isOk(res) && res.data) {
           setSensor(res.data);
         } else {
           setSensor(null);
@@ -138,11 +139,7 @@ const DeviceTools = () => {
     setAudioVolume(undefined);
     getAudioVolumeApi()
       .then((res) => {
-        if (
-          (res.code === 0 || res.code === "0") &&
-          res.data?.supported &&
-          res.data.controls?.length
-        ) {
+        if (isOk(res) && res.data?.supported && res.data.controls?.length) {
           setAudioVolume(res.data);
         } else {
           setAudioVolume(null);
@@ -171,8 +168,7 @@ const DeviceTools = () => {
       recordUrlRef.current = url;
       setRecordUrl(url);
     } catch (e) {
-      const code = (e as { code?: number | string })?.code;
-      if (code === -2 || code === "-2") {
+      if (isBusy((e as { code?: number | string }) ?? {})) {
         message.warning(t("audio.busy"));
       } else {
         message.error(t("audio.recordFailed"));
@@ -188,9 +184,9 @@ const DeviceTools = () => {
     setPlayTesting(true);
     try {
       const res = await audioPlayTestApi();
-      if (res.code === 0 || res.code === "0") {
+      if (isOk(res)) {
         message.success(t("audio.playConfirm"));
-      } else if (res.code === -2 || res.code === "-2") {
+      } else if (isBusy(res)) {
         message.warning(t("audio.busy"));
       } else {
         message.error(t("audio.playFailed"));
@@ -218,7 +214,7 @@ const DeviceTools = () => {
     volumeTimer.current = setTimeout(async () => {
       try {
         const res = await setAudioVolumeApi(name, pct);
-        if (res.code !== 0 && res.code !== "0") {
+        if (!isOk(res)) {
           message.error(t("audio.volumeFailed"));
         }
       } catch (e) {
@@ -232,7 +228,7 @@ const DeviceTools = () => {
     setLedStates((s) => ({ ...s, [name]: on ? "on" : "off" }));
     try {
       const res = await setLedApi(name, on);
-      if (res.code !== 0 && res.code !== "0") {
+      if (!isOk(res)) {
         setLedStates((s) => ({ ...s, [name]: "unavailable" }));
         message.warning(t("device.ledUnavailableMsg", { name }));
       }
@@ -251,7 +247,7 @@ const DeviceTools = () => {
     setBrowserSyncing(true);
     try {
       const res = await setTimestampApi(Math.floor(Date.now() / 1000));
-      if (res.code !== 0 && res.code !== "0") {
+      if (!isOk(res)) {
         throw new Error(res.msg || "setTimestamp failed");
       }
       // IANA name, validated by the backend against /usr/share/zoneinfo.
@@ -259,7 +255,7 @@ const DeviceTools = () => {
       if (tz) {
         try {
           const tzRes = await setTimezoneApi(tz);
-          if (tzRes.code !== 0 && tzRes.code !== "0") {
+          if (!isOk(tzRes)) {
             message.warning(t("device.timezoneNotApplied", { tz }));
           }
         } catch {
@@ -281,7 +277,7 @@ const DeviceTools = () => {
     setNtpSyncing(true);
     try {
       const res = await syncTimeNtpApi();
-      if ((res.code === 0 || res.code === "0") && res.data?.timestamp) {
+      if (isOk(res) && res.data?.timestamp) {
         message.success(t("device.syncSuccess"));
       } else {
         message.error(t("device.ntpFailed"));

@@ -7,10 +7,12 @@ import {
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { getCurrentAppApi, getAppListApi, setAppModelApi } from "@/api/app";
+import { getCurrentAppApi, setAppModelApi } from "@/api/app";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
 import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
+import { isOk } from "@/utils/api";
+import { copyText } from "@/utils/clipboard";
 import {
   resolveRtspUrl,
   resolveDebugVideoUrl,
@@ -130,12 +132,8 @@ const Live = () => {
     setEditingItem(null);
   }, [app?.id]);
 
-  const copyText = (text: string) => {
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => message.success(t("common.copied")))
-      .catch(() => message.error(t("common.copyFailed")));
-  };
+  const copy = (text: string) =>
+    copyText(text, t("common.copied"), t("common.copyFailed"));
 
   const videoUrl = useMemo(() => resolveDebugVideoUrl(app), [app]);
   const resultsUrl = useMemo(() => resolveDebugResultsUrl(app), [app]);
@@ -153,41 +151,17 @@ const Live = () => {
     setLoading(true);
     try {
       const res = await getCurrentAppApi();
-      if ((res.code === 0 || res.code === "0") && res.data) {
-        const data = res.data;
-        // `current` may come as { app: {...} } or as the manifest itself.
-        const inline = data as unknown as IAppInfo;
-        const current: IAppInfo | null =
-          (data.app as IAppInfo) || (inline?.id ? inline : null);
-        if (current?.id) {
-          setApp(current);
-          // Backend /current returns `probe` (live init-script status) and
-          // `state` (state machine); prefer the live probe.
-          setAppStatus(
-            String(data.probe || data.state || data.status || current.status || "")
-          );
-          setCurrentModel(
-            data.current_model || current.current_model || current.default_model
-          );
-          return;
-        }
-      }
-      // Fallback: derive from list
-      const listRes = await getAppListApi();
-      if (listRes.code === 0 || listRes.code === "0") {
-        const apps = Array.isArray(listRes.data)
-          ? (listRes.data as unknown as IAppInfo[])
-          : listRes.data?.apps ?? [];
-        const activeId = !Array.isArray(listRes.data)
-          ? listRes.data?.current || listRes.data?.active_app
-          : null;
-        const active =
-          apps.find((a) => a.id === activeId) ||
-          apps.find((a) => a.active) ||
-          null;
-        setApp(active);
-        setAppStatus(String(active?.status || ""));
-        setCurrentModel(active?.current_model || active?.default_model);
+      const current = (isOk(res) && (res.data?.app as IAppInfo)) || null;
+      if (current?.id) {
+        setApp(current);
+        // Backend /current returns `probe` (live init-script status) and
+        // `state` (state machine); prefer the live probe.
+        setAppStatus(String(res.data.probe || res.data.state || ""));
+        setCurrentModel(
+          res.data.current_model ||
+            current.current_model ||
+            current.default_model
+        );
       } else {
         setApp(null);
       }
@@ -254,7 +228,7 @@ const Live = () => {
         setDebugOn(false);
         try {
           const res = await setAppModelApi({ app_id: app.id, model });
-          if (res.code === 0 || res.code === "0") {
+          if (isOk(res)) {
             setCurrentModel(model);
             message.success(t("live.modelUpdated"));
           } else {
@@ -304,7 +278,7 @@ const Live = () => {
       {rtspUrl ? (
         <div className="bg-white border border-line rounded-8 px-12 py-8 flex items-center justify-between gap-8">
           <span className="rc-mono text-12 break-all">{rtspUrl}</span>
-          <Button size="small" onClick={() => copyText(rtspUrl)}>
+          <Button size="small" onClick={() => copy(rtspUrl)}>
             {t("common.copy")}
           </Button>
         </div>
@@ -493,7 +467,7 @@ const Live = () => {
                       onChange={setOverlayOn}
                     />
                   </div>
-                  {(app.models?.length ?? 0) >= 2 && !!app.models && (
+                  {!!app.models && app.models.length >= 2 && (
                     <div className="mt-16 pt-16 border-t border-line">
                       <div className="text-14 font-medium mb-8">
                         {t("live.model")}
@@ -548,7 +522,7 @@ const Live = () => {
                         <span className="rc-mono text-12 break-all">
                           {rtspUrl}
                         </span>
-                        <Button size="small" onClick={() => copyText(rtspUrl)}>
+                        <Button size="small" onClick={() => copy(rtspUrl)}>
                           {t("common.copy")}
                         </Button>
                       </div>
@@ -569,7 +543,7 @@ const Live = () => {
                         </span>
                         <Button
                           size="small"
-                          onClick={() => copyText(app.mqtt_topic || "")}
+                          onClick={() => copy(app.mqtt_topic || "")}
                         >
                           {t("common.copy")}
                         </Button>
@@ -660,7 +634,7 @@ const Live = () => {
                       className="px-20 py-8 border-t border-line first:border-t-0 flex gap-12 items-baseline"
                     >
                       <span className="rc-mono text-11 text-muted flex-none">
-                        {new Date(m.receivedAt).toLocaleTimeString()}
+                        {m.receivedAt}
                       </span>
                       <span className="rc-mono text-11 break-all whitespace-pre-wrap">
                         {m.raw.length > 500 ? `${m.raw.slice(0, 500)}…` : m.raw}

@@ -16,9 +16,6 @@
 #include "mqtt_publisher.h"
 #include "face_blur.h"
 
-#include <sstream>
-#include <iomanip>
-
 using namespace ma;
 using namespace face_analysis;
 
@@ -260,13 +257,8 @@ static bool init_video_streaming() {
     stream_param.fps = g_config.stream_fps;
     setupVideo(VIDEO_CH2, &stream_param);
 
-    // Register RTSP handler
+    // Register RTSP handler (debug_stream registers its own consumer, idx 1)
     registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-
-    // Debug stream shares the same VENC output (consumer index 1, RTSP owns 0)
-    if (g_config.enable_debug) {
-        registerVideoFrameHandler(VIDEO_CH2, 1, debug_stream_video_handler, NULL);
-    }
 
     // Initialize RTSP server
     initRtsp((0x01 << VIDEO_CH2));
@@ -277,65 +269,30 @@ static bool init_video_streaming() {
     return true;
 }
 
-static bool init_debug_stream() {
-    if (!g_config.enable_debug) {
-        MA_LOGI(TAG, "Debug stream disabled");
-        return true;
-    }
-
-    debug_stream_config_t cfg;
-    debug_stream_config_init(&cfg);
-    cfg.port = g_config.debug_port;
-    cfg.video_ch = VIDEO_CH2;
-
-    if (debug_stream_create(&cfg) != 0) {
-        MA_LOGW(TAG, "Failed to start debug stream on port %d, continuing without it", g_config.debug_port);
-        g_config.enable_debug = false;
-        return true;  // non-fatal
-    }
-
-    MA_LOGI(TAG, "Debug stream: ws://<device_ip>:%d/ (video), ws://<device_ip>:%d/results",
-            g_config.debug_port, g_config.debug_port);
-    return true;
-}
-
-// Build the sscma-node compatible result JSON for the debug /results channel:
-// boxes are center-based pixels in the inference resolution.
-// NOTE: this is a separate document from the MQTT payload; the MQTT format is
-// an external contract and must not change.
+// Assemble the debug /results envelope (shared debug_stream builder).
+// FaceInfo x/y are normalized top-left; convert to center-based pixels.
+// box[5] is "face" (aligned with the other apps' class-name labels); the
+// parallel labels[] carries the per-face attributes.
 static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
                                             const std::vector<AnalyzedFace>& faces,
                                             float inference_time_ms) {
-    std::ostringstream json;
-    json << std::fixed << std::setprecision(1);
-    json << "{";
-    json << "\"timestamp\":" << timestamp_ms << ",";
-    json << "\"frame_id\":" << frame_id << ",";
-    json << "\"inference_time_ms\":" << inference_time_ms << ",";
-    json << "\"resolution\":[" << g_config.inference_width << "," << g_config.inference_height << "],";
-    json << "\"boxes\":[";
-    for (size_t i = 0; i < faces.size(); ++i) {
-        const auto& f = faces[i].face;
-        if (i > 0) json << ",";
-        // FaceInfo x/y are normalized top-left; convert to center-based pixels
-        json << "[" << (f.x + f.w * 0.5f) * g_config.inference_width << ","
-             << (f.y + f.h * 0.5f) * g_config.inference_height << ","
-             << f.w * g_config.inference_width << ","
-             << f.h * g_config.inference_height << ","
-             << std::setprecision(3) << f.score << std::setprecision(1) << ","
-             << 0 << "]";
+    std::vector<debug_stream_box_t> boxes;
+    std::vector<std::string> labels;
+    boxes.reserve(faces.size());
+    labels.reserve(faces.size());
+    for (const auto& af : faces) {
+        const auto& f = af.face;
+        boxes.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
+                         (f.y + f.h * 0.5f) * g_config.inference_height,
+                         f.w * g_config.inference_width,
+                         f.h * g_config.inference_height,
+                         f.score, "face"});
+        const auto& attr = af.attributes;
+        labels.push_back(attr.gender + " " + attr.age_label + " " + getEmotionName(attr.emotion));
     }
-    json << "],";
-    json << "\"labels\":[";
-    for (size_t i = 0; i < faces.size(); ++i) {
-        const auto& attr = faces[i].attributes;
-        if (i > 0) json << ",";
-        json << "\"" << attr.gender << " " << attr.age_label << " "
-             << getEmotionName(attr.emotion) << "\"";
-    }
-    json << "]";
-    json << "}";
-    return json.str();
+    return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
+                                      g_config.inference_width, g_config.inference_height,
+                                      boxes, &labels);
 }
 
 static bool init_mqtt() {
@@ -534,10 +491,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!init_debug_stream()) {
-        MA_LOGE(TAG, "Debug stream initialization failed");
-        cleanup();
-        return 1;
+    // Debug stream (non-fatal: on failure run without it)
+    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
+        g_config.enable_debug = false;
     }
 
     if (!init_mqtt()) {

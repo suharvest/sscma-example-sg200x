@@ -827,12 +827,15 @@ api_status_t api_device::queryBatteryInfo(request_t req, response_t res)
 // storage total/used/available in BYTES.
 api_status_t api_device::getSensorStatus(request_t req, response_t res)
 {
-    json data = json::object();
+    // Single fork: main.sh querySensorStatus merges the temperature and
+    // storage probes into {"temperature": {...}, "storage": {...}}.
+    json merged = parse_result(script("querySensorStatus"));
 
-    json temp = parse_result(script("queryTemperature"));
+    json data = json::object();
+    json temp = merged.is_object() ? merged.value("temperature", json::object()) : json::object();
     data["temperature_c"] = temp.value("temperature_c", 0.0);
 
-    json storage = parse_result(script("queryStorage"));
+    json storage = merged.is_object() ? merged.value("storage", json::object()) : json::object();
     json st = json::object();
     st["total"] = storage.value("total", 0.0);
     st["used"] = storage.value("used", 0.0);

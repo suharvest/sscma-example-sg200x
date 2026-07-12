@@ -3,6 +3,7 @@ import { message } from "antd";
 import { useTranslation } from "react-i18next";
 import { getConfigApi, setConfigApi } from "@/api/app";
 import { IConfigSchema, IConfigValues, ConfigValue } from "@/api/app/app";
+import { isOk, isBusy } from "@/utils/api";
 
 /**
  * App configuration state (schema-driven form backing store).
@@ -22,7 +23,6 @@ export default function useAppConfig(appId?: string | null) {
   const [defaults, setDefaults] = useState<IConfigValues>({});
   const [saved, setSaved] = useState<IConfigValues>({});
   const [draft, setDraft] = useState<IConfigValues>({});
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -32,11 +32,10 @@ export default function useAppConfig(appId?: string | null) {
     setSaved({});
     setDraft({});
     if (!appId) return;
-    setLoading(true);
     getConfigApi(appId)
       .then((res) => {
         if (cancelled) return;
-        if ((res.code === 0 || res.code === "0") && res.data?.schema) {
+        if (isOk(res) && res.data?.schema) {
           setSchema(res.data.schema);
           setDefaults(res.data.defaults || {});
           setSaved(res.data.values || {});
@@ -45,9 +44,6 @@ export default function useAppConfig(appId?: string | null) {
       })
       .catch(() => {
         // Endpoint unavailable (older firmware) -> keep the card hidden.
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
@@ -73,14 +69,14 @@ export default function useAppConfig(appId?: string | null) {
     setSaving(true);
     try {
       const res = await setConfigApi({ app_id: appId, values: draft });
-      if (res.code === 0 || res.code === "0") {
+      if (isOk(res)) {
         setSaved(draft);
         message.success(
           res.data?.restarted ? t("config.savedRestarting") : t("config.saved")
         );
         return true;
       }
-      if (res.code === -2 || res.code === "-2") {
+      if (isBusy(res)) {
         message.warning(t("config.busy"));
       } else {
         message.error(res.msg || t("config.saveFailed"));
@@ -97,9 +93,7 @@ export default function useAppConfig(appId?: string | null) {
   return {
     schema,
     defaults,
-    saved,
     draft,
-    loading,
     saving,
     dirty,
     setValue,

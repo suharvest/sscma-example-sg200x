@@ -1078,6 +1078,18 @@ function queryStorage() {
         printf "{\"total\": %.0f, \"used\": %.0f, \"available\": %.0f}", $2 * 1024, $3 * 1024, $4 * 1024
     }'
 }
+
+# querySensorStatus : merged temperature + storage probe so the supervisor
+# only forks this script once (deviceMgr/getSensorStatus). The two functions
+# above stay independently callable.
+function querySensorStatus() {
+    local temp storage
+    temp=$(queryTemperature)
+    [ -n "$temp" ] || temp='{}'
+    storage=$(queryStorage)
+    [ -n "$storage" ] || storage='{}'
+    printf '{"temperature": %s, "storage": %s}' "$temp" "$storage"
+}
 # sensors
 ##################################################
 
@@ -1132,6 +1144,18 @@ function app_read_state() {
     fi
 }
 
+# Active app's init script extracted from state.json ("" when none).
+_app_active_script() {
+    app_read_state | sed -n 's/.*"active_script"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+# _app_do_stop <init_script> : stop with a 10s timeout, TERM only (never
+# KILL: apps must release VPSS/camera cleanly). Single source of the gallery
+# app stop policy. Returns 124 on timeout, else the script's exit code.
+_app_do_stop() {
+    _app_run_timeout 10 "$1" stop >/dev/null 2>&1
+}
+
 # app_write_state '<json>' : atomic write (tmp + sync + rename)
 function app_write_state() {
     local content="$2"
@@ -1175,7 +1199,7 @@ function app_stop() {
         echo "$STR_FAILED"
         return 1
     }
-    _app_run_timeout 10 "$script" stop >/dev/null 2>&1
+    _app_do_stop "$script"
     local ret=$?
     if [ $ret -eq 0 ]; then
         echo "$STR_OK"
@@ -1208,7 +1232,7 @@ function app_status() {
 # app_restore : called at boot (async, from S93sscma-supervisor) to bring the
 # persisted active app back up. Failure is logged only, never blocks boot.
 function app_restore() {
-    local script=$(app_read_state | sed -n 's/.*"active_script"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    local script=$(_app_active_script)
     [ -z "$script" ] && {
         echo "$STR_OK"
         return 0
@@ -1337,9 +1361,9 @@ function setRunMode() {
         # Stop the active gallery app first (state.json is advisory: missing,
         # empty or corrupt state just means nothing to stop). The selection is
         # deliberately kept in state.json so switching back restores the app.
-        local script=$(app_read_state | sed -n 's/.*"active_script"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        local script=$(_app_active_script)
         if [ -n "$script" ] && _app_check_script "$script"; then
-            _app_run_timeout 10 "$script" stop >/dev/null 2>&1
+            _app_do_stop "$script"
             sleep 2 # VPSS/camera release grace period (kernel driver is fragile)
         fi
         local s

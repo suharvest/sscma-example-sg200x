@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { Button, message } from "antd";
+import { Button } from "antd";
 import { CopyOutlined, DownloadOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import { getIntegrationDocApi } from "@/api/app";
+import { isOk } from "@/utils/api";
+import { copyText } from "@/utils/clipboard";
 import { apiLang } from "@/i18n";
 
 /**
@@ -35,7 +37,7 @@ const IntegrationDoc = ({
     getIntegrationDocApi(appId, apiLang())
       .then((res) => {
         if (cancelled) return;
-        if ((res.code === 0 || res.code === "0") && res.data?.content) {
+        if (isOk(res) && res.data?.content) {
           setContent(res.data.content);
         }
       })
@@ -49,12 +51,8 @@ const IntegrationDoc = ({
 
   if (!appId || !content) return null;
 
-  const onCopy = () => {
-    navigator.clipboard
-      ?.writeText(content)
-      .then(() => message.success(t("doc.copied")))
-      .catch(() => message.error(t("common.copyFailed")));
-  };
+  const onCopy = () =>
+    copyText(content, t("doc.copied"), t("common.copyFailed"));
 
   const onExport = () => {
     const blob = new Blob([content], {

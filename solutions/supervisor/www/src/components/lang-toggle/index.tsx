@@ -1,13 +1,13 @@
 import { useTranslation } from "react-i18next";
-import { setLanguage } from "@/i18n";
+import { isZhLang, setLanguage } from "@/i18n";
 
 /**
  * Minimal EN / 中 language toggle, styled after the rc-mono badge system.
  * Persists the choice to localStorage('rc-lang') via setLanguage().
  */
 const LangToggle = ({ className = "" }: { className?: string }) => {
-  const { i18n } = useTranslation();
-  const isZh = (i18n.language || "").toLowerCase().startsWith("zh");
+  useTranslation(); // subscribe so the toggle re-renders on language change
+  const isZh = isZhLang();
 
   const item = (active: boolean) =>
     `cursor-pointer px-4 leading-none ${

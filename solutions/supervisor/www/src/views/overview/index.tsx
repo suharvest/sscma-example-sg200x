@@ -1,16 +1,33 @@
-import usehookData from './hook'
+import { useEffect, useRef, useState } from 'react'
 import moment from 'moment'
 import { useTranslation } from 'react-i18next'
+import { getWebSocketUrlApi } from '@/api'
+import useDebugStream from '@/hooks/useDebugStream'
 
 function Home() {
-	const {timeObj} = usehookData()
 	const { t } = useTranslation()
+	const videoRef = useRef<HTMLVideoElement>(null)
+	const [wsUrl, setWsUrl] = useState<string | null>(null)
+
+	useEffect(() => {
+		getWebSocketUrlApi({ time: Date.now() })
+			.then(({ data }) => setWsUrl(data.websocketUrl))
+			.catch((err) => console.log('err:', err))
+	}, [])
+
+	const { lastFrameDelay, lastFrameTs } = useDebugStream({
+		enabled: true,
+		wsUrl,
+		resultsUrl: null,
+		videoRef,
+	})
+
 	return (
 		<div className='m-auto p-16' style={{ maxWidth: '600px' }}>
 			<div className='iframe my-20  flex justify-center' style={{ height: 'auto' }}>
 				<video
+					ref={videoRef}
 					className='rounded-20'
-					id='player'
 					width='100%'
 					muted
 					autoPlay
@@ -23,8 +40,8 @@ function Home() {
 			</div>
 
 			<div className='flex justify-between text-17 '>
-				<span>{moment(timeObj.time||0).format('YYYY-MM-DD hh:mm:ss')}</span>
-				<span>{timeObj.delay}ms</span>
+				<span>{moment(lastFrameTs || 0).format('YYYY-MM-DD hh:mm:ss')}</span>
+				<span>{lastFrameDelay ?? 0}ms</span>
 			</div>
 		</div>
 	)

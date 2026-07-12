@@ -4,7 +4,9 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -373,4 +375,61 @@ int debug_stream_results_client_count(void) {
     return g_ds.results_clients.load(std::memory_order_relaxed);
 }
 
+int debug_stream_start_or_disable(int port, int video_ch) {
+    debug_stream_config_t cfg;
+    debug_stream_config_init(&cfg);
+    cfg.port = port;
+    cfg.video_ch = video_ch;
+
+    if (debug_stream_create(&cfg) != 0) {
+        fprintf(stderr, "[%s] failed to start debug stream on port %d, continuing without it\n",
+                DS_TAG, port);
+        return -1;
+    }
+
+    fprintf(stderr, "[%s] debug stream: ws://<device_ip>:%d/ (video), ws://<device_ip>:%d/results\n",
+            DS_TAG, port, port);
+    // Debug stream shares the VENC output (consumer index 1, RTSP owns 0).
+    registerVideoFrameHandler((video_ch_index_t)video_ch, 1, debug_stream_video_handler, NULL);
+    return 0;
+}
+
 }  // extern "C"
+
+// ---------------------------------------------------------------------------
+// C++-only: /results envelope builder shared by the gallery applications
+// ---------------------------------------------------------------------------
+
+std::string debug_stream_build_results(uint64_t timestamp_ms, uint32_t frame_id,
+                                       float inference_time_ms, int res_w, int res_h,
+                                       const std::vector<debug_stream_box_t>& boxes,
+                                       const std::vector<std::string>* labels,
+                                       const std::string& extra_json) {
+    std::ostringstream json;
+    json << std::fixed << std::setprecision(1);
+    json << "{";
+    json << "\"timestamp\":" << timestamp_ms << ",";
+    json << "\"frame_id\":" << frame_id << ",";
+    json << "\"inference_time_ms\":" << inference_time_ms << ",";
+    json << "\"resolution\":[" << res_w << "," << res_h << "],";
+    json << "\"boxes\":[";
+    for (size_t i = 0; i < boxes.size(); ++i) {
+        const auto& b = boxes[i];
+        if (i > 0) json << ",";
+        json << "[" << b.x << "," << b.y << "," << b.w << "," << b.h << ","
+             << std::setprecision(3) << b.score << std::setprecision(1) << ","
+             << "\"" << b.label << "\"]";
+    }
+    json << "],";
+    json << "\"labels\":[";
+    for (size_t i = 0; i < boxes.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "\"" << (labels ? (*labels)[i] : boxes[i].label) << "\"";
+    }
+    json << "]";
+    if (!extra_json.empty()) {
+        json << "," << extra_json;
+    }
+    json << "}";
+    return json.str();
+}

@@ -63,7 +63,6 @@ export interface IAppManifest {
 export interface IAppInfo extends IAppManifest {
   status?: AppRunState;
   running?: boolean;
-  active?: boolean;
   current_model?: string;
   /** P5: false when the device lacks required hardware (switch is refused). */
   hw_supported?: boolean;
@@ -75,7 +74,6 @@ export interface IAppListResult {
   apps: IAppInfo[];
   /** Active app id; backend field is `current`. */
   current?: string | null;
-  active_app?: string | null;
   /** State machine string (lowercase, e.g. "running"). */
   state?: AppRunState;
 }
@@ -193,12 +191,10 @@ export interface IInstallAppResult {
 
 export interface IAppCurrentResult {
   app?: IAppInfo | null;
-  active_app?: string | null;
   /** State machine string (lowercase). */
   state?: AppRunState;
   /** Live init-script probe: "running" | "stopped" | "unknown". */
   probe?: string;
   lastError?: string;
-  status?: AppRunState;
   current_model?: string;
 }

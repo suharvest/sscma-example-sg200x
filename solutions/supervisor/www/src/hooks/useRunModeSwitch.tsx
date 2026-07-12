@@ -3,6 +3,7 @@ import { Modal, message } from "antd";
 import { ExclamationCircleOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { queryDeviceInfoApi, setRunModeApi } from "@/api/device/index";
+import { isOk, isBusy } from "@/utils/api";
 
 export type RunMode = "console" | "nodered";
 
@@ -30,8 +31,8 @@ export function useRunModeSwitch() {
     setSwitching(target);
     try {
       const res = await setRunModeApi(target);
-      if (res.code !== 0 && res.code !== "0") {
-        if (res.code === -2 || res.code === "-2") {
+      if (!isOk(res)) {
+        if (isBusy(res)) {
           message.error(t("runtimeMode.busy"));
         } else {
           message.error(res.msg || t("runtimeMode.failed"));
@@ -45,10 +46,7 @@ export function useRunModeSwitch() {
       for (let i = 0; i < 5; i++) {
         try {
           const info = await queryDeviceInfoApi();
-          if (
-            (info.code === 0 || info.code === "0") &&
-            Boolean(info.data?.galleryMode) === wantGallery
-          ) {
+          if (isOk(info) && Boolean(info.data?.galleryMode) === wantGallery) {
             window.location.reload();
             return;
           }

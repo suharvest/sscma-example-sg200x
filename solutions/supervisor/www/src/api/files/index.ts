@@ -1,5 +1,6 @@
 // 文件管理相关API接口 - 接入设备后端 /api/fileMgr
 import supervisorRequest from "@/utils/supervisorRequest";
+import { isOk } from "@/utils/api";
 
 export type StorageType = "local" | "sd";
 export type FileType = "directory" | "file";
@@ -72,7 +73,7 @@ export const ensureDirectory = async (
     },
     { catchs: true }
   );
-  if (res.code !== 0 && res.code !== "0") {
+  if (!isOk(res)) {
     const msg = res.msg || "";
     if (!/already exists/i.test(msg)) {
       throw new Error(msg || "Failed to create directory");

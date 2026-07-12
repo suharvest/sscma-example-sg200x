@@ -18,6 +18,8 @@ import {
 } from "@/api/app";
 import { IAppInfo, IInstallAppResult } from "@/api/app/app";
 import { uploadFiles, ensureDirectory } from "@/api/files";
+import { isOk, isBusy } from "@/utils/api";
+import { copyText } from "@/utils/clipboard";
 import { resolveRtspUrl } from "@/utils/appStream";
 import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
 import IntegrationDoc from "@/components/integration-doc";
@@ -130,10 +132,10 @@ const InstallAppModal = ({
       });
       const data = res.data as IInstallAppResult | undefined;
       setOutput(data?.output || "");
-      if (res.code === 0 || res.code === "0") {
+      if (isOk(res)) {
         setStage("success");
         onInstalled();
-      } else if (res.code === -2 || res.code === "-2") {
+      } else if (isBusy(res)) {
         setStage("failed");
         setErrorMsg(t("apps.install.busy"));
       } else {
@@ -257,12 +259,8 @@ const Applications = () => {
   // renamed: `switching` is taken by the app switch/stop state above
   const { switching: modeSwitching, requestSwitch } = useRunModeSwitch();
 
-  const copyText = (text: string) => {
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => message.success(t("common.copied")))
-      .catch(() => message.error(t("common.copyFailed")));
-  };
+  const copy = (text: string) =>
+    copyText(text, t("common.copied"), t("common.copyFailed"));
 
   /** Localized status label; unknown backend states fall back verbatim. */
   const statusLabel = (app: IAppInfo, isActive: boolean) => {
@@ -274,17 +272,9 @@ const Applications = () => {
     if (!silent) setLoading(true);
     try {
       const res = await getAppListApi();
-      if (res.code === 0 || res.code === "0") {
-        const data = res.data;
-        const list = Array.isArray(data)
-          ? (data as unknown as IAppInfo[])
-          : data?.apps ?? [];
-        setApps(list);
-        const active =
-          (!Array.isArray(data) && (data?.current || data?.active_app)) ||
-          list.find((a) => a.active)?.id ||
-          null;
-        setActiveId(active || null);
+      if (isOk(res)) {
+        setApps(res.data.apps);
+        setActiveId(res.data.current || null);
         setLoadError(false);
       } else {
         setLoadError(true);
@@ -312,7 +302,7 @@ const Applications = () => {
         setSwitching(app.id);
         try {
           const res = await switchAppApi({ app_id: app.id });
-          if (res.code === 0 || res.code === "0") {
+          if (isOk(res)) {
             message.success(t("apps.activated", { name }));
           } else {
             message.error(res.msg || t("apps.activateFailed"));
@@ -340,7 +330,7 @@ const Applications = () => {
         setSwitching(app.id);
         try {
           const res = await stopAppApi();
-          if (res.code === 0 || res.code === "0") {
+          if (isOk(res)) {
             message.success(t("apps.stopSuccess"));
           } else {
             message.error(res.msg || t("apps.stopFailed"));
@@ -625,7 +615,7 @@ const Applications = () => {
                   </span>
                   <Button
                     size="small"
-                    onClick={() => copyText(resolveRtspUrl(detailApp))}
+                    onClick={() => copy(resolveRtspUrl(detailApp))}
                   >
                     {t("common.copy")}
                   </Button>
@@ -643,7 +633,7 @@ const Applications = () => {
                   </span>
                   <Button
                     size="small"
-                    onClick={() => copyText(detailApp.mqtt_topic || "")}
+                    onClick={() => copy(detailApp.mqtt_topic || "")}
                   >
                     {t("common.copy")}
                   </Button>

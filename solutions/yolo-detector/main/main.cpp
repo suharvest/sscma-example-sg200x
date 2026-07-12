@@ -16,9 +16,6 @@
 #include "mqtt_publisher.h"
 #include "app_config.h"
 
-#include <sstream>
-#include <iomanip>
-
 using namespace ma;
 using namespace yolo;
 
@@ -264,11 +261,8 @@ static bool init_video_streaming() {
     stream_param.height = g_config.stream_height;
     stream_param.fps = g_config.stream_fps;
     setupVideo(VIDEO_CH2, &stream_param);
+    // Debug stream registers its own consumer (idx 1); RTSP owns idx 0.
     registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    // Debug stream shares the same VENC output (consumer index 1, RTSP owns 0)
-    if (g_config.enable_debug) {
-        registerVideoFrameHandler(VIDEO_CH2, 1, debug_stream_video_handler, NULL);
-    }
     initRtsp((0x01 << VIDEO_CH2));
 
     MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps)",
@@ -276,68 +270,24 @@ static bool init_video_streaming() {
     return true;
 }
 
-static bool init_debug_stream() {
-    if (!g_config.enable_debug) {
-        MA_LOGI(TAG, "Debug stream disabled");
-        return true;
-    }
-
-    debug_stream_config_t cfg;
-    debug_stream_config_init(&cfg);
-    cfg.port = g_config.debug_port;
-    cfg.video_ch = VIDEO_CH2;
-
-    if (debug_stream_create(&cfg) != 0) {
-        MA_LOGW(TAG, "Failed to start debug stream on port %d, continuing without it", g_config.debug_port);
-        g_config.enable_debug = false;
-        return true;  // non-fatal
-    }
-
-    MA_LOGI(TAG, "Debug stream: ws://<device_ip>:%d/ (video), ws://<device_ip>:%d/results",
-            g_config.debug_port, g_config.debug_port);
-    return true;
-}
-
-// Build the sscma-node compatible result JSON for the debug /results channel:
-// boxes are center-based pixels in the inference resolution.
-// The 6th box element is the human-readable class name (string): the console
-// overlay (BoxOverlay in live/index.tsx) renders box[5] verbatim as the box
-// label, so a string here is what makes class names appear on screen. The
-// parallel `labels` array (labels[i] <-> boxes[i]) is kept for programmatic
-// consumers that follow the sscma-node convention.
-// NOTE: this is a separate document from the MQTT payload; the MQTT format is
-// an external contract and must not change.
+// Assemble the debug /results envelope (shared debug_stream builder).
+// Detection x/y are normalized center coordinates; box[5] is the
+// human-readable class name the console overlay renders verbatim.
 static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
                                             const std::vector<Detection>& detections,
                                             float inference_time_ms) {
-    std::ostringstream json;
-    json << std::fixed << std::setprecision(1);
-    json << "{";
-    json << "\"timestamp\":" << timestamp_ms << ",";
-    json << "\"frame_id\":" << frame_id << ",";
-    json << "\"inference_time_ms\":" << inference_time_ms << ",";
-    json << "\"resolution\":[" << g_config.inference_width << "," << g_config.inference_height << "],";
-    json << "\"boxes\":[";
-    for (size_t i = 0; i < detections.size(); ++i) {
-        const auto& det = detections[i];
-        if (i > 0) json << ",";
-        // Detection x/y are normalized center coordinates
-        json << "[" << det.x * g_config.inference_width << ","
-             << det.y * g_config.inference_height << ","
-             << det.w * g_config.inference_width << ","
-             << det.h * g_config.inference_height << ","
-             << std::setprecision(3) << det.confidence << std::setprecision(1) << ","
-             << "\"" << Detector::getClassName(det.class_id) << "\"]";
+    std::vector<debug_stream_box_t> boxes;
+    boxes.reserve(detections.size());
+    for (const auto& det : detections) {
+        boxes.push_back({det.x * g_config.inference_width,
+                         det.y * g_config.inference_height,
+                         det.w * g_config.inference_width,
+                         det.h * g_config.inference_height,
+                         det.confidence, Detector::getClassName(det.class_id)});
     }
-    json << "],";
-    json << "\"labels\":[";
-    for (size_t i = 0; i < detections.size(); ++i) {
-        if (i > 0) json << ",";
-        json << "\"" << Detector::getClassName(detections[i].class_id) << "\"";
-    }
-    json << "]";
-    json << "}";
-    return json.str();
+    return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
+                                      g_config.inference_width, g_config.inference_height,
+                                      boxes);
 }
 
 static bool init_mqtt() {
@@ -458,7 +408,10 @@ int main(int argc, char** argv) {
     if (!init_tracker()) { cleanup(); return 1; }
     if (!init_camera()) { cleanup(); return 1; }
     if (!init_video_streaming()) { cleanup(); return 1; }
-    if (!init_debug_stream()) { cleanup(); return 1; }
+    // Debug stream (non-fatal: on failure run without it)
+    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
+        g_config.enable_debug = false;
+    }
     if (!init_mqtt()) { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);

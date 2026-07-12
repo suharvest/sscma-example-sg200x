@@ -365,21 +365,8 @@ export const setAudioVolumeApi = async (control: string, percent: number) =>
     }
   );
 
-// 运行模式（P4-D）：console = C++ 应用画廊（生产），nodered = Node-RED
-// 流程编排（调试）。mode 来自持久化文件，galleryMode 是进程实时状态。
-export const getRunModeApi = async () =>
-  supervisorRequest<{ mode: "console" | "nodered"; galleryMode: boolean }>(
-    {
-      url: "api/deviceMgr/getRunMode",
-      method: "get",
-      timeout: 5000,
-    },
-    {
-      catchs: true,
-    }
-  );
-
-// 切换运行模式。后端同步完成：写模式文件 → 停/起相关服务（→nodered 最坏
+// 切换运行模式（P4-D）：console = C++ 应用画廊（生产），nodered = Node-RED
+// 流程编排（调试）。后端同步完成：写模式文件 → 停/起相关服务（→nodered 最坏
 // 约 40s）→ 进程内翻转 galleryMode 与看门狗，**不重启 supervisor**。
 // 成功返回时 galleryMode 已翻转，前端再拉一次 queryDeviceInfo 确认后
 // location.reload() 即可（见 useRunModeSwitch）。后端 shell 预算 60s，

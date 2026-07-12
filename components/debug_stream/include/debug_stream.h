@@ -41,6 +41,15 @@ void debug_stream_config_init(debug_stream_config_t* cfg);
 /* Start the WS server (spawns the poll thread). Returns 0 on success. */
 int debug_stream_create(const debug_stream_config_t* cfg);
 
+/*
+ * Convenience bring-up used by the gallery applications: default config +
+ * port/video_ch override + create. On success it logs the ws:// URLs and
+ * registers debug_stream_video_handler as VENC consumer index 1 on video_ch
+ * (RTSP owns index 0), then returns 0. On failure it logs a warning and
+ * returns non-zero so the caller can degrade (run without the debug stream).
+ */
+int debug_stream_start_or_disable(int port, int video_ch);
+
 /* Stop the server, join the poll thread and release all resources. */
 void debug_stream_destroy(void);
 
@@ -61,6 +70,42 @@ int debug_stream_results_client_count(void);
 
 #ifdef __cplusplus
 }
+
+#include <string>
+#include <vector>
+
+/*
+ * One detection box for the /results envelope. Coordinates are center-based
+ * pixels in the inference resolution; label is rendered verbatim by the
+ * console overlay (BoxOverlay reads box[5] as the on-screen text).
+ */
+struct debug_stream_box_t {
+    float x;
+    float y;
+    float w;
+    float h;
+    float score;
+    std::string label;
+};
+
+/*
+ * Build the sscma-node compatible result JSON for the debug /results
+ * channel:
+ *   {"timestamp":..,"frame_id":..,"inference_time_ms":..,
+ *    "resolution":[w,h],"boxes":[[x,y,w,h,score,"label"],..],
+ *    "labels":["..",..](, <extra_json>)}
+ * labels is the parallel array (labels[i] <-> boxes[i]) for programmatic
+ * consumers; pass nullptr to mirror each box's label. extra_json, when
+ * non-empty, is appended verbatim as additional top-level members (e.g.
+ * "\"zone\":{...}").
+ * NOTE: this is a separate document from the MQTT payload; the MQTT format
+ * is an external contract and must not change.
+ */
+std::string debug_stream_build_results(uint64_t timestamp_ms, uint32_t frame_id,
+                                       float inference_time_ms, int res_w, int res_h,
+                                       const std::vector<debug_stream_box_t>& boxes,
+                                       const std::vector<std::string>* labels = nullptr,
+                                       const std::string& extra_json = std::string());
 #endif
 
 #endif /* _DEBUG_STREAM_H_ */

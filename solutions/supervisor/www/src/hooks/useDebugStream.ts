@@ -9,6 +9,10 @@ import JMuxer from "jmuxer";
  * millisecond timestamp appended at the tail. The tail MUST be stripped
  * before feeding JMuxer (the legacy overview hook fed it through, which
  * was a bug — do not replicate).
+ *
+ * High-frequency data (per-frame delay, per-message results) is buffered in
+ * refs and flushed to React state on timers — a 30fps setState would
+ * re-render the whole page on every video frame.
  */
 
 export type DebugStreamStatus =
@@ -27,8 +31,8 @@ export interface IResultBox {
 }
 
 export interface IResultMessage {
-  /** local receive time (ms) */
-  receivedAt: number;
+  /** local receive time, preformatted for display (toLocaleTimeString) */
+  receivedAt: string;
   /** raw JSON text (shown in the message list) */
   raw: string;
   /** parsed payload, null when not valid JSON */
@@ -56,9 +60,13 @@ interface UseDebugStreamOptions {
 }
 
 const DEFAULT_RESOLUTION = 640;
+/** results/overlay ref-buffer flush cadence */
+const RESULTS_FLUSH_MS = 150;
+/** frame delay/timestamp flush cadence */
+const DELAY_FLUSH_MS = 1000;
 
 /** Parse a results JSON message into an overlay frame (defensive). */
-export function parseOverlayFrame(
+function parseOverlayFrame(
   data: Record<string, unknown> | null
 ): IOverlayFrame | null {
   if (!data) return null;
@@ -124,11 +132,17 @@ export default function useDebugStream({
   const [messages, setMessages] = useState<IResultMessage[]>([]);
   const [overlay, setOverlay] = useState<IOverlayFrame | null>(null);
   const [lastFrameDelay, setLastFrameDelay] = useState<number | null>(null);
+  const [lastFrameTs, setLastFrameTs] = useState<number | null>(null);
 
   const videoWsRef = useRef<WebSocket | null>(null);
   const resultsWsRef = useRef<WebSocket | null>(null);
   const jmuxerRef = useRef<JMuxer | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // High-frequency buffers, flushed to state on timers (see effect below).
+  const frameDelayRef = useRef<number | null>(null);
+  const frameTsRef = useRef<number | null>(null);
+  const pendingMsgsRef = useRef<IResultMessage[]>([]);
+  const pendingOverlayRef = useRef<IOverlayFrame | null>(null);
 
   const cleanup = useCallback(() => {
     if (timeoutRef.current) {
@@ -178,6 +192,7 @@ export default function useDebugStream({
       setStatus("idle");
       setOverlay(null);
       setLastFrameDelay(null);
+      setLastFrameTs(null);
       return;
     }
     if (!wsUrl && !resultsUrl) {
@@ -189,6 +204,40 @@ export default function useDebugStream({
     setStatus("connecting");
     setMessages([]);
     setOverlay(null);
+    frameDelayRef.current = null;
+    frameTsRef.current = null;
+    pendingMsgsRef.current = [];
+    pendingOverlayRef.current = null;
+
+    const delayTimer = setInterval(() => {
+      setLastFrameDelay(frameDelayRef.current);
+      setLastFrameTs(frameTsRef.current);
+    }, DELAY_FLUSH_MS);
+    const flushTimer = setInterval(() => {
+      const pending = pendingMsgsRef.current;
+      if (pending.length) {
+        pendingMsgsRef.current = [];
+        // Newest first, like the arrival order the list renders.
+        setMessages((prev) =>
+          [...pending.reverse(), ...prev].slice(0, maxMessages)
+        );
+        // Results-only apps (no video ws) still count as "streaming".
+        if (!wsUrl) {
+          setStatus("streaming");
+        }
+      }
+      if (pendingOverlayRef.current) {
+        setOverlay(pendingOverlayRef.current);
+        pendingOverlayRef.current = null;
+      }
+    }, RESULTS_FLUSH_MS);
+
+    const dispose = () => {
+      disposed = true;
+      clearInterval(delayTimer);
+      clearInterval(flushTimer);
+      cleanup();
+    };
 
     // ---- video path ----
     if (wsUrl && videoRef.current) {
@@ -206,10 +255,7 @@ export default function useDebugStream({
         ws = new WebSocket(wsUrl);
       } catch (e) {
         setStatus("error");
-        return () => {
-          disposed = true;
-          cleanup();
-        };
+        return dispose;
       }
       ws.binaryType = "arraybuffer";
       videoWsRef.current = ws;
@@ -235,15 +281,17 @@ export default function useDebugStream({
         // not synced (common on offline field units), the difference is
         // meaningless — only report the delay when it looks sane (<1h skew).
         const delay = Date.now() - ts;
-        setLastFrameDelay(ts > 0 && Math.abs(delay) < 3600_000 ? delay : null);
-        // Strip the timestamp tail before feeding JMuxer.
-        const video = buffer.slice(0, -8);
+        frameTsRef.current = ts > 0 ? ts : null;
+        frameDelayRef.current =
+          ts > 0 && Math.abs(delay) < 3600_000 ? delay : null;
+        // Strip the timestamp tail before feeding JMuxer (zero-copy view).
+        const video = buffer.subarray(0, buffer.length - 8);
         jmuxerRef.current?.feed({ video });
         if (timeoutRef.current) {
           clearTimeout(timeoutRef.current);
           timeoutRef.current = null;
         }
-        setStatus((prev) => (prev === "streaming" ? prev : "streaming"));
+        setStatus("streaming");
       };
       ws.onerror = () => {
         if (!disposed) {
@@ -254,7 +302,7 @@ export default function useDebugStream({
       ws.onclose = () => {
         if (!disposed) {
           cleanup();
-          setStatus((prev) => (prev === "error" ? prev : "error"));
+          setStatus("error");
         }
       };
     }
@@ -272,24 +320,17 @@ export default function useDebugStream({
           } catch (e) {
             data = null;
           }
-          const msg: IResultMessage = {
-            receivedAt: Date.now(),
+          pendingMsgsRef.current.push({
+            receivedAt: new Date().toLocaleTimeString(),
             raw: evt.data,
             data,
-          };
-          setMessages((prev) => {
-            const next = [msg, ...prev];
-            return next.length > maxMessages
-              ? next.slice(0, maxMessages)
-              : next;
           });
+          if (pendingMsgsRef.current.length > maxMessages) {
+            pendingMsgsRef.current.shift(); // cap the buffer between flushes
+          }
           const frame = parseOverlayFrame(data);
           if (frame) {
-            setOverlay(frame);
-          }
-          // Results-only apps (no video ws) still count as "streaming".
-          if (!wsUrl) {
-            setStatus("streaming");
+            pendingOverlayRef.current = frame;
           }
         };
         // Results channel failures are non-fatal when video works.
@@ -305,12 +346,9 @@ export default function useDebugStream({
       }
     }
 
-    return () => {
-      disposed = true;
-      cleanup();
-    };
+    return dispose;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, wsUrl, resultsUrl]);
 
-  return { status, messages, overlay, lastFrameDelay };
+  return { status, messages, overlay, lastFrameDelay, lastFrameTs };
 }

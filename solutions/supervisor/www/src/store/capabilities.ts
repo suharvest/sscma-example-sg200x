@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { ICapabilities } from "@/api/device/device";
 import { getCapabilitiesApi } from "@/api/device";
+import { isOk } from "@/utils/api";
 
 /**
  * Hardware capability store (Phase 5).
@@ -25,11 +26,7 @@ const useCapabilitiesStore = create<CapabilitiesStoreType>((set, get) => ({
     set({ loading: true });
     try {
       const res = await getCapabilitiesApi(refresh);
-      if (
-        (res.code === 0 || res.code === "0") &&
-        res.data &&
-        typeof res.data.device_type === "string"
-      ) {
+      if (isOk(res) && res.data && typeof res.data.device_type === "string") {
         set({ capabilities: res.data });
       }
     } catch (e) {
