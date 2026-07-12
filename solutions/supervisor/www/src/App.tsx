@@ -60,8 +60,15 @@ const App = () => {
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: "#8FC31F",
-          colorPrimaryHover: "#81AE1B",
+          colorPrimary: "#8fc31f",
+          colorPrimaryHover: "#81ae1b",
+          colorText: "#0a0a0a",
+          colorTextSecondary: "#666666",
+          colorBorder: "#e6e6e6",
+          colorBorderSecondary: "#e6e6e6",
+          borderRadius: 8,
+          fontFamily:
+            'Montserrat, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
         },
       }}
     >

@@ -1,0 +1,96 @@
+- generic [ref=e50]:
+  - generic [ref=e51]:
+    - generic [ref=e53]: reCamera-Console
+    - generic [ref=e54]: 192.168.42.1
+  - generic [ref=e55]:
+    - generic [ref=e56]:
+      - generic [ref=e57]:
+        - generic [ref=e58]: Console
+        - generic [ref=e59] [cursor=pointer]:
+          - img "appstore" [ref=e60]:
+            - img [ref=e61]
+          - generic [ref=e63]: Applications
+        - generic [ref=e64] [cursor=pointer]:
+          - img "play-square" [ref=e65]:
+            - img [ref=e66]
+          - generic [ref=e69]: Live
+        - generic [ref=e70] [cursor=pointer]:
+          - img "control" [ref=e71]:
+            - img [ref=e72]
+          - generic [ref=e74]: Device
+      - generic [ref=e75]:
+        - generic [ref=e76]: Workspace
+        - generic [ref=e78] [cursor=pointer]: Overview
+      - generic [ref=e79]:
+        - generic [ref=e80]: Configuration
+        - generic [ref=e82] [cursor=pointer]: Files
+        - generic [ref=e84] [cursor=pointer]: Security
+        - generic [ref=e86] [cursor=pointer]: Network
+      - generic [ref=e87]:
+        - generic [ref=e88]: System
+        - generic [ref=e90] [cursor=pointer]: Terminal
+        - generic [ref=e92] [cursor=pointer]: System
+        - generic [ref=e94] [cursor=pointer]: Power
+    - generic [ref=e96]:
+      - generic [ref=e97]:
+        - generic [ref=e98]:
+          - generic [ref=e99]: Solution Console
+          - heading "Live Debug" [level=1] [ref=e100]
+        - button "reload Refresh" [ref=e101] [cursor=pointer]:
+          - img "reload" [ref=e103]:
+            - img [ref=e104]
+          - generic [ref=e106]: Refresh
+      - generic [ref=e108]:
+        - generic [ref=e109]:
+          - generic [ref=e110]:
+            - generic [ref=e111]: Face Analysis
+            - generic [ref=e112]: 人脸属性分析
+            - generic [ref=e113]: running
+          - generic [ref=e115]: "model: yolov8n-face"
+        - generic [ref=e116]:
+          - generic [ref=e120]:
+            - img "video-camera" [ref=e121]:
+              - img [ref=e122]
+            - generic [ref=e124]: Debug stream is off. Toggle it on to preview the camera in the browser.
+          - generic [ref=e125]:
+            - generic [ref=e126]:
+              - generic [ref=e127]: Debug Controls
+              - generic [ref=e128]:
+                - generic [ref=e129]:
+                  - generic [ref=e130]: Debug stream
+                  - generic [ref=e131]: Taps H.264 from the device only while enabled — zero overhead when off.
+                - switch [ref=e132] [cursor=pointer]
+              - generic [ref=e135]:
+                - generic [ref=e136]:
+                  - generic [ref=e137]: Result overlay
+                  - generic [ref=e138]: Draw inference boxes over the video.
+                - switch [checked] [disabled] [ref=e139]
+              - generic [ref=e142]:
+                - generic [ref=e143]: Model
+                - generic [ref=e144] [cursor=pointer]:
+                  - generic [ref=e146]:
+                    - combobox [ref=e148]
+                    - generic "yolov8n-face (detect)" [ref=e149]
+                  - generic:
+                    - img:
+                      - img
+                - generic [ref=e150]: Switching restarts the application.
+            - generic [ref=e151]:
+              - generic [ref=e152]: Endpoints
+              - generic [ref=e153]:
+                - generic [ref=e154]: RTSP stream
+                - generic [ref=e155]:
+                  - generic [ref=e156]: rtsp://192.168.42.1:8554/live0
+                  - button "Copy" [ref=e157] [cursor=pointer]:
+                    - generic [ref=e158]: Copy
+              - generic [ref=e159]:
+                - generic [ref=e160]: MQTT topic
+                - generic [ref=e161]:
+                  - generic [ref=e162]: recamera/face-analysis/results
+                  - button "Copy" [ref=e163] [cursor=pointer]:
+                    - generic [ref=e164]: Copy
+        - generic [ref=e165]:
+          - generic [ref=e166]:
+            - generic [ref=e167]: Recent Inference Messages
+            - generic [ref=e168]: live
+          - generic [ref=e169]: Enable the debug stream to see live inference results here.

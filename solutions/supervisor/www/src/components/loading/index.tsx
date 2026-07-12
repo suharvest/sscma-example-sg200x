@@ -36,9 +36,14 @@ const Loading = ({
         const response = await queryServiceStatusApi();
         if (response.code === 0 && response.data) {
           const { sscmaNode, nodeRed, system, uptime = 0 } = response.data;
+          // Gallery mode: Node-RED / sscma-node are intentionally disabled
+          // and the backend reports the string "disabled" — treat that as
+          // ready instead of waiting for them to start.
+          const serviceReady = (s: ServiceStatus | string) =>
+            s === ServiceStatus.RUNNING || s === "disabled";
           if (
-            sscmaNode === ServiceStatus.RUNNING &&
-            nodeRed === ServiceStatus.RUNNING &&
+            serviceReady(sscmaNode) &&
+            serviceReady(nodeRed) &&
             system === ServiceStatus.RUNNING
           ) {
             setProgress(100);
@@ -80,7 +85,7 @@ const Loading = ({
             <Progress
               className="p-12 mt-36"
               percent={progress}
-              strokeColor={"#8FC31F"}
+              strokeColor={"#8fc31f"}
             />
           )}
           <div className="text-16 mx-12 text-center">

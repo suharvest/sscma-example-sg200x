@@ -11,13 +11,40 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Seeed showcase design tokens
         primary: "#8fc31f",
+        accent: "#8fc31f",
+        "accent-hover": "#81ae1b",
+        fg: "#0a0a0a",
+        muted: "#666666",
+        line: "#e6e6e6",
+        surface: "#f7f7f7",
         "3d": "#3d3d3d",
-        background: "#F2F3F1",
-        selected: "#F7F9F2",
-        disable: "#D2D9C3",
+        background: "#f7f7f7",
+        selected: "#eef3fd",
+        disable: "#c8d4ee",
         text: "#878B7E",
         error: "#D54941",
+      },
+      fontFamily: {
+        display: [
+          "Montserrat",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Helvetica Neue",
+          "Arial",
+          "sans-serif",
+        ],
+        mono: [
+          "SFMono-Regular",
+          "ui-monospace",
+          "Consolas",
+          "Liberation Mono",
+          "Menlo",
+          "Courier",
+          "monospace",
+        ],
       },
       width: getSizeByNumber(750),
       minWidth: getSizeByNumber(300),

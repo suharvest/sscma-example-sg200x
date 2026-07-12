@@ -1,5 +1,11 @@
 import { useState } from "react";
 import { Popup } from "antd-mobile";
+import {
+  AppstoreOutlined,
+  PlaySquareOutlined,
+  ControlOutlined,
+  MenuOutlined,
+} from "@ant-design/icons";
 import OverviewImg from "@/assets/images/svg/overview.svg";
 import SecurityImg from "@/assets/images/svg/security.svg";
 import NetworkImg from "@/assets/images/svg/network.svg";
@@ -7,37 +13,43 @@ import TerminalImg from "@/assets/images/svg/terminal.svg";
 import SystemImg from "@/assets/images/svg/system.svg";
 import PowerImg from "@/assets/images/svg/power.svg";
 import ApplicationImg from "@/assets/images/svg/application.svg";
+import DashboardImg from "@/assets/images/svg/dashboard.svg";
 import FilesImg from "@/assets/images/svg/files.svg";
 import { useLocation, useNavigate } from "react-router-dom";
 import useConfigStore from "@/store/config";
-import { MenuOutlined } from "@ant-design/icons";
+import { getMenuSections } from "@/layout/menu";
+
+const iconMap: Record<string, React.ReactNode> = {
+  applications: <AppstoreOutlined style={{ fontSize: 16 }} />,
+  live: <PlaySquareOutlined style={{ fontSize: 16 }} />,
+  device: <ControlOutlined style={{ fontSize: 16 }} />,
+  overview: <img className="w-16 h-16" src={OverviewImg} alt="" />,
+  dashboard: <img className="w-16 h-16" src={DashboardImg} alt="" />,
+  workspace: <img className="w-16 h-16" src={ApplicationImg} alt="" />,
+  files: <img className="w-16 h-16" src={FilesImg} alt="" />,
+  security: <img className="w-16 h-16" src={SecurityImg} alt="" />,
+  network: <img className="w-16 h-16" src={NetworkImg} alt="" />,
+  terminal: <img className="w-16 h-16" src={TerminalImg} alt="" />,
+  system: <img className="w-16 h-16" src={SystemImg} alt="" />,
+  power: <img className="w-16 h-16" src={PowerImg} alt="" />,
+};
 
 function Sidebar() {
   const location = useLocation();
   const currentRoute = location.pathname;
   const [visible, setVisible] = useState(false);
   const navigate = useNavigate();
-  const { deviceInfo } = useConfigStore();
+  const { deviceInfo, galleryMode } = useConfigStore();
 
-  const menuList = [
-    [
-      {
-        label: "Overview",
-        icon: OverviewImg,
-        route: "/overview",
-        judgeApp: true,
-      },
-      { label: "Workspace", icon: ApplicationImg, route: "/workspace" },
-      { label: "Files", icon: FilesImg, route: "/files" },
-      { label: "Security", icon: SecurityImg, route: "/security" },
-      { label: "Network", icon: NetworkImg, route: "/network" },
-    ],
-    [
-      { label: "Terminal", icon: TerminalImg, route: "/terminal" },
-      { label: "System", icon: SystemImg, route: "/system" },
-      { label: "Power", icon: PowerImg, route: "/power" },
-    ],
-  ];
+  const menuSections = getMenuSections({
+    galleryMode,
+    isReCamera: Boolean(deviceInfo.isReCamera),
+  });
+
+  const isActive = (route: string) =>
+    currentRoute === route ||
+    (route === "/" && currentRoute === "/applications");
+
   return (
     <div className="inline-block">
       <div
@@ -55,50 +67,34 @@ function Sidebar() {
           setVisible(false);
         }}
         position="left"
-        bodyStyle={{ width: "290px" }}
+        bodyStyle={{ width: "280px", background: "var(--rc-surface)" }}
       >
-        <div className="pt-80">
-          <div className="font-bold text-24 pl-40 pb-24 truncate pr-20">
+        <div className="pt-60 px-12 pb-24 h-full overflow-y-auto">
+          <div className="font-display font-bold text-20 px-10 pb-16 truncate">
             {deviceInfo.deviceName}
           </div>
-          <div className="border-t ">
-            {menuList.map((item, index) => {
-              return (
-                <div key={index}>
-                  <div className={`${index && "border-t"}  mx-20`}></div>
-                  <div className={`py-14`}>
-                    {item.map((citem, cindex) => {
-                      return (
-                        (deviceInfo.isReCamera || !citem.judgeApp) && (
-                          <div
-                            className={`px-40 py-10 text-17 flex ${
-                              currentRoute === citem.route ? "active" : ""
-                            }`}
-                            key={`${index}${cindex}`}
-                            style={{
-                              background:
-                                currentRoute === citem.route ? "#ECF4D9" : "",
-                            }}
-                            onClick={() => {
-                              navigate(citem.route);
-                              setVisible(false);
-                            }}
-                          >
-                            <img
-                              className="w-24 h-24 mr-12"
-                              src={citem.icon}
-                              alt=""
-                            />
-                            <span>{citem.label}</span>
-                          </div>
-                        )
-                      );
-                    })}
-                  </div>
+          {menuSections.map((section) => (
+            <div key={section.title}>
+              <div className="rc-section-label px-10 pt-14 pb-6">
+                {section.title}
+              </div>
+              {section.items.map((item) => (
+                <div
+                  key={item.route}
+                  className={`rc-side-link ${
+                    isActive(item.route) ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    navigate(item.route);
+                    setVisible(false);
+                  }}
+                >
+                  {iconMap[item.key]}
+                  <span>{item.label}</span>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ))}
         </div>
       </Popup>
     </div>

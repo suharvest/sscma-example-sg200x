@@ -1,0 +1,102 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - generic [ref=e8]: reCamera-Console
+    - generic [ref=e9]: 192.168.42.1
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: Console
+        - generic [ref=e14] [cursor=pointer]:
+          - img "appstore" [ref=e15]:
+            - img [ref=e16]
+          - generic [ref=e18]: Applications
+        - generic [ref=e19] [cursor=pointer]:
+          - img "play-square" [ref=e20]:
+            - img [ref=e21]
+          - generic [ref=e24]: Live
+        - generic [ref=e25] [cursor=pointer]:
+          - img "control" [ref=e26]:
+            - img [ref=e27]
+          - generic [ref=e29]: Device
+      - generic [ref=e30]:
+        - generic [ref=e31]: Workspace
+        - generic [ref=e33] [cursor=pointer]: Overview
+      - generic [ref=e34]:
+        - generic [ref=e35]: Configuration
+        - generic [ref=e37] [cursor=pointer]: Files
+        - generic [ref=e39] [cursor=pointer]: Security
+        - generic [ref=e41] [cursor=pointer]: Network
+      - generic [ref=e42]:
+        - generic [ref=e43]: System
+        - generic [ref=e45] [cursor=pointer]: Terminal
+        - generic [ref=e47] [cursor=pointer]: System
+        - generic [ref=e49] [cursor=pointer]: Power
+    - generic [ref=e51]:
+      - generic [ref=e52]:
+        - generic [ref=e53]:
+          - generic [ref=e54]: Solution Console
+          - heading "Applications" [level=1] [ref=e55]
+          - paragraph [ref=e56]: Each application is a complete scene solution. Only one application can hold the camera at a time.
+        - button "reload Refresh" [ref=e57] [cursor=pointer]:
+          - img "reload" [ref=e59]:
+            - img [ref=e60]
+          - generic [ref=e62]: Refresh
+      - generic [ref=e65]:
+        - generic [ref=e66]:
+          - generic [ref=e67]:
+            - generic [ref=e68]: Retail / Access
+            - generic [ref=e69]: Active
+          - generic [ref=e71]:
+            - generic [ref=e72]: Face Analysis
+            - generic [ref=e73]: 人脸属性分析
+          - paragraph [ref=e74]: Detects faces and estimates age, gender and emotion in real time. Publishes per-face attributes over MQTT.
+          - generic [ref=e75]: 2 models · v1.0.0
+          - generic [ref=e76]:
+            - button "Live View" [ref=e77] [cursor=pointer]:
+              - generic [ref=e78]: Live View
+            - button "Stop" [ref=e79] [cursor=pointer]:
+              - generic [ref=e80]: Stop
+            - button "Details" [ref=e81] [cursor=pointer]:
+              - generic [ref=e82]: Details
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: NVR Integration
+            - generic [ref=e86]: stopped
+          - generic [ref=e88]:
+            - generic [ref=e89]: Frigate NVR Edition
+            - generic [ref=e90]: Frigate 定制固件
+          - paragraph [ref=e91]: Custom firmware profile exposing the camera as a Frigate-compatible RTSP source. Managed externally.
+          - generic [ref=e92]: external firmware · v0.14-custom
+          - generic [ref=e93]:
+            - button "Activate" [ref=e94] [cursor=pointer]:
+              - generic [ref=e95]: Activate
+            - button "Details" [ref=e96] [cursor=pointer]:
+              - generic [ref=e97]: Details
+        - generic [ref=e98]:
+          - generic [ref=e99]:
+            - generic [ref=e100]: General
+            - generic [ref=e101]: stopped
+          - generic [ref=e103]:
+            - generic [ref=e104]: Object Detection
+            - generic [ref=e105]: 通用目标检测
+          - paragraph [ref=e106]: General-purpose YOLO11 object detection with switchable models. RTSP stream plus MQTT detection results.
+          - generic [ref=e107]: 3 models · v1.0.0
+          - generic [ref=e108]:
+            - button "Activate" [ref=e109] [cursor=pointer]:
+              - generic [ref=e110]: Activate
+            - button "Details" [ref=e111] [cursor=pointer]:
+              - generic [ref=e112]: Details
+        - generic [ref=e113]:
+          - generic [ref=e114]:
+            - generic [ref=e115]: Retail
+            - generic [ref=e116]: stopped
+          - generic [ref=e118]:
+            - generic [ref=e119]: Retail People Counting
+            - generic [ref=e120]: 零售人流分析
+          - paragraph [ref=e121]: Zone-based people counting and dwell-time metrics for retail storefronts.
+          - generic [ref=e122]: 1 model · v0.9.0
+          - generic [ref=e123]:
+            - button "Activate" [ref=e124] [cursor=pointer]:
+              - generic [ref=e125]: Activate
+            - button "Details" [ref=e126] [cursor=pointer]:
+              - generic [ref=e127]: Details

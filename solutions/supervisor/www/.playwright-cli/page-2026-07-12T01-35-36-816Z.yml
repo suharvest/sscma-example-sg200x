@@ -1,0 +1,45 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - generic [ref=e8]: reCamera-Console
+    - generic [ref=e9]: 192.168.42.1
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: Console
+        - generic [ref=e14] [cursor=pointer]:
+          - img "appstore" [ref=e15]:
+            - img [ref=e16]
+          - generic [ref=e18]: Applications
+        - generic [ref=e19] [cursor=pointer]:
+          - img "play-square" [ref=e20]:
+            - img [ref=e21]
+          - generic [ref=e24]: Live
+        - generic [ref=e25] [cursor=pointer]:
+          - img "control" [ref=e26]:
+            - img [ref=e27]
+          - generic [ref=e29]: Device
+      - generic [ref=e30]:
+        - generic [ref=e31]: Workspace
+        - generic [ref=e33] [cursor=pointer]: Overview
+      - generic [ref=e34]:
+        - generic [ref=e35]: Configuration
+        - generic [ref=e37] [cursor=pointer]: Files
+        - generic [ref=e39] [cursor=pointer]: Security
+        - generic [ref=e41] [cursor=pointer]: Network
+      - generic [ref=e42]:
+        - generic [ref=e43]: System
+        - generic [ref=e45] [cursor=pointer]: Terminal
+        - generic [ref=e47] [cursor=pointer]: System
+        - generic [ref=e49] [cursor=pointer]: Power
+    - generic [ref=e51]:
+      - generic [ref=e52]: Internet
+      - generic [ref=e54]: Not connected to a network
+      - generic [ref=e56]:
+        - tablist [ref=e57]:
+          - generic [ref=e59]:
+            - tab "Wi-Fi" [selected] [ref=e61] [cursor=pointer]
+            - tab "HaLow" [ref=e63] [cursor=pointer]
+        - tabpanel "Wi-Fi" [ref=e66]:
+          - generic [ref=e68]:
+            - generic [ref=e69]: Enable Wi-Fi
+            - switch [ref=e70] [cursor=pointer]

@@ -9,32 +9,16 @@ import Power from "@/views/power";
 import Workspace from "@/views/workspace";
 import Dashboard from "@/views/dashboard";
 import Files from "@/views/files";
+import Applications from "@/views/applications";
+import Live from "@/views/live";
+import DeviceTools from "@/views/device";
 import ConfigLayout from "@/layout/config";
 import MainLayout from "@/layout/main";
 
 const Routes = [
-  {
-    path: "/",
-    element: (
-      <MainLayout>
-        <Outlet />
-      </MainLayout>
-    ),
-    children: [
-      {
-        path: "",
-        element: <Dashboard />,
-      },
-      {
-        path: "/dashboard",
-        element: <Dashboard />,
-      },
-      {
-        path: "/workspace",
-        element: <Workspace />,
-      },
-    ],
-  },
+  // ConfigLayout group must come first: both groups share path "/", and the
+  // bare "/" URL must resolve to the Applications index route below, not to
+  // the MainLayout group (which has no index child and would render blank).
   {
     path: "/",
     element: (
@@ -43,6 +27,23 @@ const Routes = [
       </ConfigLayout>
     ),
     children: [
+      // Applications gallery is the default landing page.
+      {
+        index: true,
+        element: <Applications />,
+      },
+      {
+        path: "applications",
+        element: <Applications />,
+      },
+      {
+        path: "live",
+        element: <Live />,
+      },
+      {
+        path: "device",
+        element: <DeviceTools />,
+      },
       {
         path: "init",
         element: <Init />,
@@ -74,6 +75,25 @@ const Routes = [
       {
         path: "power",
         element: <Power />,
+      },
+    ],
+  },
+  {
+    path: "/",
+    element: (
+      <MainLayout>
+        <Outlet />
+      </MainLayout>
+    ),
+    children: [
+      // Kept for compatibility; hidden from menus in gallery mode.
+      {
+        path: "/dashboard",
+        element: <Dashboard />,
+      },
+      {
+        path: "/workspace",
+        element: <Workspace />,
       },
     ],
   },

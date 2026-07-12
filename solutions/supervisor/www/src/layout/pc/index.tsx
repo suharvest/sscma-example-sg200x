@@ -1,5 +1,10 @@
 import React, { useState } from "react";
 import { Form, Input, Modal } from "antd";
+import {
+  AppstoreOutlined,
+  PlaySquareOutlined,
+  ControlOutlined,
+} from "@ant-design/icons";
 import useConfigStore from "@/store/config";
 import EditImg from "@/assets/images/svg/edit.svg";
 import OverviewImg from "@/assets/images/svg/overview.svg";
@@ -10,42 +15,48 @@ import SystemImg from "@/assets/images/svg/system.svg";
 import PowerImg from "@/assets/images/svg/power.svg";
 import FilesImg from "@/assets/images/svg/files.svg";
 import ApplicationImg from "@/assets/images/svg/application.svg";
+import DashboardImg from "@/assets/images/svg/dashboard.svg";
 import { updateDeviceInfoApi, queryDeviceInfoApi } from "@/api/device/index";
 import { hostnameValidate } from "@/utils/validate";
 import { useLocation, useNavigate } from "react-router-dom";
+import { getMenuSections } from "@/layout/menu";
 
 interface Props {
   children: React.ReactNode;
 }
 
-const menuList = [
-  [
-    {
-      label: "Overview",
-      icon: OverviewImg,
-      route: "/overview",
-      judgeApp: true,
-    },
-    { label: "Workspace", icon: ApplicationImg, route: "/workspace" },
-    { label: "Files", icon: FilesImg, route: "/files" },
-    { label: "Security", icon: SecurityImg, route: "/security" },
-    { label: "Network", icon: NetworkImg, route: "/network" },
-  ],
-  [
-    { label: "Terminal", icon: TerminalImg, route: "/terminal" },
-    { label: "System", icon: SystemImg, route: "/system" },
-    { label: "Power", icon: PowerImg, route: "/power" },
-  ],
-];
+const iconMap: Record<string, React.ReactNode> = {
+  applications: <AppstoreOutlined style={{ fontSize: 16 }} />,
+  live: <PlaySquareOutlined style={{ fontSize: 16 }} />,
+  device: <ControlOutlined style={{ fontSize: 16 }} />,
+  overview: <img className="w-16 h-16" src={OverviewImg} alt="" />,
+  dashboard: <img className="w-16 h-16" src={DashboardImg} alt="" />,
+  workspace: <img className="w-16 h-16" src={ApplicationImg} alt="" />,
+  files: <img className="w-16 h-16" src={FilesImg} alt="" />,
+  security: <img className="w-16 h-16" src={SecurityImg} alt="" />,
+  network: <img className="w-16 h-16" src={NetworkImg} alt="" />,
+  terminal: <img className="w-16 h-16" src={TerminalImg} alt="" />,
+  system: <img className="w-16 h-16" src={SystemImg} alt="" />,
+  power: <img className="w-16 h-16" src={PowerImg} alt="" />,
+};
 
 const PCLayout: React.FC<Props> = ({ children }) => {
-  const { deviceInfo, updateDeviceInfo } = useConfigStore();
+  const { deviceInfo, galleryMode, updateDeviceInfo } = useConfigStore();
   const [isEditNameModalOpen, setIsEditNameModalOpen] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const location = useLocation();
   const [form] = Form.useForm();
   const currentRoute = location.pathname;
   const navigate = useNavigate();
+
+  const menuSections = getMenuSections({
+    galleryMode,
+    isReCamera: Boolean(deviceInfo.isReCamera),
+  });
+
+  const isActive = (route: string) =>
+    currentRoute === route ||
+    (route === "/" && currentRoute === "/applications");
 
   const onQueryDeviceInfo = async () => {
     const res = await queryDeviceInfoApi();
@@ -75,12 +86,12 @@ const PCLayout: React.FC<Props> = ({ children }) => {
 
   return (
     <>
-      <div className="bg-white text-center py-10 border-b">
-        <div className="text-primary text-18 font-medium relative flex justify-center px-40 pl-50">
+      <div className="bg-white text-center py-14 border-b border-line sticky top-0 z-30 backdrop-blur">
+        <div className="font-display font-semibold text-16 relative flex justify-center px-40 pl-50 tracking-tight">
           <div className="absolute left-0 -mt-4 "></div>
           <div className="truncate">{deviceInfo?.deviceName}</div>
           <img
-            className="w-24 h-24 ml-1 self-center cursor-pointer"
+            className="w-20 h-20 ml-4 self-center cursor-pointer"
             onClick={() => {
               setIsEditNameModalOpen(true);
             }}
@@ -88,51 +99,40 @@ const PCLayout: React.FC<Props> = ({ children }) => {
             alt=""
           />
         </div>
-        <div className="mt-2 text-black opacity-60">{deviceInfo?.ip}</div>
+        <div className="mt-2 rc-mono text-11 text-muted">{deviceInfo?.ip}</div>
       </div>
 
       <div className="flex flex-1">
-        <div className="h-full w-300 bg-white">
-          {menuList.map((item, index) => {
-            return (
-              <div key={index}>
-                <div className={`${index && "border-t"}  mx-20`}></div>
-                <div className={`py-14`}>
-                  {item.map((citem, cindex) => {
-                    return (
-                      (deviceInfo.isReCamera || !citem.judgeApp) && (
-                        <div
-                          className={`px-40 py-10 text-17 flex ${
-                            currentRoute === citem.route ? "active" : ""
-                          }`}
-                          key={`${index}${cindex}`}
-                          style={{
-                            background:
-                              currentRoute === citem.route ? "#ECF4D9" : "",
-                          }}
-                          onClick={() => {
-                            navigate(citem.route);
-                          }}
-                        >
-                          <img
-                            className="w-24 h-24 mr-12"
-                            src={citem.icon}
-                            alt=""
-                          />
-                          <span>{citem.label}</span>
-                        </div>
-                      )
-                    );
-                  })}
-                </div>
+        <div
+          className="h-full w-[228px] flex-none border-r border-line px-14 py-18"
+          style={{ background: "var(--rc-surface)" }}
+        >
+          {menuSections.map((section) => (
+            <div key={section.title}>
+              <div className="rc-section-label px-10 pt-14 pb-6">
+                {section.title}
               </div>
-            );
-          })}
+              {section.items.map((item) => (
+                <div
+                  key={item.route}
+                  className={`rc-side-link ${
+                    isActive(item.route) ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    navigate(item.route);
+                  }}
+                >
+                  {iconMap[item.key]}
+                  <span>{item.label}</span>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
-        <div style={{ maxWidth: "900px" }} className="w-full px-48">
+        <div style={{ maxWidth: "1180px" }} className="w-full px-32">
           {children}
         </div>
-        <div className="flex-1 h-full bg-[#F2F2F2]"></div>
+        <div className="flex-1 h-full bg-white"></div>
       </div>
 
       <Modal

@@ -1,0 +1,5 @@
+- generic [ref=e51]:
+  - img [ref=e52]
+  - progressbar [ref=e53]:
+    - generic "86.4%" [ref=e57]
+  - generic [ref=e58]: Please wait for node-red service to get start, it takes around 1 and an half minutes.

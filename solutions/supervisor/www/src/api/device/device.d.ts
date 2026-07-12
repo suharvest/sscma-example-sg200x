@@ -21,6 +21,8 @@ interface IDeviceInfo {
   osUpdateTime: string;
   needRestart: DeviceNeedRestart;
   type: string; //Gimbal with Wifi - 8G
+  // Gallery (solution console) mode flag. Optional: older firmware omits it.
+  galleryMode?: boolean;
   [prop: string]: string;
 }
 
@@ -45,4 +47,15 @@ interface IIPDevice {
 
 interface IBatteryInfo {
   voltage?: number;         // Battery voltage (mV), undefined when unavailable
+}
+
+interface ISensorStorage {
+  total?: number;     // bytes (or KB, backend-defined) total of /userdata
+  used?: number;
+  available?: number;
+}
+
+interface ISensorStatus {
+  temperature_c?: number;   // SoC temperature in Celsius
+  storage?: ISensorStorage; // /userdata usage
 }

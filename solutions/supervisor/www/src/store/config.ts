@@ -18,6 +18,9 @@ interface SystemUpdateState {
 
 type ConfigStoreType = {
   deviceInfo: Partial<IDeviceInfo>;
+  // Gallery mode: supervisor runs as solution console (Node-RED disabled).
+  // Comes from queryDeviceInfo `galleryMode` field; defaults to false when absent.
+  galleryMode: boolean;
   wifiStatus: NetworkStatus | undefined;
   etherStatus: NetworkStatus | undefined;
   systemUpdateState: Partial<SystemUpdateState>;
@@ -29,6 +32,7 @@ type ConfigStoreType = {
 
 const useConfigStore = create<ConfigStoreType>((set) => ({
   deviceInfo: {},
+  galleryMode: false,
   wifiStatus: undefined,
   etherStatus: undefined,
   systemUpdateState: {
@@ -43,7 +47,11 @@ const useConfigStore = create<ConfigStoreType>((set) => ({
     powerSourceMenuVisible: false,
     batteryAvailable: undefined,  // Start as undefined (not detected yet)
   },
-  updateDeviceInfo: (deviceInfo: IDeviceInfo) => set(() => ({ deviceInfo })),
+  updateDeviceInfo: (deviceInfo: IDeviceInfo) =>
+    set(() => ({
+      deviceInfo,
+      galleryMode: Boolean((deviceInfo as Partial<IDeviceInfo>)?.galleryMode),
+    })),
   updateWifiStatus: (wifiStatus: NetworkStatus) => set(() => ({ wifiStatus })),
   updateEtherStatus: (etherStatus: NetworkStatus) =>
     set(() => ({ etherStatus })),

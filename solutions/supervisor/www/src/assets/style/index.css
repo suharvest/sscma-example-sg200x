@@ -3,7 +3,21 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Seeed showcase design tokens — single source of truth */
 :root {
+	--rc-bg: #ffffff;
+	--rc-fg: #0a0a0a;
+	--rc-accent: #8fc31f;
+	--rc-accent-hover: #81ae1b;
+	--rc-accent-fg: #ffffff;
+	--rc-muted: #666666;
+	--rc-border: #e6e6e6;
+	--rc-surface: #f7f7f7;
+	--rc-display: "Montserrat", system-ui, -apple-system, "Segoe UI",
+		"Helvetica Neue", Arial, sans-serif;
+	--rc-mono: "SFMono-Regular", ui-monospace, Consolas, "Liberation Mono",
+		Menlo, Courier, monospace;
 }
 * {
 	box-sizing: border-box;
@@ -13,11 +27,13 @@ html {
 	width: 100%;
 }
 body {
-	background: #f1f3f5;
+	background: var(--rc-bg);
 	height: 100%;
 	width: 100%;
 	font-size: 14px;
-	color: rgba(0, 0, 0, 0.9);
+	font-family: var(--rc-display);
+	color: var(--rc-fg);
+	-webkit-font-smoothing: antialiased;
 }
 #root {
 	height: 100%;
@@ -32,4 +48,220 @@ svg {
 .adm-popup-body-position-bottom{
 	max-height: 80%;
 	overflow-y: auto;
+}
+
+/* ---- showcase layout language helpers ---- */
+.rc-card {
+	background: var(--rc-bg);
+	border: 1px solid var(--rc-border);
+	border-radius: 12px;
+	box-shadow: 0 1px 2px rgba(10, 10, 10, 0.04);
+}
+.rc-card-surface {
+	background: var(--rc-surface);
+	border: 1px solid var(--rc-border);
+	border-radius: 12px;
+}
+.rc-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 500;
+	background: var(--rc-bg);
+	border: 1px solid var(--rc-border);
+	color: var(--rc-muted);
+	white-space: nowrap;
+}
+.rc-badge.accent {
+	color: var(--rc-accent);
+	border-color: rgba(143, 195, 31, 0.3);
+}
+.rc-badge .dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+	flex: none;
+}
+.rc-section-label {
+	font-family: var(--rc-mono);
+	text-transform: uppercase;
+	font-size: 10px;
+	letter-spacing: 0.08em;
+	color: var(--rc-muted);
+}
+.rc-eyebrow {
+	font-family: var(--rc-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	font-size: 12px;
+	color: var(--rc-accent);
+}
+.rc-kpi-label {
+	font-size: 11.5px;
+	color: var(--rc-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+.rc-kpi-value {
+	font-family: var(--rc-display);
+	font-size: 24px;
+	font-weight: 700;
+	margin-top: 4px;
+	letter-spacing: -0.01em;
+	color: var(--rc-fg);
+}
+.rc-mono {
+	font-family: var(--rc-mono);
+}
+.rc-side-link {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	font-size: 13.5px;
+	color: var(--rc-muted);
+	cursor: pointer;
+	user-select: none;
+}
+.rc-side-link:hover {
+	color: var(--rc-fg);
+}
+.rc-side-link.active {
+	background: var(--rc-bg);
+	color: var(--rc-fg);
+	font-weight: 500;
+	box-shadow: inset 0 0 0 1px var(--rc-border);
+}
+
+/* ---- integration doc markdown (react-markdown output) ---- */
+.rc-markdown {
+	font-size: 13px;
+	line-height: 1.65;
+	color: var(--rc-fg);
+	word-break: break-word;
+}
+.rc-markdown > :first-child {
+	margin-top: 0;
+}
+.rc-markdown h1,
+.rc-markdown h2,
+.rc-markdown h3,
+.rc-markdown h4 {
+	font-family: var(--rc-display);
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	margin: 20px 0 8px;
+}
+.rc-markdown h1 {
+	font-size: 17px;
+}
+.rc-markdown h2 {
+	font-size: 15px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid var(--rc-border);
+}
+.rc-markdown h3 {
+	font-size: 13.5px;
+}
+.rc-markdown h4 {
+	font-family: var(--rc-mono);
+	text-transform: uppercase;
+	font-size: 10.5px;
+	letter-spacing: 0.08em;
+	color: var(--rc-muted);
+}
+.rc-markdown p {
+	margin: 8px 0;
+}
+.rc-markdown ul,
+.rc-markdown ol {
+	margin: 8px 0;
+	padding-left: 20px;
+}
+.rc-markdown li {
+	margin: 3px 0;
+}
+.rc-markdown li > ul,
+.rc-markdown li > ol {
+	margin: 2px 0;
+}
+.rc-markdown code {
+	font-family: var(--rc-mono);
+	font-size: 11.5px;
+	background: var(--rc-surface);
+	border: 1px solid var(--rc-border);
+	border-radius: 4px;
+	padding: 1px 5px;
+}
+.rc-markdown pre {
+	background: var(--rc-surface);
+	border: 1px solid var(--rc-border);
+	border-radius: 8px;
+	padding: 12px 14px;
+	overflow-x: auto;
+	margin: 10px 0;
+}
+.rc-markdown pre code {
+	background: none;
+	border: none;
+	padding: 0;
+	font-size: 11.5px;
+	line-height: 1.6;
+	white-space: pre;
+}
+.rc-markdown .rc-markdown-table-wrap {
+	overflow-x: auto;
+	margin: 10px 0;
+	border: 1px solid var(--rc-border);
+	border-radius: 8px;
+}
+.rc-markdown table {
+	border-collapse: collapse;
+	width: 100%;
+	font-size: 12px;
+}
+.rc-markdown th,
+.rc-markdown td {
+	border-bottom: 1px solid var(--rc-border);
+	padding: 6px 10px;
+	text-align: left;
+	vertical-align: top;
+}
+.rc-markdown th {
+	font-family: var(--rc-mono);
+	text-transform: uppercase;
+	font-size: 10px;
+	letter-spacing: 0.06em;
+	color: var(--rc-muted);
+	background: var(--rc-surface);
+	white-space: nowrap;
+}
+.rc-markdown tr:last-child td {
+	border-bottom: none;
+}
+.rc-markdown td:not(:first-child),
+.rc-markdown th:not(:first-child) {
+	min-width: 72px;
+}
+.rc-markdown blockquote {
+	margin: 10px 0;
+	padding: 6px 12px;
+	border-left: 3px solid var(--rc-accent);
+	background: var(--rc-surface);
+	border-radius: 0 8px 8px 0;
+	color: var(--rc-muted);
+}
+.rc-markdown a {
+	color: var(--rc-accent-hover);
+	text-decoration: underline;
+}
+.rc-markdown hr {
+	border: none;
+	border-top: 1px solid var(--rc-border);
+	margin: 16px 0;
 }

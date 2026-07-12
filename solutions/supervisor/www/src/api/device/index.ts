@@ -6,6 +6,7 @@ import {
   IServiceStatus,
   IIPDevice,
   IBatteryInfo,
+  ISensorStatus,
 } from "./device";
 
 // 获取设备信息
@@ -221,6 +222,45 @@ export const queryBatteryInfoApi = async () =>
     {
       url: "api/deviceMgr/queryBatteryInfo",
       method: "get",
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 获取温度/存储传感器状态
+export const getSensorStatusApi = async () =>
+  supervisorRequest<ISensorStatus>(
+    {
+      url: "api/deviceMgr/getSensorStatus",
+      method: "get",
+      timeout: 5000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 获取设备当前时间戳（秒）
+export const getTimestampApi = async () =>
+  supervisorRequest<{ timestamp: number }>(
+    {
+      url: "api/deviceMgr/getTimestamp",
+      method: "get",
+      timeout: 5000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 获取设备时区
+export const getTimezoneApi = async () =>
+  supervisorRequest<{ timezone: string }>(
+    {
+      url: "api/deviceMgr/getTimezone",
+      method: "get",
+      timeout: 5000,
     },
     {
       catchs: true,
