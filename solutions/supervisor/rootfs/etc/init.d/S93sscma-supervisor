@@ -37,8 +37,13 @@ start() {
     if [ "$PID" ]; then
         echo "$DAEMON is already running."
     else
-        $DAEMON_PATH/$DAEMON >/dev/null 2>&1 &
+        # -g: gallery mode (no Node-RED/sscma-node watchdog)
+        $DAEMON_PATH/$DAEMON -g >/dev/null 2>&1 &
         [ $? = 0 ] && echo "OK" || echo "FAIL"
+
+        # Restore the last active gallery app asynchronously.
+        # Never blocks supervisor startup; failures are non-fatal.
+        (sleep 3 && /usr/share/supervisor/scripts/main.sh app_restore) >/dev/null 2>&1 &
     fi
 }
 

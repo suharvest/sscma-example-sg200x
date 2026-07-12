@@ -72,6 +72,7 @@ private:
     static api_status_t getTimezoneList(request_t req, response_t res);
 
     static api_status_t queryBatteryInfo(request_t req, response_t res);
+    static api_status_t getSensorStatus(request_t req, response_t res);
 
     // Battery collector thread function
     static void battery_collector_thread();
@@ -80,13 +81,18 @@ private:
     static bool check_adc_available();
 
 public:
-    api_device()
+    explicit api_device(bool gallery_mode = false)
         : api_base("deviceMgr")
     {
-        _serviced = std::make_unique<serviced>();
-        if (_serviced == nullptr) {
-            throw std::runtime_error("Failed to create serviced");
-            return;
+        _gallery_mode = gallery_mode;
+        if (!_gallery_mode) {
+            _serviced = std::make_unique<serviced>();
+            if (_serviced == nullptr) {
+                throw std::runtime_error("Failed to create serviced");
+                return;
+            }
+        } else {
+            LOGI("Gallery mode: serviced watchdog disabled");
         }
 
         _dev_info = parse_result(script(__func__));
@@ -118,7 +124,7 @@ public:
         REG_API_NO_AUTH(getModelFile);
         REG_API_NO_AUTH(getModelInfo);
         REG_API_NO_AUTH(getModelList);
-        REG_API_NO_AUTH(uploadModel);
+        REG_API(uploadModel); // security: token required for model upload
 
         REG_API_NO_AUTH(getPlatformInfo);
         REG_API(savePlatformInfo);
@@ -136,6 +142,7 @@ public:
         REG_API(getTimezoneList);
 
         REG_API_NO_AUTH(queryBatteryInfo);
+        REG_API(getSensorStatus);
 
         // Check ADC availability before starting battery collector
         _adc_available = check_adc_available();
@@ -164,6 +171,7 @@ public:
 
 private:
     static inline json _dev_info;
+    static inline bool _gallery_mode = false;
     static inline std::string _model_dir = "";
     static inline std::string _model_suffix = "";
     static inline std::mutex _battery_mutex;

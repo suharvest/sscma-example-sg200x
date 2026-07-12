@@ -979,5 +979,165 @@ function start_service() {
 # deamon
 ##################################################
 
+##################################################
+# sensors (temperature / storage)
+# Units contract with supervisor C++ (getSensorStatus): temperature_c in
+# Celsius (float), storage total/used/available in BYTES.
+function queryTemperature() {
+    local t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+    t=${t:-0}
+    awk -v t="$t" 'BEGIN { printf "{\"temperature_c\": %.1f}", t / 1000 }'
+}
+
+function queryStorage() {
+    df -kP "$USERDATA_DIR" 2>/dev/null | awk 'NR==2 {
+        printf "{\"total\": %.0f, \"used\": %.0f, \"available\": %.0f}", $2 * 1024, $3 * 1024, $4 * 1024
+    }'
+}
+# sensors
+##################################################
+
+##################################################
+# app manager (gallery mode)
+readonly APPS_USER_DIR="$USERDATA_DIR/local/apps"
+readonly APP_STATE_FILE="$APPS_USER_DIR/state.json"
+
+# Whitelist: only /etc/init.d/[SK][0-9]* scripts, never symlinks.
+# (Second line of defense; supervisor C++ validates the same rules.)
+_app_check_script() {
+    local script="$1"
+    case "$script" in
+    /etc/init.d/[SK][0-9]*) ;;
+    *) return 1 ;;
+    esac
+    case "${script#/etc/init.d/}" in
+    */*) return 1 ;; # no subdirectories / traversal
+    esac
+    [ -L "$script" ] && return 1
+    [ -f "$script" ] || return 1
+    return 0
+}
+
+# Run a command with a timeout. On timeout send SIGTERM only (never SIGKILL:
+# apps must be allowed to release VPSS/camera resources cleanly).
+# Returns 124 on timeout, otherwise the command's exit code.
+_app_run_timeout() {
+    local secs="$1"
+    shift
+    "$@" &
+    local pid=$!
+    local waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$secs" ]; then
+            kill -TERM "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid" 2>/dev/null
+    return $?
+}
+
+function app_read_state() {
+    if [ -s "$APP_STATE_FILE" ]; then
+        cat "$APP_STATE_FILE"
+    else
+        echo '{"active_app": null, "active_script": null, "models": {}, "updated_at": 0}'
+    fi
+}
+
+# app_write_state '<json>' : atomic write (tmp + sync + rename)
+function app_write_state() {
+    local content="$2"
+    [ -z "$content" ] && {
+        echo "$STR_FAILED"
+        return 1
+    }
+    mkdir -p "$APPS_USER_DIR"
+    local tmp="$APPS_USER_DIR/.state.json.tmp"
+    printf '%s' "$content" >"$tmp" && sync && mv -f "$tmp" "$APP_STATE_FILE"
+    if [ $? -eq 0 ]; then
+        echo "$STR_OK"
+    else
+        rm -f "$tmp"
+        echo "$STR_FAILED"
+    fi
+}
+
+# app_start <init_script> : start with 15s timeout
+function app_start() {
+    local script="$2"
+    _app_check_script "$script" || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    _app_run_timeout 15 "$script" start >/dev/null 2>&1
+    local ret=$?
+    if [ $ret -eq 0 ]; then
+        echo "$STR_OK"
+    elif [ $ret -eq 124 ]; then
+        echo "Timeout"
+    else
+        echo "$STR_FAILED"
+    fi
+}
+
+# app_stop <init_script> : stop with 10s timeout (TERM only)
+function app_stop() {
+    local script="$2"
+    _app_check_script "$script" || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    _app_run_timeout 10 "$script" stop >/dev/null 2>&1
+    local ret=$?
+    if [ $ret -eq 0 ]; then
+        echo "$STR_OK"
+    elif [ $ret -eq 124 ]; then
+        echo "Timeout"
+    else
+        echo "$STR_FAILED"
+    fi
+}
+
+# app_status <init_script> : probe with 5s timeout, JSON output
+function app_status() {
+    local script="$2"
+    _app_check_script "$script" || {
+        echo '{"status": "invalid"}'
+        return 1
+    }
+    _app_run_timeout 5 "$script" status >/dev/null 2>&1
+    local ret=$?
+    if [ $ret -eq 0 ]; then
+        echo '{"status": "running"}'
+    elif [ $ret -eq 124 ]; then
+        echo '{"status": "timeout"}'
+    else
+        # many init scripts do not implement "status"
+        echo '{"status": "unknown"}'
+    fi
+}
+
+# app_restore : called at boot (async, from S93sscma-supervisor) to bring the
+# persisted active app back up. Failure is logged only, never blocks boot.
+function app_restore() {
+    local script=$(app_read_state | sed -n 's/.*"active_script"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [ -z "$script" ] && {
+        echo "$STR_OK"
+        return 0
+    }
+    _app_check_script "$script" || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    "$script" start >/dev/null 2>&1 &
+    echo "$STR_OK"
+}
+# app manager
+##################################################
+
 # call function
 $1 "$@"

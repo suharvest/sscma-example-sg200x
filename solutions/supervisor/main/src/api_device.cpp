@@ -90,6 +90,7 @@ api_status_t api_device::queryDeviceInfo(request_t req, response_t res)
     data["ram"] = _dev_info.value("ram", "");
     data["npu"] = _dev_info.value("npu", "");
     data["terminalPort"] = _dev_info.value("ttyd", "");
+    data["galleryMode"] = _gallery_mode;
 
     {
         std::string model_type = "Basic";
@@ -155,8 +156,15 @@ api_status_t api_device::getSystemStatus(request_t req, response_t res)
 api_status_t api_device::queryServiceStatus(request_t req, response_t res)
 {
     json data = json::object();
-    data["sscmaNode"] = _serviced->get_sscma_status();
-    data["nodeRed"] = _serviced->get_nodered_status();
+    if (_gallery_mode || !_serviced) {
+        // Gallery mode: Node-RED / sscma-node are intentionally disabled,
+        // report a stable state so the frontend does not spin forever.
+        data["sscmaNode"] = "disabled";
+        data["nodeRed"] = "disabled";
+    } else {
+        data["sscmaNode"] = _serviced->get_sscma_status();
+        data["nodeRed"] = _serviced->get_nodered_status();
+    }
     data["system"] = 0;
     data["uptime"] = uptime();
     data["timestamp"] = timestamp();
@@ -783,6 +791,27 @@ api_status_t api_device::queryBatteryInfo(request_t req, response_t res)
         LOGW("Battery voltage queue not ready, size=%zu", _voltage_queue.size());
     }
 
+    return API_STATUS_OK;
+}
+
+// Sensor status: SoC temperature + /userdata storage usage.
+// Units contract with frontend: temperature_c in Celsius (float),
+// storage total/used/available in BYTES.
+api_status_t api_device::getSensorStatus(request_t req, response_t res)
+{
+    json data = json::object();
+
+    json temp = parse_result(script("queryTemperature"));
+    data["temperature_c"] = temp.value("temperature_c", 0.0);
+
+    json storage = parse_result(script("queryStorage"));
+    json st = json::object();
+    st["total"] = storage.value("total", 0.0);
+    st["used"] = storage.value("used", 0.0);
+    st["available"] = storage.value("available", 0.0);
+    data["storage"] = st;
+
+    response(res, 0, STR_OK, data);
     return API_STATUS_OK;
 }
 

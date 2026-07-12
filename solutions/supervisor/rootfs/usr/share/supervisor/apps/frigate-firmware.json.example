@@ -1,0 +1,14 @@
+{
+    "_comment": "Template for solution vendors shipping an external firmware app. Copy to /userdata/local/apps/<id>.json (drop the .example suffix), adjust every field, and provide the referenced init script. external-firmware apps have no debug_ws / models: the console shows an RTSP address card instead of the embedded debug player.",
+    "id": "frigate-firmware",
+    "name": "Frigate Camera Firmware",
+    "name_zh": "Frigate 定制固件",
+    "scene": "NVR Integration",
+    "description": "Turns the reCamera into a plain RTSP camera for Frigate NVR. Detection and recording run on the Frigate server; this app only owns the sensor and encodes the stream.",
+    "type": "external-firmware",
+    "init_script": "/etc/init.d/S92frigate-firmware",
+    "rtsp_url": "rtsp://{host}:8554/live0",
+    "mqtt_topic": "recamera/frigate/events",
+    "version": "1.0.0",
+    "author": "Example Vendor"
+}

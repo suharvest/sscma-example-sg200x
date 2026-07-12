@@ -1,8 +1,28 @@
 #!/bin/sh
 set -e
 
+# Gallery mode: persistently disable services that conflict with gallery apps
+# over the camera (VPSS is single-owner). Idempotent: only renames if the
+# S-prefixed script exists.
+#
+# To restore the factory behavior (re-enable Node-RED / sscma-node), run:
+#   mv /etc/init.d/K03node-red /etc/init.d/S03node-red
+#   mv /etc/init.d/K91sscma-node /etc/init.d/S91sscma-node
+#   reboot
+disable_service() {
+    name="$1" # e.g. S03node-red
+    kname="K${name#S}"
+    if [ -f "/etc/init.d/$name" ]; then
+        "/etc/init.d/$name" stop >/dev/null 2>&1 || true
+        mv "/etc/init.d/$name" "/etc/init.d/$kname" || true
+    fi
+}
+
+disable_service S03node-red
+disable_service S91sscma-node
+
 if [ -f /etc/init.d/S93sscma-supervisor ]; then
-    /etc/init.d/S93sscma-supervisor start   
+    /etc/init.d/S93sscma-supervisor start
 fi
 
 

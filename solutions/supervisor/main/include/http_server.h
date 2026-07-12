@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "api_app.h"
 #include "api_base.h"
 #include "api_device.h"
 #include "api_file.h"
@@ -19,14 +20,15 @@
 
 class http_server {
 public:
-    http_server(const std::string& root_dir = "www",
+    http_server(const std::string& root_dir = "www", bool gallery_mode = false,
         const std::string& cert = "", const std::string& key = "")
         : _cert(cert.c_str())
         , _key(key.c_str())
         , _root_dir(root_dir.c_str())
     {
         _apis.emplace_back(std::make_unique<api_base>());
-        _apis.emplace_back(std::make_unique<api_device>());
+        _apis.emplace_back(std::make_unique<api_device>(gallery_mode));
+        _apis.emplace_back(std::make_unique<api_app>());
         _apis.emplace_back(std::make_unique<api_file>());
         _apis.emplace_back(std::make_unique<api_led>());
         _apis.emplace_back(std::make_unique<api_user>());

@@ -26,7 +26,7 @@ public:
         REG_API(deleteSShkey);
         REG_API(setSShStatus); // fixed: no auth
         REG_API_NO_AUTH(queryUserInfo); // fixed: no auth
-        REG_API_NO_AUTH(updatePassword);
+        REG_API(updatePassword); // security: token required (oldPassword is also verified in handler)
     }
 
     ~api_user()

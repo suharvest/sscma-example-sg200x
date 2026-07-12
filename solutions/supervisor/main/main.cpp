@@ -17,13 +17,14 @@
 
 void print_help(char* argv0)
 {
-    fprintf(stderr, "Usage: %s [-v] [-B] [-r root_dir] [-p port] [-s script_path] [-a] [-D log_level]\n", argv0);
+    fprintf(stderr, "Usage: %s [-v] [-B] [-r root_dir] [-p port] [-s script_path] [-a] [-g] [-D log_level]\n", argv0);
     fprintf(stderr, "  -v: Show version\n");
     fprintf(stderr, "  -B: Run as daemon\n");
     fprintf(stderr, "  -r: Set root directory (default: %s)\n", DEFAULT_ROOT_DIR);
     fprintf(stderr, "  -p: Set HTTP port (default: %s)\n", DEFAULT_HTTP_PORT);
     fprintf(stderr, "  -s: Set script path (default: %s)\n", DEFAULT_SCRIPT_PATH);
     fprintf(stderr, "  -a: Disable authentication\n");
+    fprintf(stderr, "  -g: Gallery mode (disable Node-RED/sscma-node watchdog)\n");
 }
 
 static sem_t signal_sem;
@@ -45,10 +46,11 @@ int main(int argc, char** argv)
     bool no_auth = false;
     bool daemon_mode = false;
     bool show_version = false;
+    bool gallery_mode = false;
 
     // Parse command-line arguments
     int opt;
-    while ((opt = getopt(argc, argv, "hvBr:p:s:aD:")) != -1) {
+    while ((opt = getopt(argc, argv, "hvBr:p:s:agD:")) != -1) {
         switch (opt) {
         case 'h':
             print_help(argv[0]);
@@ -70,6 +72,9 @@ int main(int argc, char** argv)
             break;
         case 'a':
             no_auth = true;
+            break;
+        case 'g':
+            gallery_mode = true;
             break;
         case 'D':
             log_level = atoi(optarg);
@@ -153,7 +158,7 @@ int main(int argc, char** argv)
         api_base::set_force_no_auth(no_auth);
         api_base::set_script(script_path);
 
-        http_server server(root_dir);
+        http_server server(root_dir, gallery_mode);
         if (!server.start(http_port)) {
             LOGE("Failed: server.start()");
             return EXIT_FAILURE;

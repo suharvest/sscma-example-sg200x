@@ -1,0 +1,36 @@
+{
+    "id": "face-analysis",
+    "name": "Face Analysis",
+    "name_zh": "人脸分析",
+    "scene": "Safety & Access",
+    "description": "Real-time face detection with age, gender, race and emotion analysis. Publishes results over MQTT and streams H.264 via RTSP.",
+    "type": "native",
+    "init_script": "/etc/init.d/S92face-analysis",
+    "rtsp_url": "rtsp://{host}:8554/live0",
+    "mqtt_topic": "recamera/face-analysis/results",
+    "debug_ws": {
+        "port": 8001,
+        "video_path": "/",
+        "results_path": "/results"
+    },
+    "models": [],
+    "pipeline": [
+        {
+            "name": "yolov8n-face",
+            "path": "/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel",
+            "task": "face-detect"
+        },
+        {
+            "name": "fairface",
+            "path": "/userdata/local/models/fairface_int8.cvimodel",
+            "task": "age-gender-race"
+        },
+        {
+            "name": "hsemotion",
+            "path": "/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel",
+            "task": "emotion"
+        }
+    ],
+    "version": "1.0.0",
+    "author": "Seeed Studio"
+}

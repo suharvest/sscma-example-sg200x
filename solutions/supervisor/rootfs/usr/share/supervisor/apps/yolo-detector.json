@@ -1,0 +1,36 @@
+{
+    "id": "yolo-detector",
+    "name": "Object Detection",
+    "name_zh": "通用目标检测",
+    "scene": "General",
+    "description": "General-purpose YOLO object detection. Publishes detection results over MQTT and streams H.264 via RTSP. Supports switching between detection models.",
+    "type": "native",
+    "init_script": "/etc/init.d/S92yolo-detector",
+    "rtsp_url": "rtsp://{host}:8554/live0",
+    "mqtt_topic": "recamera/yolo-detector/results",
+    "debug_ws": {
+        "port": 8001,
+        "video_path": "/",
+        "results_path": "/results"
+    },
+    "models": [
+        {
+            "name": "yolo11n",
+            "path": "/userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel",
+            "task": "detect"
+        },
+        {
+            "name": "yolo11n-pose",
+            "path": "/userdata/local/models/yolo11n_pose_cv181x_int8.cvimodel",
+            "task": "pose"
+        },
+        {
+            "name": "yolo26n",
+            "path": "/userdata/local/models/yolo26n_cv181x_int8.cvimodel",
+            "task": "detect"
+        }
+    ],
+    "default_model": "yolo11n",
+    "version": "1.0.0",
+    "author": "Seeed Studio"
+}
