@@ -35,15 +35,18 @@ DAEMON_OPTS=""
 [ "$BLUR_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-blur"
 [ -n "$MAX_REGIONS" ] && DAEMON_OPTS="$DAEMON_OPTS --max-regions $MAX_REGIONS"
 [ -n "$EMOTION_INTERVAL" ] && DAEMON_OPTS="$DAEMON_OPTS --emotion-interval $EMOTION_INTERVAL"
+[ "$DEBUG_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-debug"
+[ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
 [ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
 
-# Stop conflicting services that use the camera
+# Stop conflicting services that use the camera.
+# NOTE: the supervisor is deliberately NOT stopped here — it is the app
+# manager that orchestrates starting/stopping this service.
 stop_conflicting_services() {
     echo "Stopping conflicting services..."
     for prefix in S K; do
         [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
         [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
-        [ -x /etc/init.d/${prefix}93sscma-supervisor ] && /etc/init.d/${prefix}93sscma-supervisor stop 2>/dev/null || true
     done
     # Stop other camera-using solutions
     for svc in ppocr-reader detection-blur retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector yolo-detector facemesh-reader; do

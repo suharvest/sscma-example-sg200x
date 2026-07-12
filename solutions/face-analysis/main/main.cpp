@@ -8,12 +8,16 @@
 
 #include <sscma.h>
 #include <video.h>
+#include <debug_stream.h>
 #include "rtsp_demo.h"
 
 #include "face_detector.h"
 #include "attribute_analyzer.h"
 #include "mqtt_publisher.h"
 #include "face_blur.h"
+
+#include <sstream>
+#include <iomanip>
 
 using namespace ma;
 using namespace face_analysis;
@@ -52,6 +56,10 @@ static struct {
     // Emotion runs every N frames (1 = every frame, 2 = every 2 frames, ...)
     int emotion_interval = 2;
 
+    // Debug stream (H.264-over-WS + results JSON for the supervisor console)
+    bool enable_debug = true;
+    int debug_port = 8001;
+
     // Runtime flags
     bool enable_rtsp = true;
     bool enable_mqtt = true;
@@ -87,6 +95,8 @@ static void print_usage(const char* prog) {
     printf("  --no-rtsp                 Disable RTSP streaming\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
     printf("  --no-blur                 Disable face blur on RTSP stream\n");
+    printf("  --no-debug                Disable debug WebSocket stream\n");
+    printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  --max-regions N           Max blur regions (1-16, default: %d)\n", g_config.max_regions);
     printf("  --emotion-interval N      Run emotion every N frames (default: %d)\n", g_config.emotion_interval);
     printf("  -v, --verbose             Enable verbose logging\n");
@@ -107,6 +117,8 @@ static bool parse_args(int argc, char** argv) {
         {"no-blur", no_argument, 0, 3},
         {"max-regions", required_argument, 0, 4},
         {"emotion-interval", required_argument, 0, 5},
+        {"no-debug", no_argument, 0, 6},
+        {"debug-port", required_argument, 0, 7},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -150,6 +162,12 @@ static bool parse_args(int argc, char** argv) {
                 break;
             case 5:
                 g_config.emotion_interval = std::stoi(optarg);
+                break;
+            case 6:
+                g_config.enable_debug = false;
+                break;
+            case 7:
+                g_config.debug_port = std::stoi(optarg);
                 break;
             case 'v':
                 g_config.verbose = true;
@@ -245,6 +263,11 @@ static bool init_video_streaming() {
     // Register RTSP handler
     registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
 
+    // Debug stream shares the same VENC output (consumer index 1, RTSP owns 0)
+    if (g_config.enable_debug) {
+        registerVideoFrameHandler(VIDEO_CH2, 1, debug_stream_video_handler, NULL);
+    }
+
     // Initialize RTSP server
     initRtsp((0x01 << VIDEO_CH2));
 
@@ -252,6 +275,67 @@ static bool init_video_streaming() {
             g_config.stream_width, g_config.stream_height, g_config.stream_fps);
 
     return true;
+}
+
+static bool init_debug_stream() {
+    if (!g_config.enable_debug) {
+        MA_LOGI(TAG, "Debug stream disabled");
+        return true;
+    }
+
+    debug_stream_config_t cfg;
+    debug_stream_config_init(&cfg);
+    cfg.port = g_config.debug_port;
+    cfg.video_ch = VIDEO_CH2;
+
+    if (debug_stream_create(&cfg) != 0) {
+        MA_LOGW(TAG, "Failed to start debug stream on port %d, continuing without it", g_config.debug_port);
+        g_config.enable_debug = false;
+        return true;  // non-fatal
+    }
+
+    MA_LOGI(TAG, "Debug stream: ws://<device_ip>:%d/ (video), ws://<device_ip>:%d/results",
+            g_config.debug_port, g_config.debug_port);
+    return true;
+}
+
+// Build the sscma-node compatible result JSON for the debug /results channel:
+// boxes are center-based pixels in the inference resolution.
+// NOTE: this is a separate document from the MQTT payload; the MQTT format is
+// an external contract and must not change.
+static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
+                                            const std::vector<AnalyzedFace>& faces,
+                                            float inference_time_ms) {
+    std::ostringstream json;
+    json << std::fixed << std::setprecision(1);
+    json << "{";
+    json << "\"timestamp\":" << timestamp_ms << ",";
+    json << "\"frame_id\":" << frame_id << ",";
+    json << "\"inference_time_ms\":" << inference_time_ms << ",";
+    json << "\"resolution\":[" << g_config.inference_width << "," << g_config.inference_height << "],";
+    json << "\"boxes\":[";
+    for (size_t i = 0; i < faces.size(); ++i) {
+        const auto& f = faces[i].face;
+        if (i > 0) json << ",";
+        // FaceInfo x/y are normalized top-left; convert to center-based pixels
+        json << "[" << (f.x + f.w * 0.5f) * g_config.inference_width << ","
+             << (f.y + f.h * 0.5f) * g_config.inference_height << ","
+             << f.w * g_config.inference_width << ","
+             << f.h * g_config.inference_height << ","
+             << std::setprecision(3) << f.score << std::setprecision(1) << ","
+             << 0 << "]";
+    }
+    json << "],";
+    json << "\"labels\":[";
+    for (size_t i = 0; i < faces.size(); ++i) {
+        const auto& attr = faces[i].attributes;
+        if (i > 0) json << ",";
+        json << "\"" << attr.gender << " " << attr.age_label << " "
+             << getEmotionName(attr.emotion) << "\"";
+    }
+    json << "]";
+    json << "}";
+    return json.str();
 }
 
 static bool init_mqtt() {
@@ -307,6 +391,10 @@ static void cleanup() {
 
     if (g_camera) {
         g_camera->stopStream();
+    }
+
+    if (g_config.enable_debug) {
+        debug_stream_destroy();
     }
 
     if (g_config.enable_rtsp) {
@@ -373,6 +461,14 @@ static void process_frame() {
         g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
     }
 
+    // Step 4.5: Push the same inference result to debug WS clients (sscma-node
+    // format). debug_stream is lazy: skip building JSON when nobody listens.
+    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        std::string debug_json = build_debug_results_json(timestamp_ms, g_frame_id, analyzed_faces,
+                                                          static_cast<float>(total_time));
+        debug_stream_publish_result(debug_json.c_str(), debug_json.size());
+    }
+
     // Log results
     if (g_config.verbose || !analyzed_faces.empty()) {
         MA_LOGI(TAG, "Frame %u: %zu faces, detect=%lldms, analyze=%lldms, total=%lldms",
@@ -434,6 +530,12 @@ int main(int argc, char** argv) {
 
     if (!init_video_streaming()) {
         MA_LOGE(TAG, "Video streaming initialization failed");
+        cleanup();
+        return 1;
+    }
+
+    if (!init_debug_stream()) {
+        MA_LOGE(TAG, "Debug stream initialization failed");
         cleanup();
         return 1;
     }
