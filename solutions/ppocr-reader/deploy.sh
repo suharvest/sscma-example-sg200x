@@ -109,14 +109,14 @@ ok "Package installed"
 
 # --- Step 4: Start service ---
 log "Starting ${SOLUTION_NAME}..."
-run_sudo "/etc/init.d/S92ppocr-reader restart" || err "Service start failed"
+run_sudo "/etc/init.d/K92ppocr-reader restart" || err "Service start failed"
 ok "Service started"
 
 # --- Step 5: Verify ---
 sleep 5
 
 log "Checking service status..."
-run_ssh "/etc/init.d/S92ppocr-reader status" || warn "Status check failed"
+run_ssh "/etc/init.d/K92ppocr-reader status" || warn "Status check failed"
 
 if [ "$MQTT_CHECK" = true ]; then
     log "Capturing MQTT output (10s, max 3 messages)..."

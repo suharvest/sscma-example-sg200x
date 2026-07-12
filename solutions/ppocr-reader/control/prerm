@@ -1,9 +1,15 @@
 #!/bin/sh
+
 # Pre-removal script for ppocr-reader
 
+echo "Removing PP-OCR Reader Application..."
+
 # Stop the service if running
-if [ -x /etc/init.d/S92ppocr-reader ]; then
-    /etc/init.d/S92ppocr-reader stop 2>/dev/null || true
-fi
+for script in /etc/init.d/[SK]92ppocr-reader; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/ppocr-reader 2>/dev/null || true
+
+echo "PP-OCR Reader removed."
 
 exit 0

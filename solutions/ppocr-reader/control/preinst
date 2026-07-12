@@ -1,3 +1,11 @@
 #!/bin/sh
+
 # Pre-installation script for ppocr-reader
+
+# Stop a previously installed instance before upgrading (idempotent)
+for script in /etc/init.d/[SK]92ppocr-reader; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/ppocr-reader 2>/dev/null || true
+
 exit 0

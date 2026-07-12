@@ -8,6 +8,8 @@ PP-OCRv3 文字检测与识别应用，运行在 reCamera (Sophgo SG2002/cv181x)
 - **文字识别**: 基于 SVTR-LCNet 的中英文混合识别，支持 6623 个字符（简体中文、英文、数字、标点）
 - **RTSP 视频流**: H.264 编码的实时视频流，可通过 VLC 等播放器查看
 - **MQTT 输出**: 每帧检测结果以 JSON 格式发布到 MQTT broker
+- **调试 WebSocket**: `ws://<device_ip>:8001/`（H.264 视频）与 `ws://<device_ip>:8001/results`（结果 JSON），供 reCamera 控制台 Live 页实时预览（`--no-debug` 关闭，`--debug-port` 改端口）
+- **方案商画廊集成**: deb 安装时将 manifest（`ppocr-reader.json`）与双语集成文档复制到 `/userdata/local/apps/`，由 supervisor 控制台扫描展示
 - **两阶段流水线**: 先检测文字区域，再逐区域识别文字内容，结果按从上到下、从左到右排序
 
 ## 性能指标
@@ -96,16 +98,16 @@ sudo cp /tmp/ppocr_keys_v1.txt /userdata/local/dict/
 
 ```bash
 # 启动 (自动停止冲突的 node-red、sscma-node 等服务)
-sudo /etc/init.d/S92ppocr-reader start
+sudo /etc/init.d/K92ppocr-reader start
 
 # 停止
-sudo /etc/init.d/S92ppocr-reader stop
+sudo /etc/init.d/K92ppocr-reader stop
 
 # 重启
-sudo /etc/init.d/S92ppocr-reader restart
+sudo /etc/init.d/K92ppocr-reader restart
 
 # 查看状态
-sudo /etc/init.d/S92ppocr-reader status
+sudo /etc/init.d/K92ppocr-reader status
 ```
 
 ### 查看 RTSP 视频流
@@ -140,6 +142,8 @@ Options:
   --mqtt-topic TOPIC   MQTT 发布主题 (默认: recamera/ppocr/texts)
   --no-rtsp            禁用 RTSP 视频流
   --no-mqtt            禁用 MQTT 发布
+  --no-debug           禁用调试 WebSocket 流
+  --debug-port PORT    调试 WebSocket 端口 (默认: 8001)
   --test-rec PATH      使用单张图片测试识别器并退出
   -v, --verbose        启用详细日志
   -h, --help           显示帮助信息
@@ -254,10 +258,17 @@ ppocr-reader/
 │   ├── mqtt_publisher.h/cpp   # MQTT JSON 发布
 │   └── rtsp_demo.h/c          # RTSP 流
 ├── control/
-│   ├── postinst               # 安装后脚本
-│   └── prerm                  # 卸载前脚本
+│   ├── preinst                # 安装前脚本（停旧实例）
+│   ├── postinst               # 安装后脚本（注册画廊 manifest）
+│   ├── prerm                  # 卸载前脚本
+│   └── postrm                 # 卸载后脚本（清理画廊注册）
 └── rootfs/
-    └── etc/init.d/S92ppocr-reader  # SysVinit 服务脚本
+    ├── etc/init.d/K92ppocr-reader          # SysVinit 服务脚本（K 前缀，不随开机自启）
+    ├── etc/ppocr-reader.conf               # 运行时配置（init 脚本 source）
+    └── usr/share/ppocr-reader/             # 画廊 manifest + 双语集成文档
+        ├── ppocr-reader.json
+        ├── ppocr-reader.md
+        └── ppocr-reader.zh.md
 ```
 
 ## 日志
@@ -273,7 +284,7 @@ sudo tail -f /var/log/ppocr-reader.log
 测试完成后恢复 reCamera 默认服务：
 
 ```bash
-sudo /etc/init.d/S92ppocr-reader stop
+sudo /etc/init.d/K92ppocr-reader stop
 sudo /etc/init.d/S03node-red start
 sudo /etc/init.d/S91sscma-node start
 ```

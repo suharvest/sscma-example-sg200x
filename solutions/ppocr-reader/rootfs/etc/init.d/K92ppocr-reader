@@ -9,6 +9,10 @@
 # Short-Description: PP-OCRv3 Text Detection & Recognition
 ### END INIT INFO
 
+# NOTE: K-prefixed on purpose. Gallery apps must NOT start at boot —
+# SysVinit skips K scripts, but the supervisor app manager still invokes
+# this script by path to start/stop the single active application.
+
 NAME=ppocr-reader
 DAEMON=/usr/local/bin/ppocr-reader
 PIDFILE=/var/run/$NAME.pid
@@ -17,8 +21,15 @@ LOGFILE=/var/log/$NAME.log
 # Library paths required for CVI SDK
 export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
 
+# Fixed two-model pipeline (det + rec) plus the character dictionary.
+# These match the binary's built-in defaults and the app manifest's
+# pipeline[]; /etc/ppocr-reader.conf may override any of them.
+DET_MODEL="${DET_MODEL:-/userdata/local/models/ppocr_det_cv181x_mix.cvimodel}"
+REC_MODEL="${REC_MODEL:-/userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel}"
+DICT_FILE="${DICT_FILE:-/userdata/local/dict/ppocr_keys_v1.txt}"
+
 # Default options
-DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_mix.cvimodel --rec-model /userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel --dict /userdata/local/dict/ppocr_keys_v1.txt"
+DAEMON_OPTS=""
 
 # Load global reCamera config (MQTT_HOST, MQTT_PORT, etc.)
 [ -f /etc/recamera.conf ] && . /etc/recamera.conf
@@ -26,20 +37,41 @@ DAEMON_OPTS="--det-model /userdata/local/models/ppocr_det_cv181x_mix.cvimodel --
 # Load solution-specific config (can override global settings)
 [ -f /etc/ppocr-reader.conf ] && . /etc/ppocr-reader.conf
 
+# Pipeline components: always passed explicitly so the app manifest
+# stays the single source of truth.
+DAEMON_OPTS="$DAEMON_OPTS --det-model $DET_MODEL --rec-model $REC_MODEL --dict $DICT_FILE"
+
 # Apply MQTT settings from config
 [ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-host $MQTT_HOST"
 [ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-port $MQTT_PORT"
 
-# Stop conflicting services that use the camera
+# MQTT topic: always passed explicitly so the app manifest
+# (recamera/ppocr/texts) stays the single source of truth.
+# It matches the binary's built-in default; /etc/ppocr-reader.conf may
+# still override via MQTT_TOPIC.
+MQTT_TOPIC="${MQTT_TOPIC:-recamera/ppocr/texts}"
+DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
+
+# Debug stream settings
+[ "$DEBUG_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-debug"
+[ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+
+# Optional tuning from config
+[ -n "$KMAX" ] && DAEMON_OPTS="$DAEMON_OPTS --kmax $KMAX"
+[ -n "$ENHANCE_MODE" ] && DAEMON_OPTS="$DAEMON_OPTS --enhance $ENHANCE_MODE"
+[ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
+
+# Stop conflicting services that use the camera.
+# NOTE: the supervisor is deliberately NOT stopped here — it is the app
+# manager that orchestrates starting/stopping this service.
 stop_conflicting_services() {
     echo "Stopping conflicting services..."
     for prefix in S K; do
         [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
         [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
-        [ -x /etc/init.d/${prefix}93sscma-supervisor ] && /etc/init.d/${prefix}93sscma-supervisor stop 2>/dev/null || true
     done
     # Stop other camera-using solutions
-    for svc in face-analysis detection-blur retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
+    for svc in face-analysis detection-blur retail-vision yolo-detector yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
         for script in /etc/init.d/[SK]*${svc}; do
             [ -x "$script" ] && "$script" stop 2>/dev/null || true
         done

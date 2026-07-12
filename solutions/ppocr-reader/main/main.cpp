@@ -5,9 +5,12 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <atomic>
+#include <algorithm>
+#include <sstream>
 
 #include <sscma.h>
 #include <video.h>
+#include <debug_stream.h>
 #include "rtsp_demo.h"
 #include <opencv2/opencv.hpp>
 
@@ -40,6 +43,10 @@ static struct {
     int stream_width = 640;
     int stream_height = 480;
     int stream_fps = 15;
+
+    // Debug stream (H.264-over-WS + results JSON for the supervisor console)
+    bool enable_debug = true;
+    int debug_port = 8001;
 
     // Runtime flags
     bool enable_rtsp = true;
@@ -78,6 +85,8 @@ static void print_usage(const char* prog) {
     printf("  --mqtt-topic TOPIC   MQTT topic (default: %s)\n", g_config.mqtt_topic.c_str());
     printf("  --no-rtsp            Disable RTSP streaming\n");
     printf("  --no-mqtt            Disable MQTT publishing\n");
+    printf("  --no-debug           Disable debug WebSocket stream\n");
+    printf("  --debug-port PORT    Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  --enhance MODE       Image enhancement: none, clahe, gray, adaptive (default: %s)\n", g_config.enhance_mode.c_str());
     printf("  --test-rec PATH      Test recognizer with an image file and exit\n");
     printf("  -v, --verbose        Enable verbose logging\n");
@@ -97,6 +106,8 @@ static bool parse_args(int argc, char** argv) {
         {"mqtt-topic", required_argument, 0, 6},
         {"no-rtsp", no_argument, 0, 7},
         {"no-mqtt", no_argument, 0, 8},
+        {"no-debug", no_argument, 0, 12},
+        {"debug-port", required_argument, 0, 13},
         {"test-rec", required_argument, 0, 9},
         {"enhance", required_argument, 0, 11},
         {"verbose", no_argument, 0, 'v'},
@@ -116,6 +127,8 @@ static bool parse_args(int argc, char** argv) {
             case 6: g_config.mqtt_topic = optarg; break;
             case 7: g_config.enable_rtsp = false; break;
             case 8: g_config.enable_mqtt = false; break;
+            case 12: g_config.enable_debug = false; break;
+            case 13: g_config.debug_port = std::stoi(optarg); break;
             case 9: g_config.test_rec_image = optarg; break;
             case 11: g_config.enhance_mode = optarg; break;
             case 'v': g_config.verbose = true; break;
@@ -201,6 +214,84 @@ static bool init_video_streaming() {
     return true;
 }
 
+// JSON-escape a string for embedding in the debug /results document
+// (debug_stream_build_results inserts labels verbatim, so escaping is the
+// caller's responsibility; the MQTT publisher has its own escaper).
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
+
+// Truncate a UTF-8 string to at most max_bytes without splitting a
+// multi-byte sequence (back off over continuation bytes).
+static std::string utf8_truncate(const std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) return s;
+    size_t n = max_bytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+    return s.substr(0, n);
+}
+
+// Assemble the debug /results envelope (shared debug_stream builder).
+// OCR detection boxes are 4-point polygons in inference-resolution pixels;
+// the console overlay draws axis-aligned [cx,cy,w,h] boxes, so each polygon
+// is reduced to its bounding rect. box[5] carries the recognized text
+// (truncated for the overlay); the full recognized strings ride along in
+// extra_json as "texts":[...].
+// NOTE: this is a separate document from the MQTT payload; the MQTT format
+// is an external contract and must not change.
+static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
+                                            const std::vector<OcrResult>& results,
+                                            const OcrTimings& timings,
+                                            int frame_w, int frame_h) {
+    std::vector<debug_stream_box_t> boxes;
+    boxes.reserve(results.size());
+    std::ostringstream texts_json;
+    texts_json << "\"texts\":[";
+    for (size_t i = 0; i < results.size(); ++i) {
+        const auto& r = results[i];
+        float min_x = r.box.points[0][0], max_x = min_x;
+        float min_y = r.box.points[0][1], max_y = min_y;
+        for (int p = 1; p < 4; ++p) {
+            min_x = std::min(min_x, r.box.points[p][0]);
+            max_x = std::max(max_x, r.box.points[p][0]);
+            min_y = std::min(min_y, r.box.points[p][1]);
+            max_y = std::max(max_y, r.box.points[p][1]);
+        }
+        std::string label = r.text.empty() ? "text" : utf8_truncate(r.text, 32);
+        boxes.push_back({(min_x + max_x) * 0.5f,
+                         (min_y + max_y) * 0.5f,
+                         max_x - min_x,
+                         max_y - min_y,
+                         r.det_confidence,
+                         json_escape(label)});
+        if (i > 0) texts_json << ",";
+        texts_json << "\"" << json_escape(r.text) << "\"";
+    }
+    texts_json << "]";
+    return debug_stream_build_results(timestamp_ms, frame_id, timings.total_ms,
+                                      frame_w, frame_h, boxes, nullptr, texts_json.str());
+}
+
 static bool init_mqtt() {
     if (!g_config.enable_mqtt) {
         MA_LOGI(TAG, "MQTT publishing disabled");
@@ -223,6 +314,10 @@ static bool init_mqtt() {
 static void cleanup() {
     if (g_camera) {
         g_camera->stopStream();
+    }
+
+    if (g_config.enable_debug) {
+        debug_stream_destroy();
     }
 
     if (g_config.enable_rtsp) {
@@ -289,6 +384,15 @@ static void process_frame() {
 
     // Return frame to camera
     g_camera->returnFrame(frame);
+
+    // Push the same result to debug WS clients (sscma-node format).
+    // debug_stream is lazy: skip building JSON when nobody is connected.
+    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        std::string debug_json = build_debug_results_json(timestamp_ms, g_frame_id,
+                                                          results, timings,
+                                                          frame_w, frame_h);
+        debug_stream_publish_result(debug_json.c_str(), debug_json.size());
+    }
 
     // Publish via MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
@@ -369,6 +473,10 @@ int main(int argc, char** argv) {
     if (!init_pipeline()) { cleanup(); return 1; }
     if (!init_camera()) { cleanup(); return 1; }
     if (!init_video_streaming()) { cleanup(); return 1; }
+    // Debug stream (non-fatal: on failure run without it)
+    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
+        g_config.enable_debug = false;
+    }
     if (!init_mqtt()) { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
