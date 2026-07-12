@@ -366,6 +366,23 @@
     "passwordExtra": "Password must be 8-32 characters and include letters, numbers, and symbols",
     "removeConfirm": "This action cannot revert, are you sure you want to remove this SSH key?"
   },
+  "runtimeMode": {
+    "title": "Runtime Mode",
+    "console": "Console Mode",
+    "consoleDesc": "Production mode: the C++ application gallery owns the camera. Node-RED and sscma-node stay disabled.",
+    "nodered": "Node-RED Mode",
+    "noderedDesc": "Graphical flow editor for prototyping and debugging (lower performance). Console applications are stopped.",
+    "current": "Current",
+    "switchTo": "Switch",
+    "switchingBtn": "Switching…",
+    "confirmTitleConsole": "Switch to Console mode?",
+    "confirmTitleNodered": "Switch to Node-RED mode?",
+    "confirmContent": "This stops the currently running application/flows and hands the camera over to the other mode. The switch takes up to a minute; the page will reload automatically when it completes.",
+    "busy": "A mode switch is already in progress, please wait",
+    "failed": "Failed to switch the runtime mode",
+    "noderedBanner": "The device is running in Node-RED mode — console applications are stopped and unavailable.",
+    "switchBack": "Switch to Console"
+  },
   "system": {
     "update": "Update",
     "softwareUpdate": "Software Update",

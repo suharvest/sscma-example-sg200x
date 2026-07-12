@@ -1,6 +1,9 @@
 /**
  * Shared sidebar menu definition (PC + mobile).
- * Gallery mode hides the Node-RED–backed Workspace/Dashboard entries.
+ * Gallery mode hides the Node-RED–backed Workspace/Dashboard entries;
+ * Node-RED mode symmetrically hides the Console group (P4-D). Routes stay
+ * registered either way — direct links land on pages that render their own
+ * "wrong mode" hints (e.g. the Applications banner).
  *
  * `label` / `title` are i18n keys — render with t(item.label) / t(section.title).
  */
@@ -21,22 +24,33 @@ export interface MenuSection {
 interface MenuOptions {
   galleryMode: boolean;
   isReCamera: boolean;
+  /**
+   * False until queryDeviceInfo has populated the store. While unknown we
+   * keep the pre-P4-D rendering (Console section visible) to avoid the
+   * sidebar flashing on every load in the common console-mode case.
+   */
+  modeKnown?: boolean;
 }
 
 export function getMenuSections({
   galleryMode,
   isReCamera,
+  modeKnown = true,
 }: MenuOptions): MenuSection[] {
-  const sections: MenuSection[] = [
-    {
+  const sections: MenuSection[] = [];
+
+  // Console group (Applications/Live/Device) is gallery-mode only: in
+  // Node-RED mode the C++ app stack is stopped, so the entries are hidden.
+  if (galleryMode || !modeKnown) {
+    sections.push({
       title: "menu.sectionConsole",
       items: [
         { key: "applications", label: "menu.applications", route: "/" },
         { key: "live", label: "menu.live", route: "/live" },
         { key: "device", label: "menu.device", route: "/device" },
       ],
-    },
-  ];
+    });
+  }
 
   if (!galleryMode) {
     const workspaceItems: MenuItem[] = [];

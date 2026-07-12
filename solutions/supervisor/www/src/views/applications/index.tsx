@@ -21,6 +21,8 @@ import { uploadFiles, ensureDirectory } from "@/api/files";
 import { resolveRtspUrl } from "@/utils/appStream";
 import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
 import IntegrationDoc from "@/components/integration-doc";
+import useConfigStore from "@/store/config";
+import useRunModeSwitch from "@/hooks/useRunModeSwitch";
 
 const RUNNING_STATES = ["RUNNING", "STARTING"];
 
@@ -246,6 +248,15 @@ const Applications = () => {
   const [installOpen, setInstallOpen] = useState(false);
   const navigate = useNavigate();
 
+  // P4-D: in Node-RED mode the C++ app stack is stopped and this page is
+  // removed from the menu — a direct link still lands here, so show a hint
+  // banner with a switch-back action instead of a broken gallery.
+  const { galleryMode, deviceInfo } = useConfigStore();
+  const modeKnown = Boolean(deviceInfo?.appName);
+  const noderedMode = modeKnown && !galleryMode;
+  // renamed: `switching` is taken by the app switch/stop state above
+  const { switching: modeSwitching, requestSwitch } = useRunModeSwitch();
+
   const copyText = (text: string) => {
     navigator.clipboard
       ?.writeText(text)
@@ -381,6 +392,25 @@ const Applications = () => {
           </Button>
         </div>
       </div>
+
+      {noderedMode && (
+        <Alert
+          className="mt-16"
+          type="warning"
+          showIcon
+          message={t("runtimeMode.noderedBanner")}
+          action={
+            <Button
+              size="small"
+              type="primary"
+              loading={modeSwitching === "console"}
+              onClick={() => requestSwitch("console")}
+            >
+              {t("runtimeMode.switchBack")}
+            </Button>
+          }
+        />
+      )}
 
       <InstallAppModal
         open={installOpen}

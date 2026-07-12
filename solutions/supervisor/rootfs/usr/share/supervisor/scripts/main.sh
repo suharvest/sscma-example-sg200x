@@ -1197,6 +1197,104 @@ function app_install() {
 ##################################################
 
 ##################################################
+# run mode (deviceMgr/getRunMode | setRunMode), P4-D
+# Mode file: /userdata/local/apps/mode — one line, "console" or "nodered".
+# Missing / unreadable / unknown content always degrades to "console".
+#   console : C++ gallery apps own the camera; Node-RED / sscma-node init
+#             scripts are parked under a K prefix.
+#   nodered : Node-RED / sscma-node run (S prefix), gallery apps stay stopped
+#             and app_restore is skipped at boot (see S93sscma-supervisor).
+# The supervisor process is NOT restarted here: the C++ side (api_device::
+# setRunMode) flips _gallery_mode and creates/destroys the serviced watchdog
+# in-process after this script returns OK.
+readonly RUN_MODE_FILE="$APPS_USER_DIR/mode"
+
+_run_mode_read() {
+    local mode
+    mode=$(head -n 1 "$RUN_MODE_FILE" 2>/dev/null | tr -d '[:space:]')
+    [ "$mode" = "nodered" ] || mode="console"
+    echo "$mode"
+}
+
+# atomic write (tmp + sync + rename), same pattern as app_write_state
+_run_mode_write() {
+    mkdir -p "$APPS_USER_DIR"
+    local tmp="$APPS_USER_DIR/.mode.tmp"
+    printf '%s\n' "$1" >"$tmp" && sync && mv -f "$tmp" "$RUN_MODE_FILE"
+}
+
+function getRunMode() {
+    printf '{"mode": "%s"}' "$(_run_mode_read)"
+}
+
+# _svc_enable <base> : /etc/init.d/K<base> -> S<base> (idempotent: only moves
+# when the K file exists and the S file does not). Prints the S path when the
+# service script exists in enabled position, nothing otherwise.
+_svc_enable() {
+    local base="$1" # e.g. 03node-red
+    if [ -f "/etc/init.d/K$base" ] && [ ! -f "/etc/init.d/S$base" ]; then
+        mv "/etc/init.d/K$base" "/etc/init.d/S$base"
+    fi
+    [ -f "/etc/init.d/S$base" ] && echo "/etc/init.d/S$base"
+    return 0
+}
+
+# _svc_disable <base> : stop S<base> (10s TERM-only budget) then park it as
+# K<base>. Idempotent: no-op when already K / absent.
+_svc_disable() {
+    local base="$1"
+    if [ -f "/etc/init.d/S$base" ]; then
+        _app_run_timeout 10 "/etc/init.d/S$base" stop >/dev/null 2>&1
+        mv "/etc/init.d/S$base" "/etc/init.d/K$base"
+    fi
+    return 0
+}
+
+# setRunMode <console|nodered> : persist the mode, then move the camera stack
+# over. Every sub-step is idempotent, so repeated calls with the same mode are
+# harmless (services already in position, stop/start tolerate that).
+function setRunMode() {
+    local mode="$2"
+    case "$mode" in
+    console | nodered) ;;
+    *)
+        echo "$STR_FAILED"
+        return 1
+        ;;
+    esac
+
+    _run_mode_write "$mode" || {
+        echo "$STR_FAILED"
+        return 1
+    }
+
+    if [ "$mode" = "nodered" ]; then
+        # Stop the active gallery app first (state.json is advisory: missing,
+        # empty or corrupt state just means nothing to stop). The selection is
+        # deliberately kept in state.json so switching back restores the app.
+        local script=$(app_read_state | sed -n 's/.*"active_script"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        if [ -n "$script" ] && _app_check_script "$script"; then
+            _app_run_timeout 10 "$script" stop >/dev/null 2>&1
+            sleep 2 # VPSS/camera release grace period (kernel driver is fragile)
+        fi
+        local s
+        s=$(_svc_enable "03node-red")
+        [ -n "$s" ] && _app_run_timeout 15 "$s" start >/dev/null 2>&1
+        s=$(_svc_enable "91sscma-node")
+        [ -n "$s" ] && _app_run_timeout 15 "$s" start >/dev/null 2>&1
+    else
+        _svc_disable "91sscma-node"
+        _svc_disable "03node-red"
+        sleep 2 # camera release before the gallery app comes back
+        app_restore >/dev/null 2>&1
+    fi
+
+    echo "$STR_OK"
+}
+# run mode
+##################################################
+
+##################################################
 # audio (deviceMgr/audioRecord | audioPlayTest | audioVolume)
 # Verified on device: card 0 cv182xa_adc = mic (hw:0,0 capture), card 1
 # cv182xa_dac = speaker (hw:1,0 playback). Concurrency is enforced by the

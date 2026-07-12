@@ -837,6 +837,100 @@ api_status_t api_device::getSensorStatus(request_t req, response_t res)
     return API_STATUS_OK;
 }
 
+// --- Runtime mode (P4-D): console (gallery apps) <-> Node-RED -------------
+
+std::string api_device::read_run_mode_file()
+{
+    std::ifstream f("/userdata/local/apps/mode");
+    std::string mode;
+    if (f.is_open()) {
+        std::getline(f, mode);
+        // trim whitespace/CR
+        size_t b = mode.find_first_not_of(" \t\r\n");
+        size_t e = mode.find_last_not_of(" \t\r\n");
+        mode = (b == std::string::npos) ? "" : mode.substr(b, e - b + 1);
+    }
+    return (mode == "nodered") ? "nodered" : "console";
+}
+
+// GET /api/deviceMgr/getRunMode
+// mode        : persisted selection ("console"|"nodered", from the mode file)
+// galleryMode : live process state — matches queryDeviceInfo.galleryMode and
+//               flips in-process on setRunMode (no supervisor restart).
+api_status_t api_device::getRunMode(request_t req, response_t res)
+{
+    response(res, 0, STR_OK, { { "mode", read_run_mode_file() }, { "galleryMode", _gallery_mode } });
+    return API_STATUS_OK;
+}
+
+// POST /api/deviceMgr/setRunMode  body: {mode: "console"|"nodered"}
+//
+// Sequence (all synchronous, the supervisor process is NOT restarted):
+//   1. main.sh setRunMode <mode>: atomically writes the mode file, then
+//      -> nodered: stops the active gallery app (state.json kept so the app
+//         is restored when switching back), K->S renames node-red/sscma-node
+//         init scripts and starts them.
+//      -> console: stops + S->K parks node-red/sscma-node, then app_restore.
+//   2. On OK, flip the in-process state: nodered = create the serviced
+//      watchdog + galleryMode=false; console = destroy it + galleryMode=true.
+//      serviced's destructor is a clean predicate-guarded cv wakeup + join
+//      (serviced.h), and all API handlers run on the single mongoose poll
+//      thread, so swapping the unique_ptr here cannot race another handler.
+//      unique_ptr semantics also guarantee repeated switches never leak
+//      watchdog threads (reset() joins the old one before the new exists).
+//
+// Ordering note: the shell step runs while the old watchdog (if any) is still
+// alive. That is safe: serviced only force-restarts node-red after ~10
+// consecutive 6s probe failures (~60s), far longer than this script's worst
+// case (~40s, see the budget below).
+//
+// The frontend re-queries queryDeviceInfo after this returns (galleryMode has
+// already flipped) and reloads the page; no reconnect/polling dance needed.
+api_status_t api_device::setRunMode(request_t req, response_t res)
+{
+    // Anti-double-click: independent mutex (api_app::_op_mutex guards camera
+    // hand-over between gallery apps; this guards the mode switch itself and
+    // must not be blocked by an unrelated stuck app operation).
+    static std::mutex _mode_mutex;
+
+    std::string mode = get_param(req, "mode");
+    if (mode.empty()) {
+        mode = parse_body(req).value("mode", "");
+    }
+    if (mode != "console" && mode != "nodered") {
+        response(res, -1, "Invalid mode (expected \"console\" or \"nodered\")");
+        return API_STATUS_OK;
+    }
+
+    if (!_mode_mutex.try_lock()) {
+        response(res, -2, "busy: a mode switch is already in progress");
+        return API_STATUS_OK;
+    }
+    std::lock_guard<std::mutex> lk(_mode_mutex, std::adopt_lock);
+
+    // Budget: worst case ->nodered = app stop 10s + 2s VPSS release + 2x15s
+    // service starts; ->console = 2x10s stops + 2s + async app_restore.
+    std::string result = script_timeout(60, __func__, mode);
+    if (result != STR_OK) {
+        response(res, -1, result.empty() ? "setRunMode failed (timeout)" : result);
+        return API_STATUS_OK;
+    }
+
+    if (mode == "nodered") {
+        if (!_serviced) {
+            _serviced = std::make_unique<serviced>();
+        }
+        _gallery_mode = false;
+    } else {
+        _serviced.reset(); // joins the watchdog thread cleanly
+        _gallery_mode = true;
+    }
+    LOGI("Run mode switched to '%s' (galleryMode=%d)", mode.c_str(), (int)_gallery_mode);
+
+    response(res, 0, STR_OK, { { "mode", mode }, { "galleryMode", _gallery_mode } });
+    return API_STATUS_OK;
+}
+
 // Read battery voltage once (called by collector thread)
 api_device::BatteryVoltageData api_device::read_battery_voltage()
 {

@@ -364,6 +364,23 @@
     "passwordExtra": "密码须为 8-32 位，且包含字母、数字和符号",
     "removeConfirm": "此操作不可撤销，确定要删除该 SSH 密钥吗？"
   },
+  "runtimeMode": {
+    "title": "运行模式",
+    "console": "Console 模式",
+    "consoleDesc": "生产模式：C++ 应用画廊独占摄像头，Node-RED 与 sscma-node 保持停用。",
+    "nodered": "Node-RED 模式",
+    "noderedDesc": "图形化流程编排，适合原型与调试（性能较低）。Console 应用将被停止。",
+    "current": "当前模式",
+    "switchTo": "切换",
+    "switchingBtn": "切换中…",
+    "confirmTitleConsole": "切换到 Console 模式？",
+    "confirmTitleNodered": "切换到 Node-RED 模式？",
+    "confirmContent": "切换会停止当前运行的应用/流程，并把摄像头移交给另一模式。过程最长约一分钟，完成后页面会自动刷新。",
+    "busy": "已有一个模式切换正在进行，请稍候",
+    "failed": "运行模式切换失败",
+    "noderedBanner": "设备当前处于 Node-RED 模式，Console 应用已停止且不可用。",
+    "switchBack": "切回 Console 模式"
+  },
   "system": {
     "update": "系统更新",
     "softwareUpdate": "软件更新",

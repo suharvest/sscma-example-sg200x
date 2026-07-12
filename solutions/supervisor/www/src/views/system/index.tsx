@@ -15,6 +15,21 @@ import { DeviceChannleMode, UpdateStatus, PowerSourceMode } from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
 import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
+import useRunModeSwitch, { RunMode } from "@/hooks/useRunModeSwitch";
+
+// P4-D runtime mode selector entries (labels/descriptions are i18n keys)
+const runModeList: { mode: RunMode; label: string; desc: string }[] = [
+  {
+    mode: "console",
+    label: "runtimeMode.console",
+    desc: "runtimeMode.consoleDesc",
+  },
+  {
+    mode: "nodered",
+    label: "runtimeMode.nodered",
+    desc: "runtimeMode.noderedDesc",
+  },
+];
 
 const channelList = [
   { label: "system.channelSelfHost", value: DeviceChannleMode.Self },
@@ -47,7 +62,14 @@ function System() {
     onPowerSourceChange,
   } = useData();
 
-  const { systemUpdateState, setSystemUpdateState } = useConfigStore();
+  const { systemUpdateState, setSystemUpdateState, galleryMode } =
+    useConfigStore();
+
+  // Runtime mode (P4-D). galleryMode mirrors the live process state; the
+  // mode is only trustworthy once queryDeviceInfo has populated the store.
+  const modeKnown = Boolean(deviceInfo?.appName);
+  const currentMode: RunMode = galleryMode ? "console" : "nodered";
+  const { switching, requestSwitch } = useRunModeSwitch();
 
   const [isDashboard, setIsDashboard] = useState(false);
   useEffect(() => {
@@ -72,6 +94,63 @@ function System() {
 
   return (
     <div className="my-8 p-16">
+      {!isDashboard && (
+        <>
+          <div className="font-bold text-18 mb-14">
+            {t("runtimeMode.title")}
+          </div>
+          <div className="bg-white rounded-20 px-24 mb-24">
+            {runModeList.map((item, index) => {
+              const isCurrent = modeKnown && currentMode === item.mode;
+              return (
+                <div
+                  key={item.mode}
+                  className={`flex justify-between items-center py-20 ${
+                    index ? "border-t" : ""
+                  }`}
+                >
+                  <div className="flex-1 mr-16">
+                    <div className="flex items-center flex-wrap">
+                      <span className="font-bold">{t(item.label)}</span>
+                      {isCurrent && (
+                        <span
+                          className="ml-8 text-12 px-8 rounded-full"
+                          style={{
+                            background: "#f0f7e0",
+                            color: "#6a9316",
+                            lineHeight: "20px",
+                          }}
+                        >
+                          {t("runtimeMode.current")}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-12 opacity-60 mt-4">
+                      {t(item.desc)}
+                    </div>
+                  </div>
+                  {!isCurrent && (
+                    <Button
+                      type="primary"
+                      loading={switching === item.mode}
+                      disabled={
+                        !modeKnown ||
+                        (switching !== null && switching !== item.mode)
+                      }
+                      onClick={() => requestSwitch(item.mode)}
+                    >
+                      {switching === item.mode
+                        ? t("runtimeMode.switchingBtn")
+                        : t("runtimeMode.switchTo")}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
       <div className="font-bold text-18 mb-14">{t("system.update")}</div>
       <div className="bg-white rounded-20 px-24">
         <div className="flex justify-between pt-24">

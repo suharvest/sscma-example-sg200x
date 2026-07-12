@@ -75,6 +75,12 @@ private:
     static api_status_t queryBatteryInfo(request_t req, response_t res);
     static api_status_t getSensorStatus(request_t req, response_t res);
 
+    // Runtime mode (P4-D): console (gallery apps) <-> Node-RED.
+    static api_status_t getRunMode(request_t req, response_t res);
+    static api_status_t setRunMode(request_t req, response_t res);
+    // Reads /userdata/local/apps/mode; anything but "nodered" -> "console".
+    static std::string read_run_mode_file();
+
     // Battery collector thread function
     static void battery_collector_thread();
     static BatteryVoltageData read_battery_voltage();
@@ -85,6 +91,15 @@ public:
     explicit api_device(bool gallery_mode = false)
         : api_base("deviceMgr")
     {
+        // P4-D: the persisted run-mode file overrides the -g flag at startup.
+        // S93sscma-supervisor always passes -g; when the user selected
+        // Node-RED mode we downgrade here (serviced watchdog on, galleryMode
+        // reported false) instead of requiring a different launch command.
+        // Without -g (legacy manual launches) the flag semantics are kept.
+        if (gallery_mode && read_run_mode_file() == "nodered") {
+            LOGI("Run-mode file says 'nodered': overriding -g at startup");
+            gallery_mode = false;
+        }
         _gallery_mode = gallery_mode;
         if (!_gallery_mode) {
             _serviced = std::make_unique<serviced>();
@@ -145,6 +160,9 @@ public:
 
         REG_API_NO_AUTH(queryBatteryInfo);
         REG_API(getSensorStatus);
+
+        REG_API_NO_AUTH(getRunMode); // read-only, same trust level as queryDeviceInfo
+        REG_API(setRunMode); // security: token required (starts/stops services)
 
         // Check ADC availability before starting battery collector
         _adc_available = check_adc_available();

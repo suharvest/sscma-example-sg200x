@@ -18,8 +18,15 @@ disable_service() {
     fi
 }
 
-disable_service S03node-red
-disable_service S91sscma-node
+# Run-mode aware (P4-D): only park the services when the device is in console
+# mode (the factory default; a missing/unreadable mode file means console).
+# In Node-RED mode a supervisor upgrade must NOT take down the user's flows.
+RUN_MODE="$(head -n 1 /userdata/local/apps/mode 2>/dev/null | tr -d ' \t\r\n')" || true
+[ "$RUN_MODE" = "nodered" ] || RUN_MODE=console
+if [ "$RUN_MODE" = "console" ]; then
+    disable_service S03node-red
+    disable_service S91sscma-node
+fi
 
 if [ -f /etc/init.d/S93sscma-supervisor ]; then
     /etc/init.d/S93sscma-supervisor start

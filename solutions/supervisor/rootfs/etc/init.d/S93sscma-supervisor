@@ -37,13 +37,22 @@ start() {
     if [ "$PID" ]; then
         echo "$DAEMON is already running."
     else
-        # -g: gallery mode (no Node-RED/sscma-node watchdog)
+        # -g: gallery mode (no Node-RED/sscma-node watchdog).
+        # -g stays unconditional here: when the run-mode file
+        # (/userdata/local/apps/mode, P4-D) says "nodered" the supervisor
+        # itself downgrades at startup (constructs the serviced watchdog and
+        # reports galleryMode=false), and deviceMgr/setRunMode flips the mode
+        # at runtime without restarting this service.
         $DAEMON_PATH/$DAEMON -g >/dev/null 2>&1 &
         [ $? = 0 ] && echo "OK" || echo "FAIL"
 
-        # Restore the last active gallery app asynchronously.
+        # Restore the last active gallery app asynchronously — console mode
+        # only: in Node-RED mode the camera belongs to the Node-RED stack.
         # Never blocks supervisor startup; failures are non-fatal.
-        (sleep 3 && /usr/share/supervisor/scripts/main.sh app_restore) >/dev/null 2>&1 &
+        RUN_MODE="$(head -n 1 /userdata/local/apps/mode 2>/dev/null | tr -d ' \t\r\n')"
+        if [ "$RUN_MODE" != "nodered" ]; then
+            (sleep 3 && /usr/share/supervisor/scripts/main.sh app_restore) >/dev/null 2>&1 &
+        fi
     fi
 }
 
