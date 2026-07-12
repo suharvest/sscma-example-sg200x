@@ -1155,6 +1155,44 @@ function app_restore() {
     "$script" start >/dev/null 2>&1 &
     echo "$STR_OK"
 }
+
+# app_install <deb_path> : install an application package with opkg.
+# Second line of defense: the supervisor C++ (appMgr/installApp) already
+# realpath-validates the argument (under /userdata/, .deb suffix, regular
+# file, < 200MB, safe charset); the prefix/suffix/traversal rules are
+# re-checked here in case this script is ever driven by another caller.
+# Output protocol (consumed by installApp): first line "EXIT:<code>"
+# (124 = timeout), then the tail (2KB) of the opkg output.
+function app_install() {
+    local deb="$2"
+    case "$deb" in
+    /userdata/*.deb) ;;
+    *)
+        echo "EXIT:1"
+        echo "rejected: package path must match /userdata/*.deb"
+        return 1
+        ;;
+    esac
+    case "$deb" in
+    *..*)
+        echo "EXIT:1"
+        echo "rejected: path traversal"
+        return 1
+        ;;
+    esac
+    if [ -L "$deb" ] || [ ! -f "$deb" ]; then
+        echo "EXIT:1"
+        echo "rejected: not a regular file: $deb"
+        return 1
+    fi
+    local out="$WORK_DIR/app_install.out"
+    _app_run_timeout 120 opkg install --force-reinstall "$deb" >"$out" 2>&1
+    local ret=$?
+    echo "EXIT:$ret"
+    tail -c 2048 "$out" 2>/dev/null
+    rm -f "$out"
+    return 0
+}
 # app manager
 ##################################################
 

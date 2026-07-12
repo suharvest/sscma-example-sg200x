@@ -97,7 +97,16 @@ public:
     template <typename... Args>
     static std::string script(const std::string& cmd, Args&&... args)
     {
-        int timeout_sec = 30;
+        return script_timeout(30, cmd, std::forward<Args>(args)...);
+    }
+
+    // Same as script() but with an explicit read timeout. Needed for slow
+    // operations like `app_install` (opkg has a 120s budget in main.sh; the
+    // caller passes a slightly larger value so main.sh times out first and
+    // its "EXIT:124" marker is still captured here).
+    template <typename... Args>
+    static std::string script_timeout(int timeout_sec, const std::string& cmd, Args&&... args)
+    {
         std::stringstream ss;
         ((ss << "'" << std::forward<Args>(args) << "' "), ...);
         std::string args_str = ss.str();

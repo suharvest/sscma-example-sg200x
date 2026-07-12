@@ -32,6 +32,7 @@ api_app::api_app()
     REG_API(getConfig);
     REG_API(setConfig);
     REG_API(getIntegrationDoc);
+    REG_API(installApp);
 }
 
 const char* api_app::state_str(app_state s)
@@ -847,5 +848,118 @@ api_status_t api_app::getIntegrationDoc(request_t req, response_t res)
     }
 
     response(res, 0, STR_OK, data);
+    return API_STATUS_OK;
+}
+
+// POST /api/appMgr/installApp  body: {path}
+// Installs an application package (.deb) that was previously uploaded via
+// fileMgr/upload — which always lands under /userdata — using
+// `main.sh app_install` (opkg install --force-reinstall, 120s budget).
+//
+// Trust boundary (documented on purpose): opkg installs an arbitrary package
+// as root. That is the same trust level the rest of this token-protected LAN
+// console already grants (init-script control, file upload, shell via ttyd),
+// so no additional sandboxing is attempted here. The path validation below is
+// about preventing directory traversal / shell injection and accidental
+// non-package installs, not about containing a malicious package.
+//
+// Response data: {path, exit_code, output (opkg tail, <=2KB), apps_count}.
+// apps_count is the number of manifests visible after the install so the
+// frontend knows to refresh its gallery. code: 0 ok, -1 failed, -2 busy.
+api_status_t api_app::installApp(request_t req, response_t res)
+{
+    static constexpr uintmax_t MAX_DEB_SIZE = 200ull * 1024 * 1024; // 200MB
+    static constexpr size_t MAX_OUTPUT_TAIL = 2048; // opkg output tail limit
+
+    auto&& body = parse_body(req);
+    std::string path = body.value("path", "");
+    if (path.empty() || path.size() >= PATH_MAX) {
+        response(res, -1, "Missing or oversized path");
+        return API_STATUS_OK;
+    }
+
+    // Whitelist: must resolve (realpath) to a regular .deb file under
+    // /userdata/. realpath collapses any ../ and symlink tricks first.
+    char resolved[PATH_MAX] = { 0 };
+    if (realpath(path.c_str(), resolved) == nullptr) {
+        response(res, -1, "Package not found: " + path);
+        return API_STATUS_OK;
+    }
+    std::string deb(resolved);
+    if (deb.rfind("/userdata/", 0) != 0) {
+        response(res, -1, "Package must live under /userdata (upload it via the file manager first)");
+        return API_STATUS_OK;
+    }
+    const std::string suffix = ".deb";
+    if (deb.size() <= suffix.size() || deb.compare(deb.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        response(res, -1, "Package must be a .deb file");
+        return API_STATUS_OK;
+    }
+    // The resolved path is passed to main.sh through a single-quoted shell
+    // argument (api_base::script). Restrict it to a safe charset so it can
+    // never break out of the quoting, whatever the uploaded filename was.
+    for (char c : deb) {
+        if (!(std::isalnum((unsigned char)c) || c == '/' || c == '.' || c == '-' || c == '_' || c == '+')) {
+            response(res, -1, "Package path contains unsupported characters");
+            return API_STATUS_OK;
+        }
+    }
+    struct stat st;
+    if (stat(deb.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        response(res, -1, "Package is not a regular file");
+        return API_STATUS_OK;
+    }
+    if ((uintmax_t)st.st_size >= MAX_DEB_SIZE) {
+        response(res, -1, "Package exceeds the 200MB limit");
+        return API_STATUS_OK;
+    }
+
+    // Installing while another operation switches/stops apps would race the
+    // camera hand-over; same try-lock/busy semantics as switch/setModel.
+    if (!_op_mutex.try_lock()) {
+        response(res, -2, "busy: another app operation is in progress");
+        return API_STATUS_OK;
+    }
+    std::unique_lock<std::timed_mutex> lk(_op_mutex, std::adopt_lock);
+
+    // main.sh output protocol: first line "EXIT:<code>" (124 = opkg timed
+    // out after 120s), then the tail of the opkg output. 130s here so the
+    // shell-side timeout always fires first.
+    std::string out = script_timeout(130, "app_install", deb);
+
+    int exit_code = -1;
+    std::string opkg_out = out;
+    if (out.rfind("EXIT:", 0) == 0) {
+        size_t nl = out.find('\n');
+        std::string code_str = out.substr(5, (nl == std::string::npos ? out.size() : nl) - 5);
+        try {
+            exit_code = std::stoi(code_str);
+        } catch (const std::exception&) {
+            exit_code = -1;
+        }
+        opkg_out = (nl == std::string::npos) ? "" : out.substr(nl + 1);
+    }
+    if (opkg_out.size() > MAX_OUTPUT_TAIL) {
+        opkg_out = opkg_out.substr(opkg_out.size() - MAX_OUTPUT_TAIL);
+    }
+
+    // Rescan manifests: a well-behaved package drops its manifest into
+    // /userdata/local/apps/ (or ships a built-in one), so the count tells
+    // the frontend the gallery content may have changed.
+    int apps_count = (int)load_manifests().size();
+
+    json data = json::object();
+    data["path"] = deb;
+    data["exit_code"] = exit_code;
+    data["output"] = opkg_out;
+    data["apps_count"] = apps_count;
+
+    if (exit_code == 0) {
+        response(res, 0, STR_OK, data);
+    } else if (exit_code == 124) {
+        response(res, -1, "opkg install timed out (120s)", data);
+    } else {
+        response(res, -1, "opkg install failed (exit " + std::to_string(exit_code) + ")", data);
+    }
     return API_STATUS_OK;
 }

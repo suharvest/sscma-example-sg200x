@@ -42,6 +42,7 @@ private:
     static api_status_t getConfig(request_t req, response_t res);
     static api_status_t setConfig(request_t req, response_t res);
     static api_status_t getIntegrationDoc(request_t req, response_t res);
+    static api_status_t installApp(request_t req, response_t res);
 
     // helpers
     static bool valid_app_id(const std::string& id);
