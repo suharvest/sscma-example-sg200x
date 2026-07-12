@@ -177,7 +177,7 @@ sscma-node compatible format, one message per inference frame:
 }
 ```
 
-- `boxes` entries are `[cx, cy, w, h, score, target]` where `cx, cy` is the **box center in pixels** of the inference resolution (`resolution`), `w, h` are pixel width/height, `score` is 0–1 (or 0–100), `target` is the class index into `labels`.
+- `boxes` entries are `[cx, cy, w, h, score, target]` where `cx, cy` is the **box center in pixels** of the inference resolution (`resolution`), `w, h` are pixel width/height, `score` is 0–1 (or 0–100), `target` is the class name string (e.g. `"person"`); a parallel `labels` array is also included for indexed consumers.
 - Note the difference vs MQTT: `/results` uses **pixel** coordinates; MQTT `bbox` uses **normalized** coordinates. Both are center-based.
 
 ## Models (switchable)

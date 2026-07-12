@@ -148,7 +148,7 @@ sscma-node 兼容格式，每帧一条：
 }
 ```
 
-- `boxes` 元素为 `[cx, cy, w, h, score, target]`，其中 `cx, cy` 是推理分辨率（`resolution`）下的**像素中心点**，`w, h` 为像素宽高，`score` 为 0–1（或 0–100），`target` 是 `labels` 的类别索引。
+- `boxes` 元素为 `[cx, cy, w, h, score, target]`，其中 `cx, cy` 是推理分辨率（`resolution`）下的**像素中心点**，`w, h` 为像素宽高，`score` 为 0–1（或 0–100），`target` 是类别名称字符串（如 `"person"`）；同时提供 `labels` 数组供按索引消费的客户端使用。
 - 与 MQTT 的区别：`/results` 使用**像素**坐标；MQTT `bbox` 使用**归一化**坐标。二者均为中心点表示。
 
 ## 模型（可切换）

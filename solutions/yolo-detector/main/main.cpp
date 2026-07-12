@@ -300,6 +300,11 @@ static bool init_debug_stream() {
 
 // Build the sscma-node compatible result JSON for the debug /results channel:
 // boxes are center-based pixels in the inference resolution.
+// The 6th box element is the human-readable class name (string): the console
+// overlay (BoxOverlay in live/index.tsx) renders box[5] verbatim as the box
+// label, so a string here is what makes class names appear on screen. The
+// parallel `labels` array (labels[i] <-> boxes[i]) is kept for programmatic
+// consumers that follow the sscma-node convention.
 // NOTE: this is a separate document from the MQTT payload; the MQTT format is
 // an external contract and must not change.
 static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
@@ -322,7 +327,7 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
              << det.w * g_config.inference_width << ","
              << det.h * g_config.inference_height << ","
              << std::setprecision(3) << det.confidence << std::setprecision(1) << ","
-             << det.class_id << "]";
+             << "\"" << Detector::getClassName(det.class_id) << "\"]";
     }
     json << "],";
     json << "\"labels\":[";
