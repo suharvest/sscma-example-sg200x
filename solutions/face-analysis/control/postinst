@@ -25,4 +25,10 @@ echo ""
 echo "RTSP stream: rtsp://<device_ip>:554/live"
 echo "MQTT topic: recamera/face-analysis/results"
 
+# Migration: remove the auto-start (S-prefixed) script from older package
+# layouts. Gallery apps must NOT start at boot — only the supervisor's
+# app_restore starts the single active application (K-prefix is skipped
+# by SysVinit but still invocable by path).
+rm -f /etc/init.d/S92face-analysis
+
 exit 0

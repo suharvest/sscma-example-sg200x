@@ -5,7 +5,7 @@
     "scene": "General",
     "description": "General-purpose YOLO object detection. Publishes detection results over MQTT and streams H.264 via RTSP. Supports switching between detection models.",
     "type": "native",
-    "init_script": "/etc/init.d/S92yolo-detector",
+    "init_script": "/etc/init.d/K92yolo-detector",
     "rtsp_url": "rtsp://{host}:8554/live0",
     "mqtt_topic": "recamera/yolo-detector/results",
     "debug_ws": {

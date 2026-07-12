@@ -10,7 +10,7 @@ mkdir -p /userdata/local/apps
 
 # Set permissions
 chmod +x /usr/local/bin/yolo-detector
-chmod +x /etc/init.d/S92yolo-detector 2>/dev/null || true
+chmod +x /etc/init.d/K92yolo-detector 2>/dev/null || true
 
 echo "YOLO Detector installed successfully!"
 echo ""
@@ -26,5 +26,11 @@ echo ""
 echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
 echo "MQTT topic:      recamera/yolo-detector/results"
 echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+# Migration: remove the auto-start (S-prefixed) script from older package
+# layouts. Gallery apps must NOT start at boot — only the supervisor's
+# app_restore starts the single active application (K-prefix is skipped
+# by SysVinit but still invocable by path).
+rm -f /etc/init.d/S92yolo-detector
 
 exit 0
