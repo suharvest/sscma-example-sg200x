@@ -1301,25 +1301,41 @@ function app_install() {
 ##################################################
 
 ##################################################
-# memory protection (#19) — no cgroups on this kernel (CONFIG_CGROUPS unset),
-# so a runaway Node-RED flow on the 256MB device can thrash RAM+swap and
-# starve sshd/supervisor (the self-lock incident). Two independent layers:
-#   1. ulimit -v : bound the Node-RED/sscma-node virtual-address-space so a
-#      single process cannot balloon without limit. Verified on this BSP that
-#      the cap propagates through start-stop-daemon to the backgrounded daemon
-#      and that node starts comfortably under it (lean musl build).
+# memory protection (#19, Method A) — no cgroups on this kernel
+# (CONFIG_CGROUPS unset), so a runaway Node-RED flow on the 256MB device can
+# thrash RAM+swap and starve sshd/supervisor (the self-lock incident). Two
+# independent layers:
+#   1. nr_memguard RSS watchdog : bound the Node-RED/sscma-node RESIDENT memory
+#      (real physical RAM). Replaces the earlier `ulimit -v` cap, which bounded
+#      VSZ (virtual address space) — the wrong knob: V8/node reserve far more
+#      VSZ (400MB..1GB+) than they ever resident-use, so any VSZ cap tight
+#      enough to matter for physical RAM kept node-red from starting at all
+#      (observed on this BSP: 180MB cap => 1880 never came up). The watchdog
+#      samples /proc/<pid>/RssAnon (private anonymous memory — the true leak
+#      indicator; VmRSS overcounts reclaimable shared/file pages and spikes to
+#      ~172MB during a HEALTHY node-red startup) every few seconds and kills the
+#      node stack when its total exceeds NR_RSS_MAX_KB (2-strike debounce); the
+#      serviced watchdog then relaunches a fresh (low-RSS) node-red. See
+#      nr_memguard.sh for the full contract and the serviced-coordination note.
 #   2. choom (oom_score_adj) : make the node stack the preferred OOM victim
 #      (+800) while the operations lifelines — supervisor (-900) and sshd
 #      (-800) — are near-immune. This is the GUARANTEED backstop: even under
 #      thrash the maintenance/HTTP channel is the last thing the kernel kills,
 #      so the device is always recoverable (HTTP forceConsole / SSH).
-# ulimit -v value is in KiB. V8 heap is separately capped at 64MB
-# (--max-old-space-size in the stock init scripts); this bounds native + mmap
-# growth on top of that.
-readonly NODE_STACK_VSZ_KB=180000
+# The V8 heap is separately capped at 64MB (--max-old-space-size in the stock
+# init scripts); the RSS watchdog bounds native + mmap growth on top of that.
 readonly OOM_ADJ_NODE=800
 readonly OOM_ADJ_SUPERVISOR=-900
 readonly OOM_ADJ_SSHD=-800
+
+# RSS watchdog config (Method A). Default ~146MB of the ~181MB usable RAM.
+# Overridable by writing a plain integer (KiB) to $CONFIG_DIR/nr_rss_max_kb
+# (i.e. /etc/recamera.conf/nr_rss_max_kb — CONFIG_DIR is a directory on this
+# BSP) or by exporting NR_RSS_MAX_KB. The standalone watchdog re-reads this
+# itself; the constants here are only for the start/stop helpers below.
+readonly NR_RSS_MAX_KB_DEFAULT=150000
+readonly NR_MEMGUARD_SCRIPT="$SCRIPTS_DIR/nr_memguard.sh"
+readonly NR_MEMGUARD_PIDFILE="/var/run/nr_memguard.pid"
 
 # _choom_pid <adj> <pid...> : best-effort oom_score_adj via choom, falling back
 # to a direct /proc write. Never fails the caller. Negative values need root
@@ -1353,7 +1369,7 @@ _choom_name() {
 # already running (e.g. a cold boot straight into Node-RED mode), raise it to
 # the top of the kill list. Called once from S93 start (root at boot).
 # Idempotent, best-effort. This is the #19 minimum, always applied regardless
-# of the ulimit layer.
+# of the RSS-watchdog layer.
 function protect_ops_channel() {
     _choom_name "$OOM_ADJ_SUPERVISOR" supervisor
     _choom_name "$OOM_ADJ_SSHD" sshd dropbear
@@ -1362,16 +1378,64 @@ function protect_ops_channel() {
 }
 
 # _svc_run_limited <script> <action> : run a Node-RED/sscma-node init-script
-# action under the virtual-memory cap (inherited by the daemon child), then
-# push the node stack to the top of the OOM kill list. Returns the init
-# script's exit code (124 on timeout). Used everywhere the node stack is
-# (re)started so the protection can never be bypassed.
+# action, then push the node stack to the top of the OOM kill list. Returns the
+# init script's exit code (124 on timeout). Used everywhere the node stack is
+# (re)started so the choom protection can never be bypassed.
+#
+# Method A: the previous `ulimit -v` wrapper was REMOVED here. It capped VSZ,
+# not RSS; V8 reserves far more virtual address space than it resident-uses, so
+# a cap tight enough to bound physical RAM stopped node-red from ever starting.
+# Physical memory is now bounded by the nr_memguard RSS watchdog (started from
+# setRunMode->nodered and S93 boot; see below). The name is kept so all call
+# sites (start_service, setRunMode) are unchanged.
 _svc_run_limited() {
     local script="$1" action="${2:-start}"
-    _app_run_timeout 15 sh -c 'ulimit -v '"$NODE_STACK_VSZ_KB"' 2>/dev/null; exec "$1" "$2"' _ "$script" "$action" >/dev/null 2>&1
+    _app_run_timeout 15 "$script" "$action" >/dev/null 2>&1
     local ret=$?
     _choom_name "$OOM_ADJ_NODE" node-red node-red-pi node sscma-node >/dev/null 2>&1
     return $ret
+}
+
+# nr_memguard_stop : kill any running RSS watchdog (by pid file first, then by
+# script-path match as a fallback) and remove the pid file. Idempotent, never
+# fails the caller. Called on every switch AWAY from nodered (setRunMode
+# ->console, forceConsole) and at boot when the mode is console, so the watchdog
+# only ever lives while the node stack is meant to be running.
+function nr_memguard_stop() {
+    local pid
+    if [ -f "$NR_MEMGUARD_PIDFILE" ]; then
+        pid=$(cat "$NR_MEMGUARD_PIDFILE" 2>/dev/null)
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null || true
+    fi
+    # Fallback: reap any straggler(s) whose cmdline references the watchdog
+    # script (covers a lost pid file / a setsid pid that differs from the
+    # loop's). busybox on this BSP has no pgrep, so scan /proc directly. The
+    # pattern "nr_memguard.sh" cannot match this function's own caller, whose
+    # argv is "<sh> .../main.sh nr_memguard_stop" (no ".sh" after the guard
+    # name), so this never kills the shell running it.
+    local d cmd
+    for d in /proc/[0-9]*; do
+        cmd=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)
+        case "$cmd" in
+        *nr_memguard.sh*) kill -TERM "${d#/proc/}" 2>/dev/null || true ;;
+        esac
+    done
+    rm -f "$NR_MEMGUARD_PIDFILE" 2>/dev/null || true
+    echo "$STR_OK"
+}
+
+# nr_memguard_start : (re)launch the RSS watchdog for the node stack. Idempotent
+# — kills any prior instance first (nr_memguard_stop), then setsid-detaches the
+# standalone loop so it outlives this shell, and records its pid. Only started
+# in nodered mode (the callers guarantee that: setRunMode->nodered success and
+# S93 boot-into-nodered). Best-effort; a missing script is a silent no-op.
+function nr_memguard_start() {
+    [ -f "$NR_MEMGUARD_SCRIPT" ] || { echo "$STR_OK"; return 0; }
+    nr_memguard_stop >/dev/null 2>&1
+    setsid sh "$NR_MEMGUARD_SCRIPT" >/dev/null 2>&1 &
+    local pid=$!
+    echo "$pid" >"$NR_MEMGUARD_PIDFILE" 2>/dev/null || true
+    echo "$STR_OK"
 }
 # memory protection
 ##################################################
@@ -1506,8 +1570,9 @@ function setRunMode() {
         # force-console backstop (#20) so the next reboot honors this choice.
         rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
 
-        # Enable + start each service under the #19 memory cap (ulimit -v +
-        # choom); a failed rename or start aborts.
+        # Enable + start each service under the #19 choom protection (the RSS
+        # watchdog is armed after both are up, below); a failed rename or start
+        # aborts.
         local s
         s=$(_svc_enable "03node-red")
         if [ -z "$s" ]; then
@@ -1532,10 +1597,16 @@ function setRunMode() {
             echo "$STR_FAILED"
             return 1
         }
+
+        # Node-RED is now up and mode is persisted: arm the RSS watchdog so a
+        # runaway flow is bounded to NR_RSS_MAX_KB of physical RAM (Method A).
+        nr_memguard_start >/dev/null 2>&1 || true
     else
         # --- nodered -> console: release the camera. Verify the node stack
         # actually stopped (a lingering holder would collide with the gallery
         # app); if it won't die, abort and do NOT start the gallery app.
+        # Stop the RSS watchdog FIRST so it cannot kill node during teardown.
+        nr_memguard_stop >/dev/null 2>&1 || true
         local svc_err=0
         _svc_disable "91sscma-node" || svc_err=1
         _svc_disable "03node-red" || svc_err=1
@@ -1582,7 +1653,9 @@ function forceConsole() {
     : >"$FORCE_CONSOLE_FLAG" 2>/dev/null || true
     sync 2>/dev/null || true
     # 2. Kill the Node-RED stack outright (no graceful VPSS release: a wedged
-    #    node stack does not hand the camera back cleanly anyway).
+    #    node stack does not hand the camera back cleanly anyway). Stop the RSS
+    #    watchdog first so it does not race the kill / relaunch churn.
+    nr_memguard_stop >/dev/null 2>&1 || true
     killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
     # 3. Park both init scripts as K (idempotent).
     _svc_park_now "03node-red"

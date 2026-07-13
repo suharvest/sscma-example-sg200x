@@ -63,9 +63,10 @@ reconcile_run_mode() {
     # Repair prefix drift so the actual init state matches the intent.
     if [ "$RUN_MODE" = "nodered" ]; then
         # A cold boot directly into Node-RED launches the stock init scripts
-        # (already ordered before S93) without our ulimit cap; that gap is
-        # covered by choom below (ops channel stays protected) and by the
-        # serviced watchdog, which relaunches a failed node stack under the cap.
+        # (already ordered before S93); the ops channel stays protected by
+        # choom below, the RSS watchdog is armed from start() once node-red is
+        # up (#19 Method A), and the serviced watchdog relaunches a failed node
+        # stack.
         _svc_arm 03node-red
         _svc_arm 91sscma-node
     else
@@ -133,7 +134,14 @@ start() {
         # Never blocks supervisor startup; failures are non-fatal.
         RUN_MODE="$(head -n 1 /userdata/local/apps/mode 2>/dev/null | tr -d ' \t\r\n')"
         if [ "$RUN_MODE" != "nodered" ]; then
-            (sleep 3 && /usr/share/supervisor/scripts/main.sh app_restore) >/dev/null 2>&1 &
+            (sleep 3 && "$MAIN_SH" app_restore) >/dev/null 2>&1 &
+            # Console mode: make sure no stale RSS watchdog is left running.
+            "$MAIN_SH" nr_memguard_stop >/dev/null 2>&1 || true
+        else
+            # #19 Method A: boot straight into Node-RED — arm the RSS watchdog
+            # once the node stack has had a moment to come up (the stock init
+            # scripts run before S93). Best-effort, backgrounded, non-fatal.
+            (sleep 5 && [ -x "$MAIN_SH" ] && "$MAIN_SH" nr_memguard_start) >/dev/null 2>&1 &
         fi
     fi
 }
