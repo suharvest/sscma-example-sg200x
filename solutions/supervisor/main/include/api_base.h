@@ -2,14 +2,19 @@
 #define API_BASE_H
 
 #include <cerrno>
+#include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -108,35 +113,90 @@ public:
     template <typename... Args>
     static std::string script_timeout(int timeout_sec, const std::string& cmd, Args&&... args)
     {
-        std::stringstream ss;
-        ((ss << "'" << std::forward<Args>(args) << "' "), ...);
-        std::string args_str = ss.str();
-        std::string full_cmd = _script + " " + cmd + " " + args_str;
+        // #14 HIGH#1: fork + execv (was popen) so the timeout is a HARD upper
+        // bound, not merely a read-loop break followed by an unbounded
+        // pclose()/wait(). The whole management plane's recovery guarantee
+        // (setRunMode / forceConsole must finish within budget so the mode
+        // gate is always released) rests on this primitive never blocking
+        // forever.
+        //
+        // Each arg is passed as an INDEPENDENT argv element (never spliced into
+        // a shell string), which removes the shell-injection surface entirely;
+        // main.sh still sees them as $1/$2/... exactly as before. We exec the
+        // script directly so its shebang (#!/bin/bash) is honored — identical
+        // to the old popen("sh -c \"main.sh ...\"") which also ran main.sh
+        // under bash. (main.sh relies on bash-only features, so it must NOT be
+        // forced under /bin/sh = busybox.)
+        std::vector<std::string> argv_str;
+        argv_str.reserve(2 + sizeof...(args));
+        argv_str.push_back(_script);
+        argv_str.push_back(cmd);
+        auto push_arg = [&argv_str](auto&& a) {
+            std::stringstream s;
+            s << a;
+            argv_str.push_back(s.str());
+        };
+        (push_arg(std::forward<Args>(args)), ...);
 
-        std::unique_ptr<FILE, decltype(&pclose)>
-            pipe(popen(full_cmd.c_str(), "r"), pclose);
+        std::vector<char*> argv;
+        argv.reserve(argv_str.size() + 1);
+        for (auto& s : argv_str) {
+            argv.push_back(const_cast<char*>(s.c_str()));
+        }
+        argv.push_back(nullptr);
+
+        // For logging parity with the old popen() path.
+        std::string full_cmd;
+        for (const auto& s : argv_str) {
+            full_cmd += s;
+            full_cmd += ' ';
+        }
         LOGV("Executing: %s", full_cmd.c_str());
 
-        if (!pipe) {
-            LOGE("popen() failed: %s, errno=%d, strerror=%s",
+        int pipefd[2];
+        if (pipe(pipefd) != 0) {
+            LOGE("pipe() failed: %s, errno=%d, strerror=%s",
                 full_cmd.c_str(), errno, strerror(errno));
-            // throw std::runtime_error("popen() failed for: " + full_cmd);
             return "";
         }
 
+        pid_t pid = fork();
+        if (pid < 0) {
+            LOGE("fork() failed: %s, errno=%d, strerror=%s",
+                full_cmd.c_str(), errno, strerror(errno));
+            close(pipefd[0]);
+            close(pipefd[1]);
+            return "";
+        }
+
+        if (pid == 0) {
+            // Child: only async-signal-safe calls before execv().
+            setpgid(0, 0); // own process group (pgid == child pid)
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[0]);
+            close(pipefd[1]);
+            execv(argv[0], argv.data()); // honors main.sh's #!/bin/bash shebang
+            _exit(127);                  // execv failed
+        }
+
+        // Parent.
+        close(pipefd[1]);    // parent only reads
+        setpgid(pid, pid);   // race-free vs child (harmless EACCES/ESRCH if it lost)
+
         // non-blocking read
-        int fd = fileno(pipe.get());
+        int fd = pipefd[0];
         int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
         std::vector<char> buffer(512);
         std::string result = "";
         time_t start_time = time(nullptr);
+        bool timed_out = false;
 
         while (true) {
             if (time(nullptr) - start_time > timeout_sec) {
                 LOGE("Command timeout after %d seconds: %s", timeout_sec, full_cmd.c_str());
-                // throw std::runtime_error("Command execution timeout: " + full_cmd);
+                timed_out = true;
                 break;
             }
 
@@ -144,25 +204,35 @@ public:
             if (bytes_read > 0) {
                 result.append(buffer.data(), bytes_read);
             } else if (bytes_read == 0) {
-                break; // EOF
+                break; // EOF: child closed stdout
             } else {
                 if (errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOGE("read() error: %s, errno=%d", strerror(errno), errno);
-                    // throw std::runtime_error("read() error during command execution");
                     break;
                 }
                 usleep(1000); // 1ms
             }
         }
+        close(fd);
 
-        // Get exit status
-        int status = pclose(pipe.release());
-        if (WIFEXITED(status)) {
-            // int exit_status = WEXITSTATUS(status);
-            // if (exit_status != 0) {
-            //     LOGE("Command exited with status %d", exit_status);
-            // }
-        } else {
+        // HARD deadline reap — never an unbounded wait. Normal completion
+        // reaps immediately; a wedged child (possibly ignoring SIGTERM) is
+        // escalated on its WHOLE process group: SIGTERM -> bounded 3s grace ->
+        // SIGKILL -> bounded final reap. killpg() targets pgid == child pid
+        // (set above), so descendants the child spawned are torn down too.
+        int status = 0;
+        if (!reap_bounded(pid, status, timed_out ? 0 : 200)) {
+            killpg(pid, SIGTERM);
+            if (!reap_bounded(pid, status, 3000)) {
+                LOGE("Command ignored SIGTERM, sending SIGKILL: %s", full_cmd.c_str());
+                killpg(pid, SIGKILL);
+                if (!reap_bounded(pid, status, 2000)) {
+                    LOGE("Command unreapable after SIGKILL (D-state?): %s", full_cmd.c_str());
+                }
+            }
+        }
+
+        if (!timed_out && !WIFEXITED(status)) {
             LOGE("Command terminated abnormally: %s, status=%d", full_cmd.c_str(), status);
         }
 
@@ -271,6 +341,26 @@ public:
     }
 
 private:
+    // Poll waitpid(WNOHANG) for up to budget_ms. Returns true if the child was
+    // reaped (status filled) or is already gone (ECHILD); false if it is still
+    // alive after the budget. budget_ms == 0 does a single non-blocking check.
+    static bool reap_bounded(pid_t pid, int& status, int budget_ms)
+    {
+        for (int i = 0;; ++i) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid) {
+                return true;
+            }
+            if (r < 0) {
+                return true; // ECHILD: nothing left to reap
+            }
+            if (i >= budget_ms) {
+                return false;
+            }
+            usleep(1000); // 1ms granularity
+        }
+    }
+
     const std::string _group;
 
     static inline bool _force_no_auth = false;

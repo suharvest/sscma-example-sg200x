@@ -1115,18 +1115,32 @@ _app_check_script() {
     return 0
 }
 
-# Run a command with a timeout. On timeout send SIGTERM only (never SIGKILL:
-# apps must be allowed to release VPSS/camera resources cleanly).
+# Run a command with a HARD timeout. #14 HIGH#1: the previous version sent
+# SIGTERM once and then wait'ed with no bound, so a child that ignores/outlives
+# SIGTERM (a wedged init script, node-red, opkg) made the "budget" a lie and
+# could pin the mode/app gate forever. Now the deadline is enforced:
+#   setsid  -> the command is a process-group leader (pgid == pid), so signals
+#              sent to -$pid reach the WHOLE tree, not just the leader.
+#   timeout -> SIGTERM the group, poll up to 3s (well-behaved apps release
+#              VPSS/camera cleanly in that window), then SIGKILL the group.
 # Returns 124 on timeout, otherwise the command's exit code.
 _app_run_timeout() {
     local secs="$1"
     shift
-    "$@" &
+    setsid "$@" &
     local pid=$!
     local waited=0
     while kill -0 "$pid" 2>/dev/null; do
         if [ "$waited" -ge "$secs" ]; then
-            kill -TERM "$pid" 2>/dev/null
+            kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+            local kwait=0
+            while [ "$kwait" -lt 3 ] && kill -0 "$pid" 2>/dev/null; do
+                sleep 1
+                kwait=$((kwait + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+            fi
             wait "$pid" 2>/dev/null
             return 124
         fi
@@ -1418,14 +1432,19 @@ _svc_disable() {
     local base="$1"
     if [ -f "/etc/init.d/S$base" ]; then
         _app_run_timeout 10 "/etc/init.d/S$base" stop >/dev/null 2>&1
-        # The service is being released, not grabbed, so a slow-to-die process
-        # (node-red is a heavy Node.js runtime and can outlive its 10s TERM
-        # window) must never trap the user in the current mode. Poll for the
-        # script to report stopped for up to ~15s, then force it down, and
-        # always park it as K-prefixed. Scripts without a "status" action
-        # return non-zero (treated as stopped) and exit the loop immediately.
+        # The service is being released, not grabbed. The caller (setRunMode
+        # ->console / forceConsole) has ALREADY torn down the serviced watchdog
+        # before invoking us, so nothing respawns node-red during teardown and
+        # we do NOT need a long graceful wait — a short grace then a hard kill
+        # is enough. Keeping this bounded matters: two services each doing a
+        # long poll used to push the whole console hand-over past setRunMode's
+        # 60s script_timeout, which (now that the timeout is a hard cap) killed
+        # the shell before the mode file was written, leaving mode=nodered
+        # persisted while the process reported console. ~5s grace + killall
+        # keeps both services well inside the budget. Scripts without a
+        # "status" action return non-zero (treated as stopped) and break early.
         local i=0
-        while [ "$i" -lt 15 ]; do
+        while [ "$i" -lt 5 ]; do
             _app_run_timeout 5 "/etc/init.d/S$base" status >/dev/null 2>&1 || break
             i=$((i + 1))
             sleep 1
