@@ -1115,6 +1115,38 @@ _app_check_script() {
     return 0
 }
 
+# #14 HIGH#1: two-layer timeout process groups did not nest. The C++
+# script_timeout forks main.sh into its own process group A and, on a hard
+# timeout, killpg(A). But _app_run_timeout runs the real command under `setsid`,
+# putting it in a NEW session/process-group B that has already detached from A —
+# so killpg(A) reaps main.sh but leaves B (the wedged init/opkg/node-red tree)
+# running as an orphan that keeps mutating service/camera state.
+#
+# Fix: bridge the outer kill into the inner setsid group. _app_run_timeout
+# records the active setsid pgid in a script-global (_ART_ACTIVE_PGID) while a
+# command is in flight and clears it on completion; a top-level TERM/INT/EXIT
+# trap forwards the signal to that group (kill -...-PGID) before main.sh exits.
+# `setsid` is kept: tearing down the whole node-red tree still needs the group.
+_ART_ACTIVE_PGID=""
+_art_on_term() {
+    # Disarm first so this handler can never re-enter (TERM during cleanup, or
+    # the EXIT trap firing after an explicit exit below).
+    trap - TERM INT EXIT
+    if [ -n "$_ART_ACTIVE_PGID" ]; then
+        # Forward the outer kill to the inner setsid group B (negative pgid ->
+        # whole group). Short grace, then hard kill.
+        kill -TERM -"$_ART_ACTIVE_PGID" 2>/dev/null || true
+        sleep 1
+        kill -KILL -"$_ART_ACTIVE_PGID" 2>/dev/null || true
+        _ART_ACTIVE_PGID=""
+    fi
+}
+# EXIT trap is a no-op on the normal path (_ART_ACTIVE_PGID cleared by
+# _app_run_timeout); it only matters if the script exits with a command still
+# in flight. TERM/INT additionally exit non-zero after cleaning up the group.
+trap '_art_on_term' EXIT
+trap '_art_on_term; exit 143' TERM INT
+
 # Run a command with a HARD timeout. #14 HIGH#1: the previous version sent
 # SIGTERM once and then wait'ed with no bound, so a child that ignores/outlives
 # SIGTERM (a wedged init script, node-red, opkg) made the "budget" a lie and
@@ -1129,6 +1161,9 @@ _app_run_timeout() {
     shift
     setsid "$@" &
     local pid=$!
+    # Publish the setsid group (pgid == pid) so the top-level TERM/EXIT trap can
+    # forward an outer killpg into this group. Cleared on every return path.
+    _ART_ACTIVE_PGID="$pid"
     local waited=0
     while kill -0 "$pid" 2>/dev/null; do
         if [ "$waited" -ge "$secs" ]; then
@@ -1142,13 +1177,16 @@ _app_run_timeout() {
                 kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
             fi
             wait "$pid" 2>/dev/null
+            _ART_ACTIVE_PGID=""
             return 124
         fi
         sleep 1
         waited=$((waited + 1))
     done
     wait "$pid" 2>/dev/null
-    return $?
+    local rc=$?
+    _ART_ACTIVE_PGID=""
+    return $rc
 }
 
 function app_read_state() {
@@ -1164,11 +1202,16 @@ _app_active_script() {
     app_read_state | sed -n 's/.*"active_script"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
-# _app_do_stop <init_script> : stop with a 10s timeout, TERM only (never
-# KILL: apps must release VPSS/camera cleanly). Single source of the gallery
-# app stop policy. Returns 124 on timeout, else the script's exit code.
+# _app_do_stop <init_script> : stop the gallery app and CONFIRM it is gone.
+# #14 HIGH#3: the K92* init `stop` now sends TERM and polls /proc/<pid> until
+# the process actually exits (KILL fallback), returning 0 only after the camera
+# holder is truly gone and non-zero if it refused to die. So this exit code is
+# an authoritative "the app released VPSS/camera" signal, not "the script
+# returned". The timeout is 15s (was 10s) to fit the init's bounded ~8s TERM
+# grace + KILL confirm without being truncated into a false 124. Single source
+# of the gallery app stop policy. Returns 124 on timeout, else the script's code.
 _app_do_stop() {
-    _app_run_timeout 10 "$1" stop >/dev/null 2>&1
+    _app_run_timeout 15 "$1" stop >/dev/null 2>&1
 }
 
 # app_write_state '<json>' : atomic write (tmp + sync + rename)
@@ -1523,6 +1566,36 @@ _svc_disable() {
     return 0
 }
 
+# _setrunmode_nodered_rollback <nr_was_parked> <sscma_was_parked> <orig_app> :
+# #14 HIGH#2 compensating action for a FAILED console->nodered switch. Any
+# partial progress is undone so the four sources of truth (persisted mode, S/K
+# prefixes, live processes, in-process _gallery_mode) cannot diverge:
+#   1. stop the node stack we may have half-started (no camera should be held),
+#   2. re-park (S->K) any service that was parked BEFORE the attempt,
+#   3. bring the original gallery app back (state.json is untouched here, so
+#      app_restore restarts exactly the app that was active),
+# The mode file is NEVER written on this path, so the C++ poll sees a non-OK
+# result and leaves _gallery_mode / the watchdog at their console values.
+_setrunmode_nodered_rollback() {
+    local nr_was_parked="$1" sscma_was_parked="$2" orig_app="$3"
+    # 1. Tear down anything we may have started.
+    nr_memguard_stop >/dev/null 2>&1 || true
+    [ -f /etc/init.d/S03node-red ] && _app_run_timeout 10 /etc/init.d/S03node-red stop >/dev/null 2>&1
+    [ -f /etc/init.d/S91sscma-node ] && _app_run_timeout 10 /etc/init.d/S91sscma-node stop >/dev/null 2>&1
+    killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
+    # 2. Restore original prefixes (only re-park what WAS parked before).
+    if [ "$nr_was_parked" = "1" ] && [ -f /etc/init.d/S03node-red ]; then
+        mv /etc/init.d/S03node-red /etc/init.d/K03node-red 2>/dev/null || true
+    fi
+    if [ "$sscma_was_parked" = "1" ] && [ -f /etc/init.d/S91sscma-node ]; then
+        mv /etc/init.d/S91sscma-node /etc/init.d/K91sscma-node 2>/dev/null || true
+    fi
+    # 3. Restore the original gallery app (camera is free now; best-effort).
+    if [ -n "$orig_app" ] && _app_check_script "$orig_app"; then
+        app_restore >/dev/null 2>&1 || true
+    fi
+}
+
 # setRunMode <console|nodered> : move the camera stack over, then persist the
 # mode. The camera hand-over is asymmetric on purpose:
 #   - Switching TO nodered grabs the camera for node-red/sscma-node, so the
@@ -1544,12 +1617,23 @@ function setRunMode() {
     esac
 
     if [ "$mode" = "nodered" ]; then
-        # --- console -> nodered: confirm the gallery app is gone BEFORE the
-        # node stack grabs the camera. state.json is advisory (missing/empty/
-        # corrupt => nothing to stop); the selection is kept so switching back
-        # restores the app.
-        local script
-        script=$(_app_active_script)
+        # #14 HIGH#2: console -> nodered is a multi-stage hand-over (stop app,
+        # enable+start node-red, enable+start sscma-node, persist mode). Make it
+        # transactional: snapshot the original state up front and, on ANY later
+        # failure, roll everything back (see _setrunmode_nodered_rollback) and
+        # return Failed WITHOUT writing the mode file, so no two subsystems ever
+        # disagree about who owns the camera.
+        local orig_app nr_was_parked=0 sscma_was_parked=0
+        orig_app=$(_app_active_script)
+        [ -f /etc/init.d/K03node-red ] && nr_was_parked=1
+        [ -f /etc/init.d/K91sscma-node ] && sscma_was_parked=1
+
+        # --- confirm the gallery app is gone BEFORE the node stack grabs the
+        # camera. state.json is advisory (missing/empty/corrupt => nothing to
+        # stop); the selection is kept so switching back restores the app.
+        # NOTE: this stage runs before ANY node-related change, so a failure
+        # here needs no rollback (the app is simply left as-is and reported).
+        local script="$orig_app"
         if [ -n "$script" ] && _app_check_script "$script"; then
             _app_do_stop "$script"
             if [ $? -ne 0 ]; then
@@ -1566,34 +1650,39 @@ function setRunMode() {
             fi
         fi
 
-        # Explicitly choosing Node-RED cancels any pending one-shot
-        # force-console backstop (#20) so the next reboot honors this choice.
-        rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
-
         # Enable + start each service under the #19 choom protection (the RSS
-        # watchdog is armed after both are up, below); a failed rename or start
-        # aborts.
+        # watchdog is armed after both are up, below). From here on every
+        # failure path rolls back before returning.
         local s
         s=$(_svc_enable "03node-red")
         if [ -z "$s" ]; then
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
             echo "$STR_FAILED"
             return 1
         fi
         if ! _svc_run_limited "$s" start; then
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
             echo "$STR_FAILED"
             return 1
         fi
         s=$(_svc_enable "91sscma-node")
         if [ -z "$s" ]; then
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
             echo "$STR_FAILED"
             return 1
         fi
         if ! _svc_run_limited "$s" start; then
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
             echo "$STR_FAILED"
             return 1
         fi
 
+        # Everything is up: commit. Cancel the one-shot force-console backstop
+        # (#20) only now that we are committing to Node-RED, then persist mode.
+        # A mode-write failure is still rolled back (never a half-commit).
+        rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
         _run_mode_write "$mode" || {
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
             echo "$STR_FAILED"
             return 1
         }

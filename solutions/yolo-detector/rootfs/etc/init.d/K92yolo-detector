@@ -120,13 +120,41 @@ start() {
 
 stop() {
     echo "Stopping $NAME..."
-    if [ -f $PIDFILE ]; then
-        start-stop-daemon -K -p $PIDFILE -s TERM
-        rm -f $PIDFILE
-        echo "OK"
-    else
+    if [ ! -f $PIDFILE ]; then
         echo "$NAME is not running"
+        return 0
     fi
+    PID=$(cat $PIDFILE 2>/dev/null)
+    if [ -z "$PID" ]; then
+        rm -f $PIDFILE
+        echo "$NAME is not running"
+        return 0
+    fi
+    # Send TERM but DO NOT drop the pidfile / report OK yet: the app needs time
+    # to release VPSS/camera (stopStream, debug_stream_destroy, RTSP/VENC deinit
+    # can take >2s). Reporting OK before the process is gone lets the switcher
+    # start the next app while this one still owns the camera -> VPSS collision /
+    # kernel oops. Poll /proc/$PID until the process actually exits.
+    start-stop-daemon -K -p $PIDFILE -s TERM 2>/dev/null || true
+    i=0
+    while [ $i -lt 16 ]; do            # up to ~8s graceful (16 x 0.5s)
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        i=$((i + 1))
+    done
+    # Refused SIGTERM: escalate to SIGKILL, then a short confirm window.
+    kill -KILL "$PID" 2>/dev/null || true
+    j=0
+    while [ $j -lt 6 ]; do             # up to ~3s after KILL (6 x 0.5s)
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        j=$((j + 1))
+    done
+    # Still alive (e.g. uninterruptible D-state): keep the pidfile as a
+    # diagnostic and report failure so the caller does NOT assume the camera
+    # is free.
+    echo "$NAME failed to stop (PID $PID still alive)"
+    return 1
 }
 
 restart() {
