@@ -80,24 +80,44 @@ public:
         }
         uri = uri.substr(pos + 5);
 
+        // Resolve the matching rest_api first, THEN authenticate. The prefix
+        // fallback (for parameterized routes like /api/led/<name>/on) must go
+        // through the SAME token check as an exact match — otherwise a request
+        // whose URI merely starts with a protected route (e.g.
+        // /api/appMgr/installApp-x, /api/fileMgr/upload/y) would reach the
+        // handler unauthenticated, which chained upload + installApp into an
+        // unauthenticated root RCE. The prefix boundary is required to be '/'
+        // so "installAppX" cannot match the "installApp" route.
+        rest_api* matched = nullptr;
         auto api = _api_map.find(uri);
-        if (api == _api_map.end()) {
+        if (api != _api_map.end()) {
+            matched = api->second.get();
+        } else {
             for (auto& [key, value] : _api_map) {
-                if (uri.find(key) == 0) {
-                    return (*value)(req, res);
+                // uri must start with key AND the boundary must be a path
+                // separator: either the key already ends in '/' (parameterized
+                // routes register e.g. "led/" and match "led/white/on") or the
+                // very next char in uri is '/'. This lets "led/<name>/on" match
+                // while "installAppX" can never match "installApp".
+                if (uri.size() > key.size() && uri.compare(0, key.size(), key) == 0
+                    && (key.back() == '/' || uri[key.size()] == '/')) {
+                    matched = value.get();
+                    break;
                 }
             }
+        }
+        if (matched == nullptr) {
             LOGE("API not implemented: %s", uri.c_str());
             return API_STATUS_NEXT;
         }
-        if (!_force_no_auth && !api->second->no_auth()) {
+        if (!_force_no_auth && !matched->no_auth()) {
             std::string token = get_param(req, "Authorization");
             if (token.empty() || !check_token(token)) {
                 LOGE("Unauthorized: %s", uri.c_str());
                 return API_STATUS_UNAUTHORIZED;
             }
         }
-        return (*api->second)(req, res);
+        return (*matched)(req, res);
     }
 
     template <typename... Args>
