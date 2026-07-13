@@ -161,7 +161,20 @@ stop() {
 
 restart() {
     stop
-    sleep 1
+    # Wait for the old process to actually exit before start(). stop() only
+    # sends SIGTERM; if we start() while the daemon is still dying, start()'s
+    # `pidof` sees the dying PID, decides it is "already running", and skips
+    # the relaunch — leaving the supervisor down. Poll (bounded) until pidof
+    # is clear, escalating to SIGKILL, so a manual restart is reliable.
+    _rs_wait=0
+    while [ "$_rs_wait" -lt 10 ] && [ -n "$(pidof $DAEMON)" ]; do
+        sleep 0.5
+        _rs_wait=$((_rs_wait + 1))
+    done
+    if [ -n "$(pidof $DAEMON)" ]; then
+        kill -KILL $(pidof $DAEMON) 2>/dev/null
+        sleep 1
+    fi
     start
 }
 
