@@ -42,9 +42,22 @@ reconcile_run_mode() {
         killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
         RUN_MODE=console
         mkdir -p "$APPS_DIR" 2>/dev/null || true
-        printf 'console\n' >"$MODE_FILE" 2>/dev/null || true
-        sync 2>/dev/null || true
-        rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
+        # #18 MEDIUM#2: only CONSUME the one-shot flag once console mode is
+        # durably persisted AND re-reads back as "console". Atomic write
+        # (tmp+sync+rename), then verify. If the write/verify fails, keep the
+        # flag so the NEXT boot retries reconciliation — a dropped write must
+        # never leave the device with a stale 'nodered' mode and no backstop.
+        _fc_tmp="$MODE_FILE.tmp.$$"
+        if printf 'console\n' >"$_fc_tmp" 2>/dev/null \
+            && sync 2>/dev/null \
+            && mv -f "$_fc_tmp" "$MODE_FILE" 2>/dev/null \
+            && sync 2>/dev/null \
+            && [ "$(head -n 1 "$MODE_FILE" 2>/dev/null | tr -d ' \t\r\n')" = "console" ]; then
+            rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
+        else
+            rm -f "$_fc_tmp" 2>/dev/null || true
+            # keep FORCE_CONSOLE_FLAG: next boot will retry.
+        fi
     fi
 
     # Repair prefix drift so the actual init state matches the intent.
