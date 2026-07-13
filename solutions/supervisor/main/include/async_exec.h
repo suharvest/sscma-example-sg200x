@@ -289,12 +289,20 @@ private:
                 std::lock_guard<std::mutex> lk(_done_mutex);
                 _done.push_back(id);
             }
-            // Poke the poll thread. Serialize sends so datagrams from multiple
-            // workers never interleave at the syscall boundary.
+            // Poke the poll thread. The socket carries ONLY an edge
+            // notification ("some job finished"); the real completion is
+            // already parked in _done and drain_completions() always scans it
+            // in full, so the payload is irrelevant — a single dummy byte
+            // suffices (the routing conn_id is prepended by mg_wakeup itself).
+            // This is a best-effort poke: a dropped datagram is covered by the
+            // unconditional per-cycle drain in http_server's poll loop.
+            // Serialize sends so datagrams from multiple workers never
+            // interleave at the syscall boundary.
             {
                 std::lock_guard<std::mutex> lk(_wake_mutex);
                 if (_mgr != nullptr) {
-                    mg_wakeup(_mgr, _listener_id, &id, sizeof(id));
+                    static const uint8_t poke = 1;
+                    mg_wakeup(_mgr, _listener_id, &poke, sizeof(poke));
                 }
             }
         }

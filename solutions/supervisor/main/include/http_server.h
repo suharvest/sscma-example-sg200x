@@ -80,8 +80,20 @@ public:
             running = true;
             signal(SIGUSR1, [](int sig) {
             });
-            while (running)
-                mg_mgr_poll(&mgr, -1);
+            while (running) {
+                // #14 HIGH#2: bounded poll (was -1/block-forever) + an
+                // unconditional drain each cycle as a backstop. mg_wakeup() is
+                // only a best-effort low-latency edge poke — mongoose 7.17
+                // ignores non-blocking UDP send failures and returns true — so
+                // a dropped wakeup datagram could otherwise strand a finished
+                // job in _done forever (its commit/finalize never run, gate
+                // wedged). drain_completions() is lock-guarded and a no-op when
+                // nothing is pending, so this only adds up to ~250ms latency in
+                // the rare dropped-wakeup case; the fast path still gets
+                // immediate MG_EV_WAKEUP delivery.
+                mg_mgr_poll(&mgr, 250);
+                async_exec::instance().drain_completions();
+            }
             LOGV("poll_loop exit");
         });
 
