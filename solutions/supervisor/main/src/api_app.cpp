@@ -160,6 +160,17 @@ json api_app::load_manifest_file(const std::string& path)
         LOGW("App manifest %s: invalid id '%s'", path.c_str(), id.c_str());
         return json();
     }
+    // Filename must be "<id>.json". This lets lookups resolve a single app by
+    // path (USER_APPS_DIR/<id>.json → builtin) instead of scanning every
+    // manifest, and keeps the per-app sidecar files (<id>.config.json /
+    // <id>.model / <id>.md) addressable by the same id. A vendor that ships a
+    // mismatched filename is rejected here rather than silently shadowing or
+    // orphaning another app's config.
+    if (fs::path(path).stem().string() != id) {
+        LOGW("App manifest %s: filename does not match id '%s' (expected %s.json)",
+            path.c_str(), id.c_str(), id.c_str());
+        return json();
+    }
     if (type != "native" && type != "external-firmware") {
         LOGW("App manifest %s: invalid type '%s'", path.c_str(), type.c_str());
         return json();
