@@ -1098,6 +1098,11 @@ function querySensorStatus() {
 # app manager (gallery mode)
 readonly APPS_USER_DIR="$USERDATA_DIR/local/apps"
 readonly APP_STATE_FILE="$APPS_USER_DIR/state.json"
+# Factory-default gallery app: on a fresh C++ deployment (no state.json yet)
+# app_restore falls back to this so the device boots into a working scene out
+# of the box. Overridable in /etc/recamera.conf.
+DEFAULT_APP_ID="${DEFAULT_APP_ID:-yolo-detector}"
+DEFAULT_APP_SCRIPT="${DEFAULT_APP_SCRIPT:-/etc/init.d/K92yolo-detector}"
 
 # Whitelist: only /etc/init.d/[SK][0-9]* scripts, never symlinks.
 # (Second line of defense; supervisor C++ validates the same rules.)
@@ -1291,10 +1296,21 @@ function app_status() {
 # persisted active app back up. Failure is logged only, never blocks boot.
 function app_restore() {
     local script=$(_app_active_script)
-    [ -z "$script" ] && {
-        echo "$STR_OK"
-        return 0
-    }
+    if [ -z "$script" ]; then
+        # No persisted selection. Distinguish a FRESH deployment (state.json was
+        # never written) from a user who explicitly stopped everything
+        # (state.json exists with active_app=null): only the former falls back
+        # to the factory-default app, so a C++ deployment shows a working scene
+        # out of the box without resurrecting an app the user deliberately
+        # stopped. Seed the selection so the gallery + later boots agree.
+        if [ ! -f "$APP_STATE_FILE" ] && _app_check_script "$DEFAULT_APP_SCRIPT"; then
+            app_write_state _ "{\"active_app\": \"$DEFAULT_APP_ID\", \"active_script\": \"$DEFAULT_APP_SCRIPT\", \"models\": {}, \"updated_at\": 0}" >/dev/null 2>&1
+            script="$DEFAULT_APP_SCRIPT"
+        else
+            echo "$STR_OK"
+            return 0
+        fi
+    fi
     _app_check_script "$script" || {
         echo "$STR_FAILED"
         return 1
