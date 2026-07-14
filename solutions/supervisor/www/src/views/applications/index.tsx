@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Drawer, Modal, Progress, Spin, Tooltip, Upload, message } from "antd";
+import { Alert, App, Button, Drawer, Modal, Progress, Spin, Tooltip, Upload } from "antd";
 import type { UploadFile, UploadProps } from "antd";
 import {
   ReloadOutlined,
@@ -63,6 +63,7 @@ const InstallAppModal = ({
   onInstalled: () => void;
 }) => {
   const { t } = useTranslation();
+  const { message } = App.useApp();
   const [stage, setStage] = useState<InstallStage>("idle");
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploadPercent, setUploadPercent] = useState(0);
@@ -241,6 +242,7 @@ const InstallAppModal = ({
 
 const Applications = () => {
   const { t } = useTranslation();
+  const { modal, message } = App.useApp();
   const [loading, setLoading] = useState(false);
   const [switching, setSwitching] = useState<string | null>(null);
   const [apps, setApps] = useState<IAppInfo[]>([]);
@@ -292,34 +294,43 @@ const Applications = () => {
 
   const onActivate = (app: IAppInfo) => {
     const name = pickLocalized(app, "name") || app.id;
-    Modal.confirm({
+    const doActivate = async () => {
+      setSwitching(app.id);
+      try {
+        const res = await switchAppApi({ app_id: app.id });
+        if (isOk(res)) {
+          message.success(t("apps.activated", { name }));
+        } else {
+          message.error(res.msg || t("apps.activateFailed"));
+        }
+      } catch (e) {
+        message.error(t("apps.activateFailed"));
+      } finally {
+        setSwitching(null);
+        fetchList(true);
+      }
+    };
+    // Only confirm when another app is actually running and would be
+    // interrupted (the warning is about stopping the current app + its
+    // RTSP/MQTT). With nothing running there is nothing to interrupt, so
+    // activate directly.
+    if (!activeId) {
+      doActivate();
+      return;
+    }
+    modal.confirm({
       title: t("apps.activateTitle", { name }),
       icon: <ExclamationCircleOutlined />,
       content: t("apps.activateContent"),
       okText: t("common.activate"),
       cancelText: t("common.cancel"),
-      onOk: async () => {
-        setSwitching(app.id);
-        try {
-          const res = await switchAppApi({ app_id: app.id });
-          if (isOk(res)) {
-            message.success(t("apps.activated", { name }));
-          } else {
-            message.error(res.msg || t("apps.activateFailed"));
-          }
-        } catch (e) {
-          message.error(t("apps.activateFailed"));
-        } finally {
-          setSwitching(null);
-          fetchList(true);
-        }
-      },
+      onOk: doActivate,
     });
   };
 
   const onStop = (app: IAppInfo) => {
     const name = pickLocalized(app, "name") || app.id;
-    Modal.confirm({
+    modal.confirm({
       title: t("apps.stopTitle", { name }),
       icon: <ExclamationCircleOutlined />,
       content: t("apps.stopContent"),
