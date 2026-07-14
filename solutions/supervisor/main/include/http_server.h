@@ -203,6 +203,7 @@ private:
             std::string uri(hm->uri.buf, hm->uri.len);
             if (!(uri == "/"
                     || uri.find(".png") != std::string::npos
+                    || uri.find(".svg") != std::string::npos
                     || uri.find(".html") != std::string::npos
                     || uri.find("assets") != std::string::npos
                     || uri.find("js") != std::string::npos)) {
