@@ -38,6 +38,8 @@ export interface IAppManifest {
   description_zh?: string;
   type: AppType;
   init_script?: string;
+  /** Optional preview image URL (e.g. "/apps/<id>.svg"), shown on the card. */
+  image?: string;
   rtsp_url?: string; // may contain "{host}" placeholder
   mqtt_topic?: string;
   debug_ws?: IDebugWsInfo;

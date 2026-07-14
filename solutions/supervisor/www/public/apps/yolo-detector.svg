@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 210" role="img" aria-label="Object detection preview">
+  <style>
+    .bg{fill:#eef2e6}.panel{fill:#ffffff}.mut{fill:#c8d2bb}.line{stroke:#c8d2bb}
+    .obj{fill:#9fb08c}.txt{fill:#3a4633}.chipbg{fill:#8fc31f}.chiptx{fill:#1a2410}
+    @media (prefers-color-scheme:dark){
+      .bg{fill:#161a13}.panel{fill:#1e241a}.mut{fill:#3a4633}.line{stroke:#3a4633}
+      .obj{fill:#556347}.txt{fill:#c7d3b6}
+    }
+  </style>
+  <rect class="bg" width="400" height="210" rx="10"/>
+  <rect class="panel" x="14" y="14" width="372" height="182" rx="8"/>
+  <!-- ground line -->
+  <line class="line" x1="14" y1="168" x2="386" y2="168" stroke-width="1.5" stroke-dasharray="4 5"/>
+  <!-- person silhouette -->
+  <g class="obj">
+    <circle cx="120" cy="70" r="15"/>
+    <rect x="106" y="90" width="28" height="60" rx="10"/>
+  </g>
+  <!-- car silhouette -->
+  <g class="obj">
+    <rect x="238" y="112" width="96" height="34" rx="9"/>
+    <rect x="256" y="94" width="58" height="24" rx="8"/>
+    <circle cx="262" cy="150" r="9"/><circle cx="312" cy="150" r="9"/>
+  </g>
+  <!-- detection box: person -->
+  <g fill="none" stroke="#8fc31f" stroke-width="2.5" stroke-linecap="round">
+    <path d="M92 44 h-8 v8 M148 44 h8 v8 M92 160 h-8 v-8 M148 160 h8 v-8"/>
+  </g>
+  <rect class="chipbg" x="84" y="30" width="66" height="16" rx="4"/>
+  <text class="chiptx" x="90" y="42" font-family="monospace" font-size="11">person .96</text>
+  <!-- detection box: car -->
+  <g fill="none" stroke="#8fc31f" stroke-width="2.5" stroke-linecap="round">
+    <path d="M228 84 h-8 v8 M344 84 h8 v8 M228 160 h-8 v-8 M344 160 h8 v-8"/>
+  </g>
+  <rect class="chipbg" x="220" y="70" width="50" height="16" rx="4"/>
+  <text class="chiptx" x="226" y="82" font-family="monospace" font-size="11">car .88</text>
+</svg>

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 210" role="img" aria-label="Face analysis preview">
+  <style>
+    .bg{fill:#eef2e6}.panel{fill:#ffffff}.mut{fill:#c8d2bb}
+    .skin{fill:#9fb08c}.txt{fill:#3a4633}.row{fill:#dbe4cd}
+    @media (prefers-color-scheme:dark){
+      .bg{fill:#161a13}.panel{fill:#1e241a}.mut{fill:#3a4633}
+      .skin{fill:#556347}.txt{fill:#c7d3b6}.row{fill:#2b3324}
+    }
+  </style>
+  <rect class="bg" width="400" height="210" rx="10"/>
+  <rect class="panel" x="14" y="14" width="372" height="182" rx="8"/>
+  <!-- face -->
+  <g>
+    <ellipse class="skin" cx="112" cy="105" rx="52" ry="62"/>
+    <!-- landmark mesh -->
+    <g fill="#8fc31f">
+      <circle cx="92" cy="92" r="3"/><circle cx="132" cy="92" r="3"/>
+      <circle cx="112" cy="110" r="3"/>
+      <circle cx="92" cy="132" r="3"/><circle cx="132" cy="132" r="3"/>
+      <circle cx="112" cy="140" r="3"/>
+    </g>
+    <g stroke="#8fc31f" stroke-width="1.2" opacity="0.7">
+      <path d="M92 92 L112 110 L132 92 M92 132 L112 140 L132 132 M112 110 L112 140" fill="none"/>
+    </g>
+  </g>
+  <!-- detection bracket -->
+  <g fill="none" stroke="#8fc31f" stroke-width="2.5" stroke-linecap="round">
+    <path d="M60 48 h-6 v6 M164 48 h6 v6 M60 162 h-6 v-6 M164 162 h6 v-6"/>
+  </g>
+  <!-- attribute panel -->
+  <g font-family="monospace" font-size="12">
+    <rect class="row" x="210" y="46" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="62">age  20-29</text>
+    <rect class="row" x="210" y="78" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="94">gender  female</text>
+    <rect class="row" x="210" y="110" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="126">emotion  happy</text>
+    <rect x="210" y="142" width="150" height="24" rx="5" fill="#8fc31f"/>
+    <text x="220" y="158" fill="#1a2410">conf   0.94</text>
+  </g>
+</svg>

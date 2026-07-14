@@ -6,6 +6,7 @@
     "description": "Real-time face detection with age, gender, race and emotion analysis. Publishes results over MQTT and streams H.264 via RTSP.",
     "type": "native",
     "init_script": "/etc/init.d/K92face-analysis",
+    "image": "/apps/face-analysis.svg",
     "rtsp_url": "rtsp://{host}:8554/live0",
     "mqtt_topic": "recamera/face-analysis/results",
     "debug_ws": {

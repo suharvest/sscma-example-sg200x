@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 210" role="img" aria-label="Retail people counting preview">
+  <style>
+    .bg{fill:#eef2e6}.panel{fill:#ffffff}.mut{fill:#c8d2bb}.line{stroke:#c8d2bb}
+    .obj{fill:#9fb08c}.txt{fill:#3a4633}.row{fill:#dbe4cd}
+    @media (prefers-color-scheme:dark){
+      .bg{fill:#161a13}.panel{fill:#1e241a}.mut{fill:#3a4633}.line{stroke:#3a4633}
+      .obj{fill:#556347}.txt{fill:#c7d3b6}.row{fill:#2b3324}
+    }
+  </style>
+  <rect class="bg" width="400" height="210" rx="10"/>
+  <rect class="panel" x="14" y="14" width="372" height="182" rx="8"/>
+  <!-- counting line (vertical) -->
+  <line x1="200" y1="30" x2="200" y2="180" stroke="#8fc31f" stroke-width="2.5" stroke-dasharray="6 5"/>
+  <!-- entry arrow -->
+  <g stroke="#8fc31f" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M150 56 h40 M182 48 l10 8 l-10 8"/>
+  </g>
+  <!-- exit arrow -->
+  <g stroke="#c8d2bb" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M250 154 h-40 M218 146 l-10 8 l10 8"/>
+  </g>
+  <!-- person A (inside) -->
+  <g class="obj">
+    <circle cx="120" cy="96" r="13"/>
+    <rect x="107" y="114" width="26" height="52" rx="9"/>
+  </g>
+  <!-- person B (approaching) -->
+  <g class="obj">
+    <circle cx="286" cy="104" r="13"/>
+    <rect x="273" y="122" width="26" height="50" rx="9"/>
+  </g>
+  <!-- counters -->
+  <g font-family="monospace">
+    <rect class="row" x="28" y="28" width="86" height="28" rx="6"/>
+    <text class="txt" x="38" y="47" font-size="13">IN   128</text>
+    <rect class="row" x="286" y="28" width="86" height="28" rx="6"/>
+    <text class="txt" x="296" y="47" font-size="13">OUT   94</text>
+  </g>
+</svg>

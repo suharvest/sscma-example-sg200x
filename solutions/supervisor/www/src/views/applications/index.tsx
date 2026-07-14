@@ -448,6 +448,20 @@ const Applications = () => {
                       : undefined
                   }
                 >
+                  {app.image && (
+                    <div className="-mx-20 -mt-20 mb-16 w-auto aspect-[2/1] overflow-hidden rounded-t-[12px] rc-card-surface">
+                      <img
+                        src={app.image}
+                        alt=""
+                        loading="lazy"
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          const p = e.currentTarget.parentElement;
+                          if (p) p.style.display = "none";
+                        }}
+                      />
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-8">
                     <div className="flex items-center gap-6 flex-wrap">
                       <span className="rc-badge">

@@ -1,0 +1,34 @@
+{
+    "id": "ppocr-reader",
+    "name": "PP-OCR Text Reader",
+    "name_zh": "PP-OCR 文字识别",
+    "scene": "General",
+    "scene_zh": "通用",
+    "description": "On-device scene text reading with a fixed two-model PP-OCRv3 pipeline: DBNet text detection plus SVTR-LCNet recognition (6623 characters, Chinese + English). Publishes recognized texts over MQTT and streams H.264 via RTSP.",
+    "description_zh": "端侧场景文字识别，采用固定的两段式 PP-OCRv3 流水线：DBNet 文字检测 + SVTR-LCNet 识别（6623 字符，中英文）。通过 MQTT 发布识别文本，并以 RTSP 推送 H.264 视频。",
+    "type": "native",
+    "init_script": "/etc/init.d/K92ppocr-reader",
+    "image": "/apps/ppocr-reader.svg",
+    "rtsp_url": "rtsp://{host}:8554/live0",
+    "mqtt_topic": "recamera/ppocr/texts",
+    "debug_ws": {
+        "port": 8001,
+        "video_path": "/",
+        "results_path": "/results"
+    },
+    "models": [],
+    "pipeline": [
+        {
+            "name": "ppocr-det",
+            "path": "/userdata/local/models/ppocr_det_cv181x_mix.cvimodel",
+            "task": "text-detect"
+        },
+        {
+            "name": "ppocr-rec",
+            "path": "/userdata/local/models/ppocr_rec_cv181x_bf16.cvimodel",
+            "task": "text-recognize"
+        }
+    ],
+    "version": "0.4.0",
+    "author": "Seeed Studio"
+}
