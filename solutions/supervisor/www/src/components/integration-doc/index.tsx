@@ -38,7 +38,12 @@ const IntegrationDoc = ({
       .then((res) => {
         if (cancelled) return;
         if (isOk(res) && res.data?.content) {
-          setContent(res.data.content);
+          // Strip the frontmatter HTML comment (<!-- app: ... -->) and any
+          // other HTML comments so they never leak as visible text in the
+          // rendered markdown.
+          setContent(
+            res.data.content.replace(/<!--[\s\S]*?-->/g, "").replace(/^\s+/, "")
+          );
         }
       })
       .catch(() => {
