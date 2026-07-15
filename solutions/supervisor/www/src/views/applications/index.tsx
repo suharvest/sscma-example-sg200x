@@ -584,28 +584,35 @@ const Applications = () => {
 
       <Modal
         title={
-          detailApp ? pickLocalized(detailApp, "name") || detailApp.id : ""
+          detailApp ? (
+            <div className="flex items-baseline gap-8 flex-wrap pr-24">
+              <span>{pickLocalized(detailApp, "name") || detailApp.id}</span>
+              {pickLocalizedAlt(detailApp, "name") && (
+                <span className="text-13 text-muted font-normal">
+                  {pickLocalizedAlt(detailApp, "name")}
+                </span>
+              )}
+            </div>
+          ) : (
+            ""
+          )
         }
         open={!!detailApp}
         onCancel={() => setDetailApp(null)}
         footer={null}
         centered
-        width={Math.min(560, window.innerWidth - 32)}
+        width={Math.min(920, window.innerWidth - 32)}
         styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
       >
         {detailApp && (
-          <div className="flex flex-col gap-16 text-13">
-            {pickLocalizedAlt(detailApp, "name") && (
-              <div className="text-muted -mt-8">
-                {pickLocalizedAlt(detailApp, "name")}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-20 gap-y-16 text-13 items-start">
+            <div className="flex flex-col gap-16">
+              <div>
+                <div className="rc-section-label mb-4">
+                  {t("apps.drawer.description")}
+                </div>
+                <div>{pickLocalized(detailApp, "description") || "-"}</div>
               </div>
-            )}
-            <div>
-              <div className="rc-section-label mb-4">
-                {t("apps.drawer.description")}
-              </div>
-              <div>{pickLocalized(detailApp, "description") || "-"}</div>
-            </div>
             <div className="grid grid-cols-2 gap-12">
               <div>
                 <div className="rc-section-label mb-4">
@@ -710,7 +717,10 @@ const Applications = () => {
                 </div>
               </div>
             )}
-            <IntegrationDoc appId={detailApp.id} />
+            </div>
+            <div className="min-w-0">
+              <IntegrationDoc appId={detailApp.id} />
+            </div>
           </div>
         )}
       </Modal>
