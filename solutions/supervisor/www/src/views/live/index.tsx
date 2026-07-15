@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Collapse, Modal, Select, Spin, Switch, message } from "antd";
+import { App, Button, Collapse, Select, Spin, Switch } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
@@ -101,6 +101,7 @@ function BoxOverlay({
 
 const Live = () => {
   const { t } = useTranslation();
+  const { modal, message } = App.useApp();
   // P5: gimbal variants get a placeholder control card (actual motor
   // control lands in Phase 6, gated on gimbal hardware for development).
   const gimbalPresent = useCapabilitiesStore(
@@ -217,7 +218,7 @@ const Live = () => {
 
   const onModelChange = (model: string) => {
     if (!app || model === currentModel) return;
-    Modal.confirm({
+    modal.confirm({
       title: t("live.switchModelTitle", { model }),
       icon: <ExclamationCircleOutlined />,
       content: t("live.switchModelContent"),
@@ -248,7 +249,7 @@ const Live = () => {
   // drop the debug stream first (the restart would kill it mid-frame), then
   // refresh the app status on success.
   const onSaveConfig = () => {
-    Modal.confirm({
+    modal.confirm({
       title: t("config.saveTitle"),
       icon: <ExclamationCircleOutlined />,
       content: t("config.saveContent"),
@@ -351,9 +352,9 @@ const Live = () => {
               )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-16 mt-16">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-16 mt-16">
               {/* Player */}
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-3">
                 <div
                   ref={containerRef}
                   className="relative w-full bg-black rounded-12 overflow-hidden"
@@ -431,186 +432,230 @@ const Live = () => {
                 </div>
               </div>
 
-              {/* Control panel */}
-              <div className="flex flex-col gap-16">
-                <div className="rc-card p-20">
-                  <div className="rc-section-label mb-12">
-                    {t("live.debugControls")}
-                  </div>
-                  <div className="flex items-center justify-between gap-12">
-                    <div>
-                      <div className="text-14 font-medium">
-                        {t("live.debugStream")}
-                      </div>
-                      <div className="text-12 text-muted mt-2">
-                        {t("live.debugStreamHint")}
-                      </div>
-                    </div>
-                    <Switch
-                      checked={debugOn}
-                      disabled={!app}
-                      onChange={setDebugOn}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between gap-12 mt-16 pt-16 border-t border-line">
-                    <div>
-                      <div className="text-14 font-medium">
-                        {t("live.resultOverlay")}
-                      </div>
-                      <div className="text-12 text-muted mt-2">
-                        {t("live.resultOverlayHint")}
-                      </div>
-                    </div>
-                    <Switch
-                      checked={overlayOn}
-                      disabled={!debugOn}
-                      onChange={setOverlayOn}
-                    />
-                  </div>
-                  {!!app.models && app.models.length >= 2 && (
-                    <div className="mt-16 pt-16 border-t border-line">
-                      <div className="text-14 font-medium mb-8">
-                        {t("live.model")}
-                      </div>
-                      <Select
-                        className="w-full"
-                        value={currentModel}
-                        loading={modelSwitching}
-                        disabled={modelSwitching}
-                        onChange={onModelChange}
-                        options={app.models.map((m) => ({
-                          value: m.name,
-                          label: m.task ? `${m.name} (${m.task})` : m.name,
-                        }))}
-                      />
-                      <div className="text-12 text-muted mt-6">
-                        {t("live.switchRestarts")}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Application configuration (manifest config_schema) */}
-                {appConfig.schema && (
-                  <SchemaForm
-                    schema={appConfig.schema}
-                    draft={appConfig.draft}
-                    defaults={appConfig.defaults}
-                    dirty={appConfig.dirty}
-                    saving={appConfig.saving}
-                    editingKey={editingItem?.key ?? null}
-                    onChange={appConfig.setValue}
-                    onEditSpatial={(item) => setEditingItem(item)}
-                    onSave={onSaveConfig}
-                    onReset={() => {
-                      setEditingItem(null);
-                      appConfig.reset();
-                    }}
-                  />
-                )}
-
-                <div className="rc-card p-20">
-                  <div className="rc-section-label mb-12">
-                    {t("live.endpoints")}
-                  </div>
-                  <div className="mb-12">
-                    <div className="text-12 text-muted mb-4">
-                      {t("live.rtspStream")}
-                    </div>
-                    {rtspUrl ? (
-                      <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
-                        <span className="rc-mono text-12 break-all">
-                          {rtspUrl}
+              {/* Control panel — collapsible accordion so the right column
+                  stays short and the video reads as the primary element. */}
+              <div>
+                <Collapse
+                  className="rc-live-panel"
+                  defaultActiveKey={["debug"]}
+                  expandIconPosition="end"
+                  items={[
+                    {
+                      key: "debug",
+                      label: (
+                        <span className="rc-section-label">
+                          {t("live.debugControls")}
                         </span>
-                        <Button size="small" onClick={() => copy(rtspUrl)}>
-                          {t("common.copy")}
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="text-12 text-muted">
-                        {t("common.notDeclared")}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <div className="text-12 text-muted mb-4">
-                      {t("live.mqttTopic")}
-                    </div>
-                    {app.mqtt_topic ? (
-                      <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
-                        <span className="rc-mono text-12 break-all">
-                          {app.mqtt_topic}
+                      ),
+                      children: (
+                        <>
+                          <div className="flex items-center justify-between gap-12">
+                            <div>
+                              <div className="text-14 font-medium">
+                                {t("live.debugStream")}
+                              </div>
+                              <div className="text-12 text-muted mt-2">
+                                {t("live.debugStreamHint")}
+                              </div>
+                            </div>
+                            <Switch
+                              checked={debugOn}
+                              disabled={!app}
+                              onChange={setDebugOn}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-12 mt-16 pt-16 border-t border-line">
+                            <div>
+                              <div className="text-14 font-medium">
+                                {t("live.resultOverlay")}
+                              </div>
+                              <div className="text-12 text-muted mt-2">
+                                {t("live.resultOverlayHint")}
+                              </div>
+                            </div>
+                            <Switch
+                              checked={overlayOn}
+                              disabled={!debugOn}
+                              onChange={setOverlayOn}
+                            />
+                          </div>
+                          {!!app.models && app.models.length >= 2 && (
+                            <div className="mt-16 pt-16 border-t border-line">
+                              <div className="text-14 font-medium mb-8">
+                                {t("live.model")}
+                              </div>
+                              <Select
+                                className="w-full"
+                                value={currentModel}
+                                loading={modelSwitching}
+                                disabled={modelSwitching}
+                                onChange={onModelChange}
+                                options={app.models.map((m) => ({
+                                  value: m.name,
+                                  label: m.task
+                                    ? `${m.name} (${m.task})`
+                                    : m.name,
+                                }))}
+                              />
+                              <div className="text-12 text-muted mt-6">
+                                {t("live.switchRestarts")}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ),
+                    },
+                    ...(appConfig.schema
+                      ? [
+                          {
+                            key: "config",
+                            label: (
+                              <span className="flex items-center gap-8">
+                                <span className="rc-section-label">
+                                  {t("config.title")}
+                                </span>
+                                {appConfig.dirty && (
+                                  <span className="rc-badge accent">
+                                    {t("config.unsaved")}
+                                  </span>
+                                )}
+                              </span>
+                            ),
+                            children: (
+                              <SchemaForm
+                                embedded
+                                schema={appConfig.schema}
+                                draft={appConfig.draft}
+                                defaults={appConfig.defaults}
+                                dirty={appConfig.dirty}
+                                saving={appConfig.saving}
+                                editingKey={editingItem?.key ?? null}
+                                onChange={appConfig.setValue}
+                                onEditSpatial={(item) => setEditingItem(item)}
+                                onSave={onSaveConfig}
+                                onReset={() => {
+                                  setEditingItem(null);
+                                  appConfig.reset();
+                                }}
+                              />
+                            ),
+                          },
+                        ]
+                      : []),
+                    {
+                      key: "endpoints",
+                      label: (
+                        <span className="rc-section-label">
+                          {t("live.endpoints")}
                         </span>
-                        <Button
-                          size="small"
-                          onClick={() => copy(app.mqtt_topic || "")}
-                        >
-                          {t("common.copy")}
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="text-12 text-muted">
-                        {t("common.notDeclared")}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Gimbal placeholder (P5): collapsed card so the gimbal
-                    variant's page layout is already in place for Phase 6. */}
-                {gimbalPresent && (
-                  <div className="rc-card p-8">
-                    <Collapse
-                      ghost
-                      items={[
-                        {
-                          key: "gimbal",
-                          label: (
-                            <div className="flex items-center gap-8">
+                      ),
+                      children: (
+                        <>
+                          <div className="mb-12">
+                            <div className="text-12 text-muted mb-4">
+                              {t("live.rtspStream")}
+                            </div>
+                            {rtspUrl ? (
+                              <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
+                                <span className="rc-mono text-12 break-all">
+                                  {rtspUrl}
+                                </span>
+                                <Button
+                                  size="small"
+                                  onClick={() => copy(rtspUrl)}
+                                >
+                                  {t("common.copy")}
+                                </Button>
+                              </div>
+                            ) : (
+                              <div className="text-12 text-muted">
+                                {t("common.notDeclared")}
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-12 text-muted mb-4">
+                              {t("live.mqttTopic")}
+                            </div>
+                            {app.mqtt_topic ? (
+                              <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
+                                <span className="rc-mono text-12 break-all">
+                                  {app.mqtt_topic}
+                                </span>
+                                <Button
+                                  size="small"
+                                  onClick={() => copy(app.mqtt_topic || "")}
+                                >
+                                  {t("common.copy")}
+                                </Button>
+                              </div>
+                            ) : (
+                              <div className="text-12 text-muted">
+                                {t("common.notDeclared")}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      ),
+                    },
+                    ...(app.pipeline?.length
+                      ? [
+                          {
+                            key: "pipeline",
+                            label: (
                               <span className="rc-section-label">
-                                {t("live.gimbalTitle")}
+                                {t("live.pipelineFixed")}
                               </span>
-                              <span className="rc-badge">
-                                {t("live.gimbalSoon")}
+                            ),
+                            children: (
+                              <>
+                                <div className="flex flex-col gap-6">
+                                  {app.pipeline.map((m, idx) => (
+                                    <div
+                                      key={m.name}
+                                      className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8"
+                                    >
+                                      <span className="rc-mono text-12">
+                                        {idx + 1}. {m.name}
+                                      </span>
+                                      <span className="rc-badge">
+                                        {m.task || t("common.model")}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="text-12 text-muted mt-8">
+                                  {t("live.pipelineHint")}
+                                </div>
+                              </>
+                            ),
+                          },
+                        ]
+                      : []),
+                    ...(gimbalPresent
+                      ? [
+                          {
+                            key: "gimbal",
+                            label: (
+                              <span className="flex items-center gap-8">
+                                <span className="rc-section-label">
+                                  {t("live.gimbalTitle")}
+                                </span>
+                                <span className="rc-badge">
+                                  {t("live.gimbalSoon")}
+                                </span>
                               </span>
-                            </div>
-                          ),
-                          children: (
-                            <div className="text-13 text-muted">
-                              {t("live.gimbalPlaceholder")}
-                            </div>
-                          ),
-                        },
-                      ]}
-                    />
-                  </div>
-                )}
-
-                {!!app.pipeline?.length && (
-                  <div className="rc-card p-20">
-                    <div className="rc-section-label mb-12">
-                      {t("live.pipelineFixed")}
-                    </div>
-                    <div className="flex flex-col gap-6">
-                      {app.pipeline.map((m, idx) => (
-                        <div
-                          key={m.name}
-                          className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8"
-                        >
-                          <span className="rc-mono text-12">
-                            {idx + 1}. {m.name}
-                          </span>
-                          <span className="rc-badge">
-                            {m.task || t("common.model")}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="text-12 text-muted mt-8">
-                      {t("live.pipelineHint")}
-                    </div>
-                  </div>
-                )}
+                            ),
+                            children: (
+                              <div className="text-13 text-muted">
+                                {t("live.gimbalPlaceholder")}
+                              </div>
+                            ),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
               </div>
             </div>
 

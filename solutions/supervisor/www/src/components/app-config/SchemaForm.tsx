@@ -33,6 +33,9 @@ interface SchemaFormProps {
   onEditSpatial: (item: IConfigItem) => void;
   onSave: () => void;
   onReset: () => void;
+  /** When true, drop the rc-card wrapper + title header so the form can be
+   *  embedded inside a Collapse panel (the panel provides card + label). */
+  embedded?: boolean;
 }
 
 /** Effective value shown in the form: explicit draft wins, else default. */
@@ -64,6 +67,7 @@ const SchemaForm = ({
   onEditSpatial,
   onSave,
   onReset,
+  embedded = false,
 }: SchemaFormProps) => {
   const { t } = useTranslation();
 
@@ -178,15 +182,24 @@ const SchemaForm = ({
     );
   };
 
-  return (
-    <div className="rc-card p-20">
-      <div className="flex items-center justify-between gap-8 mb-4">
-        <span className="rc-section-label">{t("config.title")}</span>
-        {dirty && <span className="rc-badge accent">{t("config.unsaved")}</span>}
-      </div>
+  const body = (
+    <>
+      {!embedded && (
+        <div className="flex items-center justify-between gap-8 mb-4">
+          <span className="rc-section-label">{t("config.title")}</span>
+          {dirty && (
+            <span className="rc-badge accent">{t("config.unsaved")}</span>
+          )}
+        </div>
+      )}
 
-      {schema.groups.map((group) => (
-        <div key={group.key} className="mt-12 pt-12 border-t border-line">
+      {schema.groups.map((group, gi) => (
+        <div
+          key={group.key}
+          className={
+            embedded && gi === 0 ? "" : "mt-12 pt-12 border-t border-line"
+          }
+        >
           <div className="rc-section-label mb-10 opacity-70">
             {pickLocalizedText(group.title, group.title_zh) || group.key}
           </div>
@@ -230,8 +243,10 @@ const SchemaForm = ({
           {t("common.save")}
         </Button>
       </div>
-    </div>
+    </>
   );
+
+  return embedded ? body : <div className="rc-card p-20">{body}</div>;
 };
 
 export default SchemaForm;

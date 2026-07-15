@@ -62,6 +62,24 @@ svg {
 	border: 1px solid var(--rc-border);
 	border-radius: 12px;
 }
+/* Live-page control accordion: match the rc-card language (card bg + border,
+   no antd default grey header fill). */
+.rc-live-panel.ant-collapse {
+	background: var(--rc-bg);
+	border: 1px solid var(--rc-border);
+	border-radius: 12px;
+	overflow: hidden;
+}
+.rc-live-panel .ant-collapse-item {
+	border-bottom: 1px solid var(--rc-border);
+}
+.rc-live-panel > .ant-collapse-item:last-child {
+	border-bottom: none;
+}
+.rc-live-panel > .ant-collapse-item > .ant-collapse-header,
+.rc-live-panel .ant-collapse-content {
+	background: var(--rc-bg);
+}
 .rc-badge {
 	display: inline-flex;
 	align-items: center;
