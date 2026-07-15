@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Drawer, Modal, Progress, Spin, Tooltip, Upload } from "antd";
+import { Alert, App, Button, Modal, Progress, Spin, Tooltip, Upload } from "antd";
 import type { UploadFile, UploadProps } from "antd";
 import {
   ReloadOutlined,
@@ -582,13 +582,16 @@ const Applications = () => {
         )}
       </Spin>
 
-      <Drawer
+      <Modal
         title={
           detailApp ? pickLocalized(detailApp, "name") || detailApp.id : ""
         }
         open={!!detailApp}
-        onClose={() => setDetailApp(null)}
-        width={Math.min(520, window.innerWidth - 24)}
+        onCancel={() => setDetailApp(null)}
+        footer={null}
+        centered
+        width={Math.min(560, window.innerWidth - 32)}
+        styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
       >
         {detailApp && (
           <div className="flex flex-col gap-16 text-13">
@@ -710,7 +713,7 @@ const Applications = () => {
             <IntegrationDoc appId={detailApp.id} />
           </div>
         )}
-      </Drawer>
+      </Modal>
     </div>
   );
 };
