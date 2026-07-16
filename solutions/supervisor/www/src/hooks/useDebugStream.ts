@@ -28,6 +28,9 @@ export interface IResultBox {
   h: number;
   score: number;
   target: number | string;
+  /** Rich display label from the parallel `labels[]` array (e.g. an app that
+   *  annotates a face box with "male 20-29 neutral"). Falls back to target. */
+  label?: string;
 }
 
 export interface IResultMessage {
@@ -94,8 +97,20 @@ function parseOverlayFrame(
     }
   }
 
+  // Optional parallel labels[] array: labels[i] is a rich, already-formatted
+  // display string for boxes[i] (e.g. face-analysis emits "male 20-29 neutral"
+  // while the box's own target is just "face").
+  const rawLabels = Array.isArray(data.labels)
+    ? (data.labels as unknown[])
+    : null;
+  const labelAt = (i: number): string | undefined => {
+    const v = rawLabels ? rawLabels[i] : undefined;
+    return typeof v === "string" && v ? v : undefined;
+  };
+
   const boxes: IResultBox[] = [];
-  for (const b of rawBoxes) {
+  for (let i = 0; i < rawBoxes.length; i++) {
+    const b = rawBoxes[i];
     if (Array.isArray(b) && b.length >= 4) {
       boxes.push({
         x: Number(b[0]) || 0,
@@ -104,6 +119,7 @@ function parseOverlayFrame(
         h: Number(b[3]) || 0,
         score: Number(b[4]) || 0,
         target: b[5] as number | string,
+        label: labelAt(i),
       });
     } else if (b && typeof b === "object") {
       const o = b as Record<string, number>;
@@ -114,6 +130,7 @@ function parseOverlayFrame(
         h: Number(o.h) || 0,
         score: Number(o.score) || 0,
         target: o.target,
+        label: labelAt(i),
       });
     }
   }

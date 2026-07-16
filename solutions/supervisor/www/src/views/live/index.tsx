@@ -61,12 +61,14 @@ function BoxOverlay({
         const h = normalized ? b.h * resH : b.h;
         const left = x - w / 2;
         const top = y - h / 2;
-        const label =
-          b.target !== undefined && b.target !== null
-            ? `${b.target} ${(b.score <= 1 ? b.score * 100 : b.score).toFixed(
-                0
-              )}%`
-            : "";
+        const pct = (b.score <= 1 ? b.score * 100 : b.score).toFixed(0);
+        // Prefer the app's rich label (e.g. "male 20-29 neutral") over the
+        // bare box target ("face"); append the detection score.
+        const label = b.label
+          ? `${b.label} ${pct}%`
+          : b.target !== undefined && b.target !== null
+          ? `${b.target} ${pct}%`
+          : "";
         return (
           <g key={i}>
             <rect
