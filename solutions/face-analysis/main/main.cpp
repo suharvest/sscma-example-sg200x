@@ -219,6 +219,13 @@ static bool init_camera() {
             value.i32 = 0;
             g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
 
+            // Apply the configured inference frame rate to the channel. Without
+            // this the channel keeps its 30fps default, so the capture->inference
+            // FIFO is sized/filled at 30fps while inference consumes far slower —
+            // wasting CPU copying frames that get dropped.
+            value.i32 = g_config.inference_fps;
+            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
+
             // Set inference resolution
             value.u16s[0] = g_config.inference_width;
             value.u16s[1] = g_config.inference_height;
