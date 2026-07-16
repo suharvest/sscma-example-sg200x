@@ -362,6 +362,28 @@ ma_err_t CameraSG200X::retrieveFrame(ma_img_t& frame, ma_pixel_format_t format) 
         return MA_AGAIN;
     }
 
+    // Keep-latest for raw inference frames (chn 0 = RGB888/NV21). The queue is
+    // a FIFO whose depth equals the channel fps, so when inference is slower
+    // than capture it backs up and fetch() returns a frame that can be seconds
+    // old — the overlay then lags the live video badly. Drain any additional
+    // queued frames (non-blocking) and keep only the newest so inference always
+    // runs on a fresh frame. Raw frames are self-contained, so dropping stale
+    // ones is safe. Do NOT do this for H264/H265 (chn 2) — those packets are
+    // interdependent and must be delivered in order.
+    if (chn == 0) {
+        ma_img_t* next = nullptr;
+        while (m_channels[chn].queue->fetch(reinterpret_cast<void**>(&next), Tick::fromMilliseconds(0))) {
+            if (img != nullptr) {
+                if (!img->physical) {
+                    delete[] img->data;
+                }
+                delete img;
+            }
+            img  = next;
+            next = nullptr;
+        }
+    }
+
     if (img != nullptr) {
         frame = *img;
         delete img;
