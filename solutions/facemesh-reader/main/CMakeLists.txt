@@ -6,5 +6,5 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS sscma-micro sophgo cvi_rtsp mosquitto rgn
+    PRIVATE_REQUIREDS sscma-micro sophgo cvi_rtsp mosquitto rgn debug_stream
 )

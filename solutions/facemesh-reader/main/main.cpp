@@ -8,6 +8,7 @@
 
 #include <sscma.h>
 #include <video.h>
+#include <debug_stream.h>
 #include "rtsp_demo.h"
 
 #include "face_detector.h"
@@ -25,7 +26,7 @@ using namespace facemesh_reader;
 // Default configuration
 static struct {
     // Model paths
-    std::string face_model     = "/userdata/local/models/yolo-face_mixfp16.cvimodel";
+    std::string face_model     = "/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel";
     std::string facemesh_model = "/userdata/local/models/face_landmark_cv181x_bf16.cvimodel";
 
     // Detection parameters
@@ -47,6 +48,7 @@ static struct {
     // Runtime flags
     bool enable_rtsp        = true;
     bool enable_mqtt        = true;
+    bool enable_debug       = true;   // H.264-over-WS + results JSON for supervisor console
     bool include_landmarks  = false;  // include 468 (x,y) per face in MQTT JSON
     bool verbose            = false;
 
@@ -188,6 +190,11 @@ static bool init_camera() {
             value.i32 = 0;
             g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
 
+            // Apply the inference frame rate (else the channel defaults high and the
+            // capture->inference FIFO fills faster than inference drains).
+            value.i32 = g_config.inference_fps;
+            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
+
             value.u16s[0] = g_config.inference_width;
             value.u16s[1] = g_config.inference_height;
             g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
@@ -254,6 +261,8 @@ static bool init_mqtt() {
 static void cleanup() {
     if (g_camera) g_camera->stopStream();
 
+    if (g_config.enable_debug) debug_stream_destroy();
+
     if (g_config.enable_rtsp) {
         deinitRtsp();
         deinitVideo();
@@ -276,6 +285,35 @@ static void cleanup() {
     }
 
     MA_LOGI(TAG, "Cleanup completed");
+}
+
+// Assemble the debug /results envelope (shared debug_stream builder).
+// Face bbox is normalized (x,y,w,h in 0-1, x/y are top-left) -> scale to
+// inference pixels as center-based boxes; label = drowsiness state + EAR.
+static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
+                                            const std::vector<AnalyzedFace>& faces,
+                                            float inference_time_ms) {
+    std::vector<debug_stream_box_t> boxes;
+    std::vector<std::string> labels;
+    boxes.reserve(faces.size());
+    labels.reserve(faces.size());
+    for (const auto& af : faces) {
+        const auto& f = af.face;
+        boxes.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
+                         (f.y + f.h * 0.5f) * g_config.inference_height,
+                         f.w * g_config.inference_width,
+                         f.h * g_config.inference_height,
+                         f.score, "face"});
+        char lbl[80];
+        snprintf(lbl, sizeof(lbl), "%s EAR %.2f",
+                 af.drowsiness.state.c_str(), af.metrics.avg_ear);
+        labels.push_back(lbl);
+    }
+    debug_stream_letterbox_to_display(boxes, g_config.inference_width, g_config.inference_height,
+                                      g_config.stream_width, g_config.stream_height);
+    return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
+                                      g_config.stream_width, g_config.stream_height,
+                                      boxes, &labels);
 }
 
 static void process_frame() {
@@ -327,6 +365,14 @@ static void process_frame() {
         s_prev_alert = d.alert_active;
     }
 
+    // Push the same result to debug WS clients (sscma-node format).
+    // debug_stream is lazy: skip building JSON when nobody is connected.
+    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        std::string dj = build_debug_results_json(timestamp_ms, g_frame_id, analyzed,
+                                                  static_cast<float>(total_time));
+        debug_stream_publish_result(dj.c_str(), dj.size());
+    }
+
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, analyzed,
                                           static_cast<float>(total_time),
@@ -367,6 +413,10 @@ int main(int argc, char** argv) {
     if (!init_models())          { cleanup(); return 1; }
     if (!init_camera())          { cleanup(); return 1; }
     if (!init_video_streaming()) { cleanup(); return 1; }
+    // Debug stream (non-fatal: on failure run without it)
+    if (g_config.enable_debug && debug_stream_start_or_disable(8001, VIDEO_CH2) != 0) {
+        g_config.enable_debug = false;
+    }
     if (!init_mqtt())            { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);

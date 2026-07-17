@@ -1,0 +1,22 @@
+{
+    "id": "facemesh-reader",
+    "name": "Drowsiness Detection",
+    "name_zh": "困倦检测",
+    "scene": "Safety",
+    "scene_zh": "安全",
+    "description": "On-device driver/operator drowsiness detection: 468-point FaceMesh landmarks drive eye-aspect-ratio (EAR) eye closure, PERCLOS and yawn (MAR) metrics to flag drowsy states. Publishes metrics over MQTT and streams H.264 via RTSP.",
+    "description_zh": "端侧驾驶员/操作员困倦检测：468 点 FaceMesh 关键点计算眼睛纵横比(EAR)闭眼、PERCLOS 与打哈欠(MAR)指标，判定困倦状态。通过 MQTT 发布指标，并以 RTSP 推送 H.264 视频。",
+    "type": "native",
+    "init_script": "/etc/init.d/K92facemesh-reader",
+    "image": "/apps/facemesh-reader.svg",
+    "rtsp_url": "rtsp://{host}:8554/live0",
+    "mqtt_topic": "recamera/facemesh-reader/results",
+    "debug_ws": { "port": 8001, "video_path": "/", "results_path": "/results" },
+    "models": [],
+    "pipeline": [
+        { "name": "yolov8n-face", "path": "/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel", "task": "face-detect" },
+        { "name": "face-landmark", "path": "/userdata/local/models/face_landmark_cv181x_bf16.cvimodel", "task": "facemesh-468" }
+    ],
+    "version": "0.1.1",
+    "author": "Seeed Studio"
+}

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 210" role="img" aria-label="Drowsiness detection preview">
+  <style>
+    .bg{fill:#eef2e6}.panel{fill:#ffffff}.mut{fill:#c8d2bb}
+    .skin{fill:#9fb08c}.txt{fill:#3a4633}.row{fill:#dbe4cd}
+    @media (prefers-color-scheme:dark){
+      .bg{fill:#161a13}.panel{fill:#1e241a}.mut{fill:#3a4633}
+      .skin{fill:#556347}.txt{fill:#c7d3b6}.row{fill:#2b3324}
+    }
+  </style>
+  <rect class="bg" width="400" height="210" rx="10"/>
+  <rect class="panel" x="14" y="14" width="372" height="182" rx="8"/>
+  <!-- face with mesh -->
+  <g>
+    <ellipse class="skin" cx="112" cy="105" rx="54" ry="64"/>
+    <!-- closed / drooping eyes (drowsy): short arcs instead of open eyes -->
+    <g stroke="#8fc31f" stroke-width="3" fill="none" stroke-linecap="round">
+      <path d="M84 96 q10 8 22 0"/>
+      <path d="M118 96 q10 8 22 0"/>
+    </g>
+    <!-- EAR landmark dots around one eye -->
+    <g fill="#8fc31f">
+      <circle cx="84" cy="94" r="2"/><circle cx="95" cy="90" r="2"/><circle cx="106" cy="94" r="2"/>
+      <circle cx="95" cy="99" r="2"/>
+    </g>
+    <!-- slightly open mouth (yawn hint) -->
+    <ellipse cx="112" cy="140" rx="14" ry="9" fill="none" stroke="#8fc31f" stroke-width="2.5"/>
+  </g>
+  <!-- detection bracket -->
+  <g fill="none" stroke="#8fc31f" stroke-width="2.5" stroke-linecap="round">
+    <path d="M58 44 h-6 v6 M166 44 h6 v6 M58 166 h-6 v-6 M166 166 h6 v-6"/>
+  </g>
+  <!-- metrics panel -->
+  <g font-family="monospace" font-size="12">
+    <rect class="row" x="210" y="46" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="62">EAR   0.18</text>
+    <rect class="row" x="210" y="78" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="94">PERCLOS 32%</text>
+    <rect class="row" x="210" y="110" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="126">yawns    2</text>
+    <rect x="210" y="142" width="150" height="26" rx="6" fill="#8fc31f"/>
+    <text x="220" y="159" fill="#1a2410" font-size="13">DROWSY</text>
+  </g>
+</svg>

@@ -2,26 +2,45 @@
 
 # Post-installation script for facemesh-reader
 
-echo "Installing FaceMesh Reader..."
+echo "Installing FaceMesh Reader (Drowsiness Detection)..."
 
-# Create models directory if not exists
+# Create data directories if not exists
 mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
 
 # Set permissions
 chmod +x /usr/local/bin/facemesh-reader
+chmod +x /etc/init.d/K92facemesh-reader 2>/dev/null || true
+
+# Register with the supervisor app gallery (vendor path):
+# third-party app debs ship their own manifest + integration docs and
+# install them into /userdata/local/apps/, which the supervisor scans
+# (user manifests there override built-ins with the same id).
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/facemesh-reader
+for f in facemesh-reader.json facemesh-reader.md facemesh-reader.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/facemesh-reader.json"
 
 echo "FaceMesh Reader installed successfully!"
 echo ""
-echo "Usage: facemesh-reader [options]"
-echo "       facemesh-reader --help for more options"
-echo ""
-echo "Models should be placed in: /userdata/local/models/"
-echo "  - yolo-face_mixfp16.cvimodel        (face detection)"
-echo "  - face_landmark_cv181x_int8.cvimodel (FaceMesh 468-point landmarks)"
+echo "Models directory: /userdata/local/models/"
+echo "  - yolo-face_mixfp16.cvimodel          (face detection)"
+echo "  - face_landmark_cv181x_bf16.cvimodel  (FaceMesh 468-point landmarks)"
 echo ""
 echo "Configuration file: /etc/facemesh-reader.conf"
 echo ""
-echo "RTSP stream: rtsp://<device_ip>:554/live"
-echo "MQTT topic:  recamera/facemesh-reader/results"
+echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:      recamera/facemesh-reader/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+# Migration: remove the auto-start (S-prefixed) script from older package
+# layouts. Gallery apps must NOT start at boot — only the supervisor's
+# app_restore starts the single active application (K-prefix is skipped
+# by SysVinit but still invocable by path).
+rm -f /etc/init.d/S92facemesh-reader
 
 exit 0
