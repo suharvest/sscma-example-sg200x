@@ -7,11 +7,17 @@ import {
   PickerValue,
   PickerValueExtend,
 } from "antd-mobile/es/components/picker";
-import { Button } from "antd";
+import { App, Button } from "antd";
 import moment from "moment";
 import { useTranslation } from "react-i18next";
 import { useData } from "./hook";
-import { DeviceChannleMode, UpdateStatus, PowerSourceMode } from "@/enum";
+import { setDevicePowerApi } from "@/api/device/index";
+import {
+  DeviceChannleMode,
+  UpdateStatus,
+  PowerSourceMode,
+  PowerMode,
+} from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
 import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
@@ -46,6 +52,28 @@ const infoList = [
 
 function System() {
   const { t } = useTranslation();
+  const { modal, message } = App.useApp();
+
+  // Power actions (merged from the former standalone Power page). Both are
+  // destructive, so confirm first.
+  const onPowerOp = (mode: PowerMode) => {
+    const isReboot = mode === PowerMode.Restart;
+    modal.confirm({
+      title: t(isReboot ? "power.rebootTitle" : "power.shutdownTitle"),
+      content: t(isReboot ? "power.rebootContent" : "power.shutdownContent"),
+      okText: t(isReboot ? "power.reboot" : "power.shutdownOk"),
+      okButtonProps: { danger: true },
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        try {
+          await setDevicePowerApi({ mode });
+          message.success(t("power.operateSuccess"));
+        } catch (e) {
+          message.error(t("power.operateFailed", { defaultValue: "Failed" }));
+        }
+      },
+    });
+  };
   const {
     deviceInfo,
     batteryInfo,
@@ -170,6 +198,26 @@ function System() {
           </div>
         </>
       )}
+
+      <div className="font-bold text-18 mb-14 my-24">{t("menu.power")}</div>
+      <div className="bg-white rounded-20 px-24 py-20 flex flex-col gap-12">
+        <Button
+          block
+          color="danger"
+          variant="outlined"
+          onClick={() => onPowerOp(PowerMode.Restart)}
+        >
+          {t("power.reboot")}
+        </Button>
+        <Button
+          block
+          color="danger"
+          variant="outlined"
+          onClick={() => onPowerOp(PowerMode.Shutdown)}
+        >
+          {t("power.shutdown")}
+        </Button>
+      </div>
 
       <div className="font-bold text-18 mb-14">{t("system.update")}</div>
       <div className="bg-white rounded-20 px-24">

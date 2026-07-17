@@ -88,7 +88,6 @@ export function getMenuSections({
       items: [
         { key: "terminal", label: "menu.terminal", route: "/terminal" },
         { key: "system", label: "menu.system", route: "/system" },
-        { key: "power", label: "menu.power", route: "/power" },
       ],
     }
   );
