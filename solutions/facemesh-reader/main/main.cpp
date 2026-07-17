@@ -299,8 +299,12 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
     labels.reserve(faces.size());
     for (const auto& af : faces) {
         const auto& f = af.face;
-        boxes.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
-                         (f.y + f.h * 0.5f) * g_config.inference_height,
+        // FaceInfo.x/y is already the box CENTER (face_detector.cpp passes the
+        // model's center xy through without converting to top-left), so use it
+        // directly — do NOT add w/2 (that would shift the box down-right by
+        // half its size). Mirrors yolo-detector, not face-analysis.
+        boxes.push_back({f.x * g_config.inference_width,
+                         f.y * g_config.inference_height,
                          f.w * g_config.inference_width,
                          f.h * g_config.inference_height,
                          f.score, "face"});
