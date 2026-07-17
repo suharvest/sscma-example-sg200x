@@ -290,8 +290,12 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
                          det.h * g_config.inference_height,
                          det.confidence, Detector::getClassName(det.class_id)});
     }
+    // The inference channel is letterboxed vs the 16:9 debug video (stream);
+    // remap boxes into the stream frame so the overlay aligns with the video.
+    debug_stream_letterbox_to_display(boxes, g_config.inference_width, g_config.inference_height,
+                                      g_config.stream_width, g_config.stream_height);
     return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
-                                      g_config.inference_width, g_config.inference_height,
+                                      g_config.stream_width, g_config.stream_height,
                                       boxes);
 }
 

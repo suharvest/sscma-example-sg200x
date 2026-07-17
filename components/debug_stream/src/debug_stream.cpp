@@ -463,3 +463,37 @@ std::string debug_stream_build_results(uint64_t timestamp_ms, uint32_t frame_id,
     json << "}";
     return json.str();
 }
+
+void debug_stream_letterbox_to_display(std::vector<debug_stream_box_t>& boxes,
+                                       int inference_w, int inference_h,
+                                       int display_w, int display_h) {
+    if (inference_w <= 0 || inference_h <= 0 || display_w <= 0 || display_h <= 0) {
+        return;
+    }
+    // The sensor content (display aspect) is fit into the inference frame
+    // preserving aspect and centered; find that content sub-rect in inference
+    // pixels. Compare aspects via cross-multiply to avoid float division.
+    float content_w = static_cast<float>(inference_w);
+    float content_h = static_cast<float>(inference_h);
+    float x_off = 0.f, y_off = 0.f;
+    const long long disp_vs_inf =
+        static_cast<long long>(display_w) * inference_h - static_cast<long long>(display_h) * inference_w;
+    if (disp_vs_inf > 0) {
+        // Display is wider than the inference frame -> bars top/bottom.
+        content_h = static_cast<float>(inference_w) * display_h / display_w;
+        y_off     = (inference_h - content_h) * 0.5f;
+    } else if (disp_vs_inf < 0) {
+        // Display is taller -> bars left/right.
+        content_w = static_cast<float>(inference_h) * display_w / display_h;
+        x_off     = (inference_w - content_w) * 0.5f;
+    }
+    // else: aspects match -> content fills the frame (pure scale below).
+    const float sx = display_w / content_w;
+    const float sy = display_h / content_h;
+    for (auto& b : boxes) {
+        b.x = (b.x - x_off) * sx;
+        b.y = (b.y - y_off) * sy;
+        b.w = b.w * sx;
+        b.h = b.h * sy;
+    }
+}

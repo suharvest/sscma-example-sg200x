@@ -106,6 +106,26 @@ std::string debug_stream_build_results(uint64_t timestamp_ms, uint32_t frame_id,
                                        const std::vector<debug_stream_box_t>& boxes,
                                        const std::vector<std::string>* labels = nullptr,
                                        const std::string& extra_json = std::string());
+
+/*
+ * Remap overlay boxes from the letterboxed inference frame into the display
+ * (stream) frame, then report with res = display dims.
+ *
+ * The camera VPSS fits the sensor content into each channel preserving aspect
+ * (ASPECT_RATIO_AUTO), padding with bars. When the inference channel aspect
+ * differs from the debug-video (stream) channel aspect, a box built in
+ * inference-frame pixels carries a different letterbox offset than the video,
+ * so drawn over the video it is misplaced (e.g. a square 640x640 inference vs a
+ * 16:9 stream). This maps each box (given in inference-frame pixels) into the
+ * display frame the debug video actually shows: it assumes the display channel
+ * shows the un-letterboxed sensor content (display aspect == sensor aspect,
+ * true for a full-FOV 16:9 stream). When the two aspects already match it is a
+ * pure scale (a no-op when the dims are equal). Call this, then pass the boxes
+ * to debug_stream_build_results with res_w/res_h = display_w/display_h.
+ */
+void debug_stream_letterbox_to_display(std::vector<debug_stream_box_t>& boxes,
+                                       int inference_w, int inference_h,
+                                       int display_w, int display_h);
 #endif
 
 #endif /* _DEBUG_STREAM_H_ */
