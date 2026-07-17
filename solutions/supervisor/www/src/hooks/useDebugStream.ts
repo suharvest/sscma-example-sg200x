@@ -67,6 +67,12 @@ const DEFAULT_RESOLUTION = 640;
 const RESULTS_FLUSH_MS = 150;
 /** frame delay/timestamp flush cadence */
 const DELAY_FLUSH_MS = 1000;
+/** Live-edge keeper: JMuxer/MediaSource accumulates a decode buffer so the
+ *  video playhead drifts behind real time; the (now fresh) overlay then leads
+ *  the video. Periodically snap the video back to the live edge when it lags. */
+const LIVE_EDGE_CHECK_MS = 500;
+const LIVE_EDGE_MAX_LAG = 0.6; // seconds behind buffered end before snapping
+const LIVE_EDGE_TARGET = 0.15; // seconds from the edge to land on after a snap
 
 /** Parse a results JSON message into an overlay frame (defensive). */
 function parseOverlayFrame(
@@ -254,11 +260,25 @@ export default function useDebugStream({
         pendingOverlayRef.current = null;
       }
     }, RESULTS_FLUSH_MS);
+    // Keep the MSE video near the live edge so it doesn't trail the overlay.
+    const liveEdgeTimer = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.seeking || !v.buffered || v.buffered.length === 0) return;
+      const end = v.buffered.end(v.buffered.length - 1);
+      if (end - v.currentTime > LIVE_EDGE_MAX_LAG) {
+        try {
+          v.currentTime = end - LIVE_EDGE_TARGET;
+        } catch (e) {
+          /* transient: buffer being updated */
+        }
+      }
+    }, LIVE_EDGE_CHECK_MS);
 
     const dispose = () => {
       disposed = true;
       clearInterval(delayTimer);
       clearInterval(flushTimer);
+      clearInterval(liveEdgeTimer);
       cleanup();
     };
 
