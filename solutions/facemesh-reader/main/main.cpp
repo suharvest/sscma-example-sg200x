@@ -5,15 +5,22 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <atomic>
+#include <algorithm>
 
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
 #include "rtsp_demo.h"
 
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
+#include <ha_mqtt.h>
+
 #include "face_detector.h"
 #include "facemesh_pipeline.h"
-#include "mqtt_publisher.h"
+#include "mqtt_payload.h"
 #include "drowsiness_detector.h"
 #include "yawn_detector.h"
 #include "local_alert.h"
@@ -64,9 +71,12 @@ static struct {
 static std::atomic<bool> g_running(true);
 static FaceDetector*     g_face_detector = nullptr;
 static FacemeshPipeline* g_pipeline      = nullptr;
-static MqttPublisher*    g_mqtt_publisher = nullptr;
+static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera*           g_camera        = nullptr;
 static uint32_t          g_frame_id      = 0;
+
+// Alert edge tracking shared between the local alert and the HA snapshot.
+static bool g_prev_alert = false;
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -245,13 +255,39 @@ static bool init_mqtt() {
         return true;
     }
 
-    g_mqtt_publisher = new MqttPublisher();
-    MqttConfig mqtt_config;
-    mqtt_config.host  = g_config.mqtt_host;
-    mqtt_config.port  = g_config.mqtt_port;
-    mqtt_config.topic = g_config.mqtt_topic;
+    ha_mqtt::ClientOptions opts;
+    opts.app_id        = "facemesh-reader";
+    opts.client_id     = "recamera-facemesh-reader";
+    opts.results_topic = g_config.mqtt_topic;
+    opts.legacy_host   = g_config.mqtt_host;
+    opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
-    if (!g_mqtt_publisher->init(mqtt_config)) {
+    // Home Assistant MQTT Discovery entity table (field names must match the
+    // results JSON built by mqtt_payload.cpp).
+    using ha_mqtt::EntityConfig;
+    using ha_mqtt::EntityType;
+    opts.entities = {
+        EntityConfig{EntityType::BinarySensor, "drowsiness", "Drowsiness Alert",
+                     "{{ 'ON' if value_json.face_count > 0 and value_json.faces[0].drowsiness.alert_active else 'OFF' }}",
+                     "problem", "", ""},
+        EntityConfig{EntityType::BinarySensor, "yawn", "Yawning",
+                     "{{ 'ON' if value_json.face_count > 0 and value_json.faces[0].yawn.is_yawning else 'OFF' }}",
+                     "", "", ""},
+        EntityConfig{EntityType::BinarySensor, "occupancy", "Face Detected",
+                     "{{ 'ON' if value_json.face_count > 0 else 'OFF' }}",
+                     "occupancy", "", ""},
+        EntityConfig{EntityType::Sensor, "perclos", "PERCLOS",
+                     "{{ value_json.faces[0].drowsiness.perclos_pct | round(1) if value_json.face_count > 0 else 0 }}",
+                     "", "%", "measurement"},
+        EntityConfig{EntityType::Sensor, "ear", "Eye Aspect Ratio",
+                     "{{ value_json.faces[0].ear | round(3) if value_json.face_count > 0 else 0 }}",
+                     "", "", "measurement"},
+        EntityConfig{EntityType::Image, "snapshot", "Drowsiness Snapshot",
+                     "", "", "", ""},
+    };
+
+    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
+    if (!g_mqtt_publisher->init(opts)) {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
@@ -320,6 +356,69 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
                                       boxes, &labels);
 }
 
+// HA snapshot: on a drowsiness alert_active edge, publish an annotated JPEG to
+// the retained snapshot topic (QoS1, wait for PUBACK) before the state JSON so
+// the HA image entity shows the frame that triggered the state change.
+// Per-state 10 s cooldown; enabled only in HA mode.
+static bool snapshot_cooldown_ok(bool new_state) {
+    static std::chrono::steady_clock::time_point s_last[2];  // [0]=clear, [1]=alert
+    const auto now = std::chrono::steady_clock::now();
+    const int idx = new_state ? 1 : 0;
+    if (s_last[idx].time_since_epoch().count() != 0 &&
+        std::chrono::duration_cast<std::chrono::seconds>(now - s_last[idx]).count() < 10) {
+        return false;
+    }
+    s_last[idx] = now;
+    return true;
+}
+
+static void publish_alert_snapshot(const ::cv::Mat& rgb, const AnalyzedFace& af) {
+    if (!g_mqtt_publisher) return;
+
+    ::cv::Mat annotated = rgb;  // rgb is already our private copy
+
+    // FaceInfo.x/y is the box CENTER (normalized 0-1) — same rule as
+    // build_debug_results_json: convert to top-left only for drawing.
+    const auto& f = af.face;
+    const float cx = f.x * annotated.cols;
+    const float cy = f.y * annotated.rows;
+    const float bw = f.w * annotated.cols;
+    const float bh = f.h * annotated.rows;
+    ::cv::Rect box(static_cast<int>(cx - bw / 2.f), static_cast<int>(cy - bh / 2.f),
+                 static_cast<int>(bw), static_cast<int>(bh));
+    box &= ::cv::Rect(0, 0, annotated.cols, annotated.rows);
+    if (box.area() > 0) {
+        ::cv::rectangle(annotated, box, ::cv::Scalar(255, 64, 64), 2);
+        char lbl[80];
+        snprintf(lbl, sizeof(lbl), "%s EAR %.2f", af.drowsiness.state.c_str(), af.metrics.avg_ear);
+        const int ty = std::max(box.y - 6, 14);
+        ::cv::putText(annotated, lbl, ::cv::Point(box.x, ty), ::cv::FONT_HERSHEY_SIMPLEX,
+                    0.5, ::cv::Scalar(255, 64, 64), 1);
+    }
+
+    ::cv::Mat bgr;
+    ::cv::cvtColor(annotated, bgr, ::cv::COLOR_RGB2BGR);
+    ::cv::Mat resized;
+    ::cv::resize(bgr, resized, ::cv::Size(640, 360));
+
+    std::vector<uchar> jpeg;
+    if (!::cv::imencode(".jpg", resized, jpeg, {::cv::IMWRITE_JPEG_QUALITY, 80})) {
+        MA_LOGW(TAG, "Snapshot JPEG encode failed");
+        return;
+    }
+
+    // QoS1 retained; block (max 2 s) for PUBACK so the retained image is on the
+    // broker before the state JSON that references it goes out.
+    if (!g_mqtt_publisher->publishBinary(g_mqtt_publisher->snapshotTopic(),
+                                         jpeg.data(), jpeg.size(),
+                                         1, true, 2000)) {
+        MA_LOGW(TAG, "Snapshot publish failed or PUBACK timed out");
+    } else {
+        MA_LOGI(TAG, "Snapshot published (%zu bytes) to %s",
+                jpeg.size(), g_mqtt_publisher->snapshotTopic().c_str());
+    }
+}
+
 static void process_frame() {
     ma_img_t frame;
     if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
@@ -342,13 +441,28 @@ static void process_frame() {
     auto mesh_end = std::chrono::high_resolution_clock::now();
     auto mesh_time = std::chrono::duration_cast<std::chrono::milliseconds>(mesh_end - mesh_start).count();
 
+    // HA snapshot: detect the alert_active edge BEFORE returning the frame so
+    // we can copy the RGB pixels for the annotated snapshot (frame data is
+    // invalid after returnFrame). Snapshot only in HA mode, per-state cooldown.
+    ::cv::Mat snapshot_rgb;
+    bool have_snapshot = false;
+    if (g_mqtt_publisher && g_mqtt_publisher->haEnabled() &&
+        !analyzed.empty() && analyzed.front().metrics.valid) {
+        const bool alert_now = analyzed.front().drowsiness.alert_active;
+        if (alert_now != g_prev_alert && snapshot_cooldown_ok(alert_now)) {
+            ::cv::Mat wrap(frame.height, frame.width, CV_8UC3, frame.data);
+            snapshot_rgb = wrap.clone();
+            have_snapshot = true;
+        }
+    }
+
     g_camera->returnFrame(frame);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
     // Phase 2: edge alert — fire on rising edge of alert_active for the primary face.
-    static bool s_prev_alert = false;
+    bool& s_prev_alert = g_prev_alert;
     if (!analyzed.empty() && analyzed.front().metrics.valid) {
         const auto& d = analyzed.front().drowsiness;
         if (d.alert_active && !s_prev_alert) {
@@ -378,9 +492,15 @@ static void process_frame() {
     }
 
     if (g_config.enable_mqtt && g_mqtt_publisher) {
-        g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, analyzed,
-                                          static_cast<float>(total_time),
-                                          g_config.include_landmarks);
+        // Snapshot first (retained, PUBACK-confirmed) so the HA image entity
+        // already holds the triggering frame when the state JSON arrives.
+        if (have_snapshot) {
+            publish_alert_snapshot(snapshot_rgb, analyzed.front());
+        }
+        std::string payload = buildResultJson(timestamp_ms, g_frame_id, analyzed,
+                                              static_cast<float>(total_time),
+                                              g_config.include_landmarks);
+        g_mqtt_publisher->publishResultsJson(payload);
     }
 
     if (g_config.verbose || !analyzed.empty()) {
