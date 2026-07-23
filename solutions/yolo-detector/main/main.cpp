@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <atomic>
+#include <map>
 
 #include <sscma.h>
 #include <video.h>
@@ -314,19 +315,16 @@ static bool init_mqtt() {
     opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
     // Home Assistant MQTT Discovery entity table (field names must match the
-    // results JSON built by mqtt_payload.cpp). The published payload is the
-    // tracking format (persons/zone_occupancy) when tracking is enabled and
-    // the basic format (detection_count/detections) otherwise, so the
-    // templates handle both.
+    // results JSON built by mqtt_payload.cpp — a single schema with
+    // detection_count/detections regardless of the tracking setting).
     using ha_mqtt::EntityConfig;
     using ha_mqtt::EntityType;
     opts.entities = {
         EntityConfig{EntityType::Sensor, "detection_count", "Detection Count",
-                     "{{ value_json.detection_count if value_json.detection_count is defined else value_json.persons | length }}",
+                     "{{ value_json.detection_count }}",
                      "", "", "measurement"},
         EntityConfig{EntityType::BinarySensor, "person_occupancy", "Person Detected",
-                     "{{ 'ON' if (value_json.persons | default([]) | length > 0) or "
-                     "(value_json.detections | default([]) | selectattr('class_name', 'equalto', 'person') | list | length > 0) else 'OFF' }}",
+                     "{{ 'ON' if value_json.detections | selectattr('class_name', 'equalto', 'person') | list | length > 0 else 'OFF' }}",
                      "occupancy", "", ""},
     };
 
@@ -383,36 +381,38 @@ static void process_frame() {
         debug_stream_publish_result(debug_json.c_str(), debug_json.size());
     }
 
-    // Publish results via MQTT
+    // Publish results via MQTT (single schema; tracking adds optional fields)
     if (g_config.enable_mqtt && g_mqtt_publisher) {
+        std::map<int, int> det_track_ids;
+        TrackingSummary tracking;
+        bool has_tracking = false;
+
         if (g_config.enable_tracking && g_tracker) {
             auto tracked_persons = g_tracker->update(detections, current_time_sec);
-            auto state_counts = g_tracker->getStateCounts();
-
-            LineCrossingCount line_crossing;
-            bool has_line = g_tracker->hasEntryLine();
-            if (has_line) {
-                line_crossing = g_tracker->getLineCrossing();
+            for (const auto& person : tracked_persons) {
+                det_track_ids[person.detection.id] = person.track_id;
             }
-
-            std::string payload = buildTrackingJson(timestamp_ms, g_frame_id,
-                                                    tracked_persons, state_counts,
-                                                    static_cast<float>(inference_time),
-                                                    has_line ? &line_crossing : nullptr);
-            g_mqtt_publisher->publishResultsJson(payload);
-
-            if (g_config.verbose || !tracked_persons.empty()) {
-                MA_LOGI(TAG, "Frame %u: %zu persons, inference=%lldms | total=%d browse=%d engaged=%d assist=%d",
-                        g_frame_id, tracked_persons.size(), inference_time,
-                        state_counts.total, state_counts.browsing,
-                        state_counts.engaged, state_counts.assistance);
+            tracking.active_tracks = g_tracker->getTrackCount();
+            if (g_tracker->hasEntryLine()) {
+                auto line_crossing = g_tracker->getLineCrossing();
+                tracking.has_line = true;
+                tracking.line_in = line_crossing.in_count;
+                tracking.line_out = line_crossing.out_count;
             }
-        } else {
-            std::string payload = buildResultJson(timestamp_ms, g_frame_id, detections,
-                                                  static_cast<float>(inference_time));
-            g_mqtt_publisher->publishResultsJson(payload);
+            has_tracking = true;
+        }
 
-            if (g_config.verbose || !detections.empty()) {
+        std::string payload = buildResultJson(timestamp_ms, g_frame_id, detections,
+                                              static_cast<float>(inference_time),
+                                              has_tracking ? &det_track_ids : nullptr,
+                                              has_tracking ? &tracking : nullptr);
+        g_mqtt_publisher->publishResultsJson(payload);
+
+        if (g_config.verbose || !detections.empty()) {
+            if (has_tracking) {
+                MA_LOGI(TAG, "Frame %u: %zu detections, %d active tracks, inference=%lldms",
+                        g_frame_id, detections.size(), tracking.active_tracks, inference_time);
+            } else {
                 MA_LOGI(TAG, "Frame %u: %zu detections, inference=%lldms",
                         g_frame_id, detections.size(), inference_time);
             }
