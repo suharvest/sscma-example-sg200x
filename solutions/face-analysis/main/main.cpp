@@ -9,11 +9,12 @@
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
+#include <ha_mqtt.h>
 #include "rtsp_demo.h"
 
 #include "face_detector.h"
 #include "attribute_analyzer.h"
-#include "mqtt_publisher.h"
+#include "mqtt_payload.h"
 #include "face_blur.h"
 
 using namespace ma;
@@ -68,7 +69,7 @@ static struct {
 static std::atomic<bool> g_running(true);
 static FaceDetector* g_face_detector = nullptr;
 static AttributeAnalyzer* g_attribute_analyzer = nullptr;
-static MqttPublisher* g_mqtt_publisher = nullptr;
+static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static FaceBlur* g_face_blur = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
@@ -312,13 +313,28 @@ static bool init_mqtt() {
         return true;
     }
 
-    g_mqtt_publisher = new MqttPublisher();
-    MqttConfig mqtt_config;
-    mqtt_config.host = g_config.mqtt_host;
-    mqtt_config.port = g_config.mqtt_port;
-    mqtt_config.topic = g_config.mqtt_topic;
+    ha_mqtt::ClientOptions opts;
+    opts.app_id        = "face-analysis";
+    opts.client_id     = "recamera-face-analysis";
+    opts.results_topic = g_config.mqtt_topic;
+    opts.legacy_host   = g_config.mqtt_host;
+    opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
-    if (!g_mqtt_publisher->init(mqtt_config)) {
+    // Home Assistant MQTT Discovery entity table (field names must match the
+    // results JSON built by mqtt_payload.cpp).
+    using ha_mqtt::EntityConfig;
+    using ha_mqtt::EntityType;
+    opts.entities = {
+        EntityConfig{EntityType::Sensor, "face_count", "Face Count",
+                     "{{ value_json.face_count }}",
+                     "", "", "measurement"},
+        EntityConfig{EntityType::BinarySensor, "occupancy", "Face Detected",
+                     "{{ 'ON' if value_json.face_count > 0 else 'OFF' }}",
+                     "occupancy", "", ""},
+    };
+
+    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
+    if (!g_mqtt_publisher->init(opts)) {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
@@ -426,7 +442,8 @@ static void process_frame() {
 
     // Step 4: Publish results via MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
-        g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
+        std::string payload = buildResultJson(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
+        g_mqtt_publisher->publishResultsJson(payload);
     }
 
     // Step 4.5: Push the same inference result to debug WS clients (sscma-node

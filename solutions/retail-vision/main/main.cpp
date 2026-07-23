@@ -12,10 +12,12 @@
 
 #include <sstream>
 
+#include <ha_mqtt.h>
+
 #include "detector.h"
 #include "person_tracker.h"
 #include "zone_metrics.h"
-#include "mqtt_publisher.h"
+#include "mqtt_payload.h"
 
 using namespace ma;
 using namespace retail_vision;
@@ -72,7 +74,7 @@ static std::atomic<bool> g_running(true);
 static Detector* g_detector = nullptr;
 static PersonTracker* g_tracker = nullptr;
 static ZoneMetrics* g_zone_metrics = nullptr;
-static MqttPublisher* g_mqtt_publisher = nullptr;
+static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static TransportRTSP* g_rtsp_transport = nullptr;
 static uint32_t g_frame_id = 0;
@@ -361,15 +363,39 @@ static bool init_mqtt() {
         return true;
     }
 
-    g_mqtt_publisher = new MqttPublisher();
-    MqttConfig mqtt_config;
-    mqtt_config.host = g_config.mqtt_host;
-    mqtt_config.port = g_config.mqtt_port;
-    mqtt_config.topic = g_config.mqtt_topic;
-    mqtt_config.username = g_config.mqtt_user;
-    mqtt_config.password = g_config.mqtt_pass;
+    ha_mqtt::ClientOptions opts;
+    opts.app_id        = "retail-vision";
+    opts.client_id     = "recamera-retail-vision";
+    opts.results_topic = g_config.mqtt_topic;
+    opts.legacy_host   = g_config.mqtt_host;
+    opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
-    if (!g_mqtt_publisher->init(mqtt_config)) {
+    // ha_mqtt legacy mode has no per-app credential support; broker auth now
+    // comes from /userdata/local/ha.conf (HA mode). Warn if the old CLI flags
+    // were used so the operator knows they no longer apply.
+    if (!g_config.mqtt_user.empty() || !g_config.mqtt_pass.empty()) {
+        MA_LOGW(TAG, "--mqtt-user/--mqtt-pass are no longer applied; "
+                     "configure broker credentials in /userdata/local/ha.conf");
+    }
+
+    // Home Assistant MQTT Discovery entity table (field names must match the
+    // results JSON built by mqtt_payload.cpp).
+    using ha_mqtt::EntityConfig;
+    using ha_mqtt::EntityType;
+    opts.entities = {
+        EntityConfig{EntityType::Sensor, "people_count", "People Count",
+                     "{{ value_json.zone.occupancy_count }}",
+                     "", "", "measurement"},
+        EntityConfig{EntityType::Sensor, "entered_total", "People Entered Total",
+                     "{{ value_json.zone.entry_count }}",
+                     "", "", "total_increasing"},
+        EntityConfig{EntityType::Sensor, "exited_total", "People Exited Total",
+                     "{{ value_json.zone.exit_count }}",
+                     "", "", "total_increasing"},
+    };
+
+    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
+    if (!g_mqtt_publisher->init(opts)) {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
@@ -476,11 +502,12 @@ static void process_frame() {
     // Publish MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         auto zone = g_zone_metrics->getSnapshot();
-        g_mqtt_publisher->publishVisionPayload(
+        std::string payload = buildVisionJson(
             timestamp_ms, g_frame_id, g_fps, inference_time_ms,
             zone, tracked_persons,
             g_config.stream_width, g_config.stream_height,
             g_detector->getInputWidth(), g_detector->getInputHeight());
+        g_mqtt_publisher->publishResultsJson(payload);
     }
 
     // Log

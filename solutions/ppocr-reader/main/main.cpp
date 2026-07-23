@@ -14,9 +14,11 @@
 #include "rtsp_demo.h"
 #include <opencv2/opencv.hpp>
 
+#include <ha_mqtt.h>
+
 #include "ocr_pipeline.h"
 #include "text_recognizer.h"
-#include "mqtt_publisher.h"
+#include "mqtt_payload.h"
 
 using namespace ma;
 using namespace ppocr;
@@ -63,7 +65,7 @@ static struct {
 // Global state
 static std::atomic<bool> g_running(true);
 static OcrPipeline* g_pipeline = nullptr;
-static MqttPublisher* g_mqtt_publisher = nullptr;
+static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 
@@ -303,13 +305,28 @@ static bool init_mqtt() {
         return true;
     }
 
-    g_mqtt_publisher = new MqttPublisher();
-    MqttConfig mqtt_config;
-    mqtt_config.host = g_config.mqtt_host;
-    mqtt_config.port = g_config.mqtt_port;
-    mqtt_config.topic = g_config.mqtt_topic;
+    ha_mqtt::ClientOptions opts;
+    opts.app_id        = "ppocr-reader";
+    opts.client_id     = "recamera-ppocr-reader";
+    opts.results_topic = g_config.mqtt_topic;
+    opts.legacy_host   = g_config.mqtt_host;
+    opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
-    if (!g_mqtt_publisher->init(mqtt_config)) {
+    // Home Assistant MQTT Discovery entity table (field names must match the
+    // results JSON built by mqtt_payload.cpp).
+    using ha_mqtt::EntityConfig;
+    using ha_mqtt::EntityType;
+    opts.entities = {
+        EntityConfig{EntityType::Sensor, "last_text", "Last Recognized Text",
+                     "{{ value_json.texts[0].text[:120] if value_json.text_count > 0 else '' }}",
+                     "", "", ""},
+        EntityConfig{EntityType::Sensor, "text_count", "Text Block Count",
+                     "{{ value_json.text_count }}",
+                     "", "", "measurement"},
+    };
+
+    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
+    if (!g_mqtt_publisher->init(opts)) {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
@@ -401,7 +418,8 @@ static void process_frame() {
 
     // Publish via MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
-        g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, results, timings, frame_w, frame_h);
+        std::string payload = buildResultJson(timestamp_ms, g_frame_id, results, timings, frame_w, frame_h);
+        g_mqtt_publisher->publishResultsJson(payload);
     }
 
     // Log results

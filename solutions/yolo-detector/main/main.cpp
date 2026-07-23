@@ -9,11 +9,12 @@
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
+#include <ha_mqtt.h>
 #include "rtsp_demo.h"
 
 #include "detector.h"
 #include "person_tracker.h"
-#include "mqtt_publisher.h"
+#include "mqtt_payload.h"
 #include "app_config.h"
 
 using namespace ma;
@@ -72,7 +73,7 @@ static AppConfig g_app_config;
 static std::atomic<bool> g_running(true);
 static Detector* g_detector = nullptr;
 static PersonTracker* g_tracker = nullptr;
-static MqttPublisher* g_mqtt_publisher = nullptr;
+static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 static std::chrono::steady_clock::time_point g_start_time;
@@ -305,13 +306,32 @@ static bool init_mqtt() {
         return true;
     }
 
-    g_mqtt_publisher = new MqttPublisher();
-    MqttConfig mqtt_config;
-    mqtt_config.host = g_config.mqtt_host;
-    mqtt_config.port = g_config.mqtt_port;
-    mqtt_config.topic = g_config.mqtt_topic;
+    ha_mqtt::ClientOptions opts;
+    opts.app_id        = "yolo-detector";
+    opts.client_id     = "recamera-yolo-detector";
+    opts.results_topic = g_config.mqtt_topic;
+    opts.legacy_host   = g_config.mqtt_host;
+    opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
-    if (!g_mqtt_publisher->init(mqtt_config)) {
+    // Home Assistant MQTT Discovery entity table (field names must match the
+    // results JSON built by mqtt_payload.cpp). The published payload is the
+    // tracking format (persons/zone_occupancy) when tracking is enabled and
+    // the basic format (detection_count/detections) otherwise, so the
+    // templates handle both.
+    using ha_mqtt::EntityConfig;
+    using ha_mqtt::EntityType;
+    opts.entities = {
+        EntityConfig{EntityType::Sensor, "detection_count", "Detection Count",
+                     "{{ value_json.detection_count if value_json.detection_count is defined else value_json.persons | length }}",
+                     "", "", "measurement"},
+        EntityConfig{EntityType::BinarySensor, "person_occupancy", "Person Detected",
+                     "{{ 'ON' if (value_json.persons | default([]) | length > 0) or "
+                     "(value_json.detections | default([]) | selectattr('class_name', 'equalto', 'person') | list | length > 0) else 'OFF' }}",
+                     "occupancy", "", ""},
+    };
+
+    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
+    if (!g_mqtt_publisher->init(opts)) {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
@@ -375,10 +395,11 @@ static void process_frame() {
                 line_crossing = g_tracker->getLineCrossing();
             }
 
-            g_mqtt_publisher->publishTrackingResults(timestamp_ms, g_frame_id,
-                                                      tracked_persons, state_counts,
-                                                      static_cast<float>(inference_time),
-                                                      has_line ? &line_crossing : nullptr);
+            std::string payload = buildTrackingJson(timestamp_ms, g_frame_id,
+                                                    tracked_persons, state_counts,
+                                                    static_cast<float>(inference_time),
+                                                    has_line ? &line_crossing : nullptr);
+            g_mqtt_publisher->publishResultsJson(payload);
 
             if (g_config.verbose || !tracked_persons.empty()) {
                 MA_LOGI(TAG, "Frame %u: %zu persons, inference=%lldms | total=%d browse=%d engaged=%d assist=%d",
@@ -387,8 +408,9 @@ static void process_frame() {
                         state_counts.engaged, state_counts.assistance);
             }
         } else {
-            g_mqtt_publisher->publishResults(timestamp_ms, g_frame_id, detections,
-                                              static_cast<float>(inference_time));
+            std::string payload = buildResultJson(timestamp_ms, g_frame_id, detections,
+                                                  static_cast<float>(inference_time));
+            g_mqtt_publisher->publishResultsJson(payload);
 
             if (g_config.verbose || !detections.empty()) {
                 MA_LOGI(TAG, "Frame %u: %zu detections, inference=%lldms",
