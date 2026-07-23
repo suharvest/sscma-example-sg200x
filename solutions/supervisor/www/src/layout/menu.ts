@@ -81,6 +81,11 @@ export function getMenuSections({
         { key: "files", label: "menu.files", route: "/files" },
         { key: "security", label: "menu.security", route: "/security" },
         { key: "network", label: "menu.network", route: "/network" },
+        {
+          key: "home-assistant",
+          label: "menu.homeAssistant",
+          route: "/home-assistant",
+        },
       ],
     },
     {

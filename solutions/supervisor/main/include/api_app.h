@@ -43,6 +43,10 @@ private:
     static api_status_t setConfig(request_t req, response_t res);
     static api_status_t getIntegrationDoc(request_t req, response_t res);
     static api_status_t installApp(request_t req, response_t res);
+    // Home Assistant MQTT integration (/userdata/local/ha.conf, see ha_config.h)
+    static api_status_t getHaConfig(request_t req, response_t res);
+    static api_status_t setHaConfig(request_t req, response_t res);
+    static api_status_t testHaConnection(request_t req, response_t res);
 
     // helpers
     static bool valid_app_id(const std::string& id);
@@ -131,6 +135,10 @@ private:
     // #14: atomic busy gate (see op_try_acquire above), replaces the old
     // std::timed_mutex so the gate can span an async job's whole lifecycle.
     static inline std::atomic_flag _op_busy = ATOMIC_FLAG_INIT;
+    // Independent busy gate for testHaConnection: a broker probe must not
+    // block (or be blocked by) app switch/stop operations, but two concurrent
+    // probes still get the busy(-2) contract.
+    static inline std::atomic_flag _ha_test_busy = ATOMIC_FLAG_INIT;
     static inline std::atomic<app_state> _state { app_state::STOPPED };
     static inline std::string _last_error;
 };

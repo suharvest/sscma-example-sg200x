@@ -2,12 +2,18 @@
 
 #include "api_device.h"
 #include "config_schema.hpp"
+#include "ha_config.h"
 
+#include <arpa/inet.h>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <limits.h>
+#include <mosquitto.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <thread>
 
@@ -34,6 +40,9 @@ api_app::api_app()
     REG_API(setConfig);
     REG_API(getIntegrationDoc);
     REG_API(installApp);
+    REG_API(getHaConfig);
+    REG_API(setHaConfig);
+    REG_API(testHaConnection);
 }
 
 const char* api_app::state_str(app_state s)
@@ -1135,5 +1144,334 @@ api_status_t api_app::installApp(request_t req, response_t res)
         },
         // poll thread: release the op gate whatever happened.
         []() { op_release(); },
+        res);
+}
+
+// --- Home Assistant MQTT integration ----------------------------------------
+//
+// Config lives in /userdata/local/ha.conf (see ha_config.h). The active app's
+// init script / runtime is expected to source it; changing it therefore
+// restarts the active app (same building blocks as setModel/setConfig).
+
+namespace {
+
+// libmosquitto global init, once per process.
+std::once_flag g_mosq_init_flag;
+void ensure_mosq_init()
+{
+    std::call_once(g_mosq_init_flag, []() { mosquitto_lib_init(); });
+}
+
+struct ha_test_result {
+    bool ok = false;
+    int mosq_rc = 0; // mosquitto rc or CONNACK code (see message for context)
+    std::string message;
+};
+
+// Bounded TCP connect (the OS default connect timeout can be minutes; the
+// endpoint promises ~5s). Returns false with err filled on failure.
+bool tcp_probe(const std::string& host, int port, int timeout_ms, std::string& err)
+{
+    struct addrinfo hints = {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    int grc = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res);
+    if (grc != 0 || res == nullptr) {
+        err = std::string("cannot resolve host: ") + gai_strerror(grc);
+        return false;
+    }
+    bool connected = false;
+    for (struct addrinfo* ai = res; ai != nullptr && !connected; ai = ai->ai_next) {
+        int fd = ::socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK, ai->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+        int c = ::connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (c == 0) {
+            connected = true;
+        } else if (errno == EINPROGRESS) {
+            struct pollfd pfd = { fd, POLLOUT, 0 };
+            int pr = ::poll(&pfd, 1, timeout_ms);
+            if (pr == 1) {
+                int so_err = 0;
+                socklen_t len = sizeof(so_err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) == 0 && so_err == 0) {
+                    connected = true;
+                } else {
+                    err = std::string("connect failed: ") + strerror(so_err ? so_err : ECONNREFUSED);
+                }
+            } else {
+                err = "connect timed out";
+            }
+        } else {
+            err = std::string("connect failed: ") + strerror(errno);
+        }
+        ::close(fd);
+    }
+    freeaddrinfo(res);
+    if (!connected && err.empty()) {
+        err = "connect failed";
+    }
+    return connected;
+}
+
+// Worker-thread MQTT connectivity probe: TCP precheck (bounded) then a real
+// MQTT CONNECT waiting for the CONNACK, all within ~5s.
+ha_test_result mqtt_probe(const std::string& host, int port,
+    const std::string& username, const std::string& password)
+{
+    static constexpr int TIMEOUT_MS = 5000;
+    ha_test_result r;
+
+    std::string tcp_err;
+    if (!tcp_probe(host, port, TIMEOUT_MS, tcp_err)) {
+        r.mosq_rc = MOSQ_ERR_NO_CONN;
+        r.message = tcp_err;
+        return r;
+    }
+
+    ensure_mosq_init();
+    // connack: -1 = not received yet; >=0 = CONNACK code (0 accepted).
+    auto connack = std::make_shared<std::atomic<int>>(-1);
+    struct mosquitto* m = mosquitto_new(nullptr, true, connack.get());
+    if (m == nullptr) {
+        r.mosq_rc = MOSQ_ERR_NOMEM;
+        r.message = "mosquitto_new failed";
+        return r;
+    }
+    mosquitto_connect_callback_set(m, [](struct mosquitto*, void* ud, int rc) {
+        static_cast<std::atomic<int>*>(ud)->store(rc);
+    });
+    if (!username.empty()) {
+        mosquitto_username_pw_set(m, username.c_str(), password.c_str());
+    }
+
+    int rc = mosquitto_connect(m, host.c_str(), port, 10);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        r.mosq_rc = rc;
+        r.message = mosquitto_strerror(rc);
+        mosquitto_destroy(m);
+        return r;
+    }
+
+    // Pump the network loop until the CONNACK arrives or the deadline hits.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TIMEOUT_MS);
+    while (connack->load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        rc = mosquitto_loop(m, 200, 1);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            break;
+        }
+    }
+
+    int ack = connack->load();
+    if (ack == 0) {
+        r.ok = true;
+        r.mosq_rc = 0;
+        r.message = "connection accepted";
+    } else if (ack > 0) {
+        r.mosq_rc = ack;
+        r.message = std::string("broker refused connection: ") + mosquitto_connack_string(ack);
+    } else if (rc != MOSQ_ERR_SUCCESS) {
+        r.mosq_rc = rc;
+        r.message = std::string("connection error: ") + mosquitto_strerror(rc);
+    } else {
+        r.mosq_rc = MOSQ_ERR_CONN_PENDING;
+        r.message = "timed out waiting for broker response (5s)";
+    }
+    mosquitto_disconnect(m);
+    mosquitto_destroy(m);
+    return r;
+}
+
+// Public (non-secret) view of the config for API replies.
+json ha_conf_to_json(const ha_config::conf& c)
+{
+    json data = json::object();
+    data["enabled"] = c.enabled;
+    data["broker_host"] = c.broker_host;
+    data["broker_port"] = c.broker_port;
+    data["username"] = c.username;
+    data["discovery_prefix"] = c.discovery_prefix;
+    data["password_set"] = !c.password.empty();
+    return data;
+}
+
+} // namespace
+
+// GET/POST /api/appMgr/getHaConfig
+// Returns every field except the password itself, plus password_set.
+api_status_t api_app::getHaConfig(request_t req, response_t res)
+{
+    response(res, 0, STR_OK, ha_conf_to_json(ha_config::load()));
+    return API_STATUS_OK;
+}
+
+// POST /api/appMgr/setHaConfig
+// body: {enabled, broker_host, broker_port, username?, password?, discovery_prefix?}
+// password absent -> the stored password is kept. Shares the app op busy gate
+// (same level as switchApp); after the atomic conf write the active app (if
+// any) is restarted so the new config takes effect. Reply data carries the
+// saved (password-less) config + restarted bool.
+api_status_t api_app::setHaConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    if (!body.is_object() || !body.contains("enabled") || !body["enabled"].is_boolean()) {
+        response(res, -1, "Missing or invalid 'enabled' (boolean required)");
+        return API_STATUS_OK;
+    }
+
+    ha_config::conf cur = ha_config::load();
+    ha_config::conf next = cur; // password retained unless provided
+
+    next.enabled = body["enabled"].get<bool>();
+
+    if (body.contains("broker_host")) {
+        if (!body["broker_host"].is_string()) {
+            response(res, -1, "Invalid broker_host");
+            return API_STATUS_OK;
+        }
+        next.broker_host = body["broker_host"].get<std::string>();
+    }
+    if (!ha_config::valid_value(next.broker_host) || next.broker_host.find(' ') != std::string::npos) {
+        response(res, -1, "Invalid broker_host");
+        return API_STATUS_OK;
+    }
+    if (next.enabled && next.broker_host.empty()) {
+        response(res, -1, "broker_host is required when enabled");
+        return API_STATUS_OK;
+    }
+
+    if (body.contains("broker_port")) {
+        if (!body["broker_port"].is_number_integer()) {
+            response(res, -1, "Invalid broker_port (integer 1-65535 required)");
+            return API_STATUS_OK;
+        }
+        next.broker_port = body["broker_port"].get<int>();
+    }
+    if (next.broker_port < 1 || next.broker_port > 65535) {
+        response(res, -1, "Invalid broker_port (integer 1-65535 required)");
+        return API_STATUS_OK;
+    }
+
+    if (body.contains("username")) {
+        if (!body["username"].is_string() || !ha_config::valid_value(body["username"].get<std::string>())) {
+            response(res, -1, "Invalid username");
+            return API_STATUS_OK;
+        }
+        next.username = body["username"].get<std::string>();
+    }
+    if (body.contains("password")) {
+        if (!body["password"].is_string() || !ha_config::valid_value(body["password"].get<std::string>())) {
+            response(res, -1, "Invalid password");
+            return API_STATUS_OK;
+        }
+        next.password = body["password"].get<std::string>();
+    }
+    if (body.contains("discovery_prefix")) {
+        if (!body["discovery_prefix"].is_string() || !ha_config::valid_value(body["discovery_prefix"].get<std::string>())) {
+            response(res, -1, "Invalid discovery_prefix");
+            return API_STATUS_OK;
+        }
+        next.discovery_prefix = body["discovery_prefix"].get<std::string>();
+    }
+    if (next.discovery_prefix.empty()) {
+        next.discovery_prefix = "homeassistant";
+    }
+
+    // Same busy level as switchApp: writing the conf and restarting the active
+    // app must not race a concurrent app operation.
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
+        return API_STATUS_OK;
+    }
+
+    if (!ha_config::save(next)) {
+        response(res, -1, "Failed to persist Home Assistant config");
+        return API_STATUS_OK;
+    }
+
+    json data = ha_conf_to_json(next);
+
+    // Restart the active app (if any) so the new config takes effect.
+    json state = read_state();
+    std::string active = jstr(state, "active_app");
+    if (active.empty()) {
+        data["restarted"] = false;
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    json manifests = load_manifests();
+    if (!manifests.contains(active)) {
+        data["restarted"] = false;
+        data["note"] = "active app manifest missing, not restarted";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    return restart_after_change(manifests[active], active, data, g, res);
+}
+
+// POST /api/appMgr/testHaConnection
+// body: {broker_host, broker_port, username?, password?, use_saved_password?}
+// Never touches ha.conf. Runs the (up to ~5s) probe on a worker.
+// code 0 ok, -1 failure (data.mosquitto_rc + message), -2 concurrent test.
+api_status_t api_app::testHaConnection(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+
+    std::string host = body.value("broker_host", "");
+    if (host.empty() || !ha_config::valid_value(host) || host.find(' ') != std::string::npos) {
+        response(res, -1, "Missing or invalid broker_host");
+        return API_STATUS_OK;
+    }
+    int port = 1883;
+    if (body.contains("broker_port")) {
+        if (!body["broker_port"].is_number_integer()) {
+            response(res, -1, "Invalid broker_port (integer 1-65535 required)");
+            return API_STATUS_OK;
+        }
+        port = body["broker_port"].get<int>();
+    }
+    if (port < 1 || port > 65535) {
+        response(res, -1, "Invalid broker_port (integer 1-65535 required)");
+        return API_STATUS_OK;
+    }
+    std::string username = body.value("username", "");
+    std::string password = body.value("password", "");
+    if (!ha_config::valid_value(username) || !ha_config::valid_value(password)) {
+        response(res, -1, "Invalid username or password");
+        return API_STATUS_OK;
+    }
+    // use_saved_password: reuse the stored secret so the frontend can test
+    // edited settings without forcing the user to re-type the password.
+    if (body.value("use_saved_password", false)) {
+        password = ha_config::load().password;
+    }
+
+    if (_ha_test_busy.test_and_set(std::memory_order_acquire)) {
+        response(res, -2, "busy: a connection test is already running");
+        return API_STATUS_OK;
+    }
+
+    auto result = std::make_shared<ha_test_result>();
+    return submit_async(
+        // worker thread: bounded network probe only.
+        [result, host, port, username, password]() {
+            *result = mqtt_probe(host, port, username, password);
+        },
+        // poll thread: map the probe outcome to the reply.
+        [result, host, port](json& res) -> api_status_t {
+            json data = json::object();
+            data["broker_host"] = host;
+            data["broker_port"] = port;
+            data["mosquitto_rc"] = result->mosq_rc;
+            if (result->ok) {
+                response(res, 0, STR_OK, data);
+            } else {
+                response(res, -1, result->message, data);
+            }
+            return API_STATUS_OK;
+        },
+        []() { _ha_test_busy.clear(std::memory_order_release); },
         res);
 }

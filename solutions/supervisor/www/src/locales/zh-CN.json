@@ -33,7 +33,8 @@
     "network": "网络",
     "terminal": "终端",
     "system": "系统",
-    "power": "电源"
+    "power": "电源",
+    "homeAssistant": "Home Assistant"
   },
   "layout": {
     "editDeviceName": "修改设备名称",
@@ -505,5 +506,38 @@
       "battery": "电池",
       "audio": "音频"
     }
+  },
+  "ha": {
+    "title": "Home Assistant",
+    "subtitle": "通过 MQTT 将检测事件推送到 Home Assistant，并在仪表盘中查看摄像头画面。",
+    "enabled": "启用 Home Assistant 集成",
+    "brokerHost": "MQTT Broker 地址",
+    "brokerPort": "MQTT Broker 端口",
+    "username": "用户名",
+    "password": "密码",
+    "passwordUnchanged": "留空保持当前密码不变",
+    "advanced": "高级设置",
+    "discoveryPrefix": "发现前缀 (Discovery prefix)",
+    "discoveryPrefixHint": "MQTT 自动发现主题前缀，默认：homeassistant",
+    "save": "保存",
+    "saved": "配置已保存。",
+    "saveFailed": "保存配置失败",
+    "restarted": "正在运行的应用已重启以应用新配置。",
+    "test": "测试连接",
+    "testing": "测试中...",
+    "testSuccess": "Broker 连接成功",
+    "testFailed": "Broker 连接失败",
+    "required": "该字段为必填项",
+    "invalidHost": "请输入 MQTT Broker 地址",
+    "invalidPort": "端口必须在 1-65535 之间",
+    "busy": "另一个操作正在进行中，请稍后重试",
+    "rtspTitle": "实时视频流",
+    "rtspHint": "摄像头提供实时 RTSP 流，可以嵌入到 Home Assistant 中。",
+    "gcTitle": "Generic Camera",
+    "gcHint": "使用内置的 Generic Camera 集成添加视频流：",
+    "go2rtcTitle": "go2rtc",
+    "go2rtcHint": "或使用 go2rtc 转流，获得低延迟 WebRTC 播放：",
+    "copy": "复制",
+    "copied": "已复制"
   }
 }

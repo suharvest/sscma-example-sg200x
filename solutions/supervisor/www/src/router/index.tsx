@@ -12,6 +12,7 @@ import Files from "@/views/files";
 import Applications from "@/views/applications";
 import Live from "@/views/live";
 import DeviceTools from "@/views/device";
+import HomeAssistant from "@/views/home-assistant";
 import ConfigLayout from "@/layout/config";
 import MainLayout from "@/layout/main";
 
@@ -63,6 +64,10 @@ const Routes = [
       {
         path: "security",
         element: <Security />,
+      },
+      {
+        path: "home-assistant",
+        element: <HomeAssistant />,
       },
       {
         path: "terminal",

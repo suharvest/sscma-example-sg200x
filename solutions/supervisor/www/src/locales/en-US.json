@@ -33,7 +33,8 @@
     "network": "Network",
     "terminal": "Terminal",
     "system": "System",
-    "power": "Power"
+    "power": "Power",
+    "homeAssistant": "Home Assistant"
   },
   "layout": {
     "editDeviceName": "Edit Device Name",
@@ -510,5 +511,38 @@
       "battery": "Battery",
       "audio": "Audio"
     }
+  },
+  "ha": {
+    "title": "Home Assistant",
+    "subtitle": "Publish detection events to Home Assistant over MQTT and view the camera stream in your dashboard.",
+    "enabled": "Enable Home Assistant integration",
+    "brokerHost": "MQTT broker host",
+    "brokerPort": "MQTT broker port",
+    "username": "Username",
+    "password": "Password",
+    "passwordUnchanged": "Leave empty to keep the current password",
+    "advanced": "Advanced",
+    "discoveryPrefix": "Discovery prefix",
+    "discoveryPrefixHint": "MQTT discovery topic prefix, default: homeassistant",
+    "save": "Save",
+    "saved": "Configuration saved.",
+    "saveFailed": "Failed to save configuration",
+    "restarted": "The running application was restarted to apply it.",
+    "test": "Test Connection",
+    "testing": "Testing...",
+    "testSuccess": "Broker connection succeeded",
+    "testFailed": "Broker connection failed",
+    "required": "This field is required",
+    "invalidHost": "Please enter the MQTT broker host",
+    "invalidPort": "Port must be between 1 and 65535",
+    "busy": "Another operation is in progress, please retry shortly",
+    "rtspTitle": "Live Video Stream",
+    "rtspHint": "The camera publishes a live RTSP stream you can embed in Home Assistant.",
+    "gcTitle": "Generic Camera",
+    "gcHint": "Add the stream with the built-in Generic Camera integration:",
+    "go2rtcTitle": "go2rtc",
+    "go2rtcHint": "Or restream it with go2rtc for low-latency WebRTC playback:",
+    "copy": "Copy",
+    "copied": "Copied"
   }
 }
