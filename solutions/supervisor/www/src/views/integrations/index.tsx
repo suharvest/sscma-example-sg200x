@@ -66,7 +66,8 @@ const CodeBlock = ({ text }: { text: string }) => (
   </div>
 );
 
-const HomeAssistant = () => {
+/** Home Assistant integration card: MQTT config + RTSP stream how-to. */
+const HomeAssistantCard = () => {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [form] = Form.useForm<IHaFormValues>();
@@ -203,13 +204,13 @@ const HomeAssistant = () => {
   };
 
   return (
-    <div className="my-8 p-16">
+    <div className="rounded-16 bg-white p-30 mt-12 mb-24">
       <div className="font-bold text-18">{t("ha.title")}</div>
-      <div className="text-black opacity-60 mt-4 mb-12 text-13">
+      <div className="text-black opacity-60 mt-4 mb-16 text-13">
         {t("ha.subtitle")}
       </div>
 
-      <div className="rounded-16 bg-white p-30 mt-12 mb-24">
+      <div>
         <Form
           form={form}
           layout="vertical"
@@ -319,8 +320,8 @@ const HomeAssistant = () => {
         </Form>
       </div>
 
-      <div className="font-bold text-18">{t("ha.rtspTitle")}</div>
-      <div className="rounded-16 bg-white p-30 mt-12 mb-24">
+      <div className="font-bold text-16 mt-24">{t("ha.rtspTitle")}</div>
+      <div className="mt-12">
         <div className="text-black opacity-60 mb-8 text-13">
           {t("ha.rtspHint")}
         </div>
@@ -343,4 +344,29 @@ const HomeAssistant = () => {
   );
 };
 
-export default HomeAssistant;
+/**
+ * Integration cards shown on the page, in order.
+ * Add a new integration by appending a { key, Card } entry here.
+ */
+const integrationCards: { key: string; Card: () => JSX.Element }[] = [
+  { key: "home-assistant", Card: HomeAssistantCard },
+];
+
+const Integrations = () => {
+  const { t } = useTranslation();
+
+  return (
+    <div className="my-8 p-16">
+      <div className="font-bold text-18">{t("integrations.title")}</div>
+      <div className="text-black opacity-60 mt-4 mb-12 text-13">
+        {t("integrations.subtitle")}
+      </div>
+
+      {integrationCards.map(({ key, Card }) => (
+        <Card key={key} />
+      ))}
+    </div>
+  );
+};
+
+export default Integrations;

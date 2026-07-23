@@ -34,7 +34,7 @@
     "terminal": "终端",
     "system": "系统",
     "power": "电源",
-    "homeAssistant": "Home Assistant"
+    "integrations": "集成"
   },
   "layout": {
     "editDeviceName": "修改设备名称",
@@ -506,6 +506,10 @@
       "battery": "电池",
       "audio": "音频"
     }
+  },
+  "integrations": {
+    "title": "集成",
+    "subtitle": "将 reCamera 接入第三方平台与服务。"
   },
   "ha": {
     "title": "Home Assistant",

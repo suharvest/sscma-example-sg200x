@@ -82,9 +82,9 @@ export function getMenuSections({
         { key: "security", label: "menu.security", route: "/security" },
         { key: "network", label: "menu.network", route: "/network" },
         {
-          key: "home-assistant",
-          label: "menu.homeAssistant",
-          route: "/home-assistant",
+          key: "integrations",
+          label: "menu.integrations",
+          route: "/integrations",
         },
       ],
     },

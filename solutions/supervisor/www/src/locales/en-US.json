@@ -34,7 +34,7 @@
     "terminal": "Terminal",
     "system": "System",
     "power": "Power",
-    "homeAssistant": "Home Assistant"
+    "integrations": "Integrations"
   },
   "layout": {
     "editDeviceName": "Edit Device Name",
@@ -511,6 +511,10 @@
       "battery": "Battery",
       "audio": "Audio"
     }
+  },
+  "integrations": {
+    "title": "Integrations",
+    "subtitle": "Connect your reCamera to third-party platforms and services."
   },
   "ha": {
     "title": "Home Assistant",
