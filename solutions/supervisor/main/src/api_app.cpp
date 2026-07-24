@@ -1508,9 +1508,11 @@ api_status_t api_app::getCameraConfig(request_t req, response_t res)
 // POST /api/appMgr/setCameraConfig
 // body: {mirror:bool, flip:bool, rotation:0|180} (each field optional, the
 // stored value is kept when absent). Shares the app op busy gate (same level
-// as switchApp/setHaConfig); after the atomic conf write the active app (if
-// any) is restarted so the new orientation takes effect. Reply data carries
-// the saved config + restarted bool.
+// as switchApp/setHaConfig). The atomic conf write is all that is needed:
+// the sophgo video component watches camera.conf and hot-applies the new
+// orientation to the running VI channel within ~1-2 s, so the active app is
+// NOT restarted. Reply data carries the saved config, restarted:false (kept
+// for backwards compatibility) and applied:"live".
 api_status_t api_app::setCameraConfig(request_t req, response_t res)
 {
     auto&& body = parse_body(req);
@@ -1548,8 +1550,8 @@ api_status_t api_app::setCameraConfig(request_t req, response_t res)
         next.rotation = r;
     }
 
-    // Same busy level as switchApp: writing the conf and restarting the
-    // active app must not race a concurrent app operation.
+    // Same busy level as switchApp: conservative — writing the conf while an
+    // app operation is in flight is harmless, but keep the gate anyway.
     op_guard g;
     if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
@@ -1561,23 +1563,10 @@ api_status_t api_app::setCameraConfig(request_t req, response_t res)
     }
 
     json data = camera_conf_to_json(next);
-
-    // Restart the active app (if any) so the new orientation takes effect.
-    json state = read_state();
-    std::string active = jstr(state, "active_app");
-    if (active.empty()) {
-        data["restarted"] = false;
-        response(res, 0, STR_OK, data);
-        return API_STATUS_OK;
-    }
-    json manifests = load_manifests();
-    if (!manifests.contains(active)) {
-        data["restarted"] = false;
-        data["note"] = "active app manifest missing, not restarted";
-        response(res, 0, STR_OK, data);
-        return API_STATUS_OK;
-    }
-    return restart_after_change(manifests[active], active, data, g, res);
+    data["restarted"] = false; // kept for backwards compatibility
+    data["applied"] = "live";  // hot-applied by the video conf watcher
+    response(res, 0, STR_OK, data);
+    return API_STATUS_OK;
 }
 
 // GET/POST /api/appMgr/getFocusValue

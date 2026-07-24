@@ -210,12 +210,11 @@ const Live = () => {
       .catch(() => setCamConf(null));
   }, []);
 
-  /** Persist the camera orientation. The backend restarts the active app, so
-   *  drop the debug stream first (same pattern as saving the app config). */
+  /** Persist the camera orientation. The change is hot-applied by the video
+   *  pipeline within ~1-2 s — no app restart, so the debug stream stays up. */
   const onSaveCamera = async () => {
     if (!camConf) return;
     setCamSaving(true);
-    setDebugOn(false);
     try {
       const res = await setCameraConfigApi({
         mirror: camConf.mirror,

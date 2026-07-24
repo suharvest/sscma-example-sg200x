@@ -28,6 +28,24 @@ if [ "$RUN_MODE" = "console" ]; then
     disable_service S91sscma-node
 fi
 
+# USB gadget DHCP fix: the factory dnsmasq configs advertise the camera as
+# the host's default gateway (option 3). The USB link has no upstream, so
+# Mac/Windows hosts lose internet whenever the camera is plugged in. An empty
+# option value tells dnsmasq to suppress it; the host keeps a subnet route
+# (SSH/Web/RTSP unaffected) and its default route stays on Wi-Fi. Idempotent.
+DNSMASQ_FIXED=0
+for f in /etc/dnsmasq/usb_only.conf /etc/dnsmasq/usb_wlan1.conf; do
+    if [ -f "$f" ] && grep -q '^dhcp-option=set:usb0,3,' "$f"; then
+        sed -i 's|^dhcp-option=set:usb0,3,.*|dhcp-option=set:usb0,3 # suppress gateway: USB link is host-local|' "$f"
+        DNSMASQ_FIXED=1
+    fi
+done
+if [ "$DNSMASQ_FIXED" = "1" ] && [ -f /etc/init.d/S80dnsmasq ]; then
+    /etc/init.d/S80dnsmasq stop >/dev/null 2>&1 || true
+    sleep 1
+    /etc/init.d/S80dnsmasq start >/dev/null 2>&1 || true
+fi
+
 if [ -f /etc/init.d/S93sscma-supervisor ]; then
     /etc/init.d/S93sscma-supervisor start
 fi
