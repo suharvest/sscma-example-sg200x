@@ -516,6 +516,30 @@
     "title": "Integrations",
     "subtitle": "Connect your reCamera to third-party platforms and services."
   },
+  "camera": {
+    "card": "Camera Picture",
+    "mirror": "Mirror",
+    "mirrorHint": "Flip the image horizontally.",
+    "flip": "Flip",
+    "flipHint": "Flip the image vertically.",
+    "rotation": "Rotation",
+    "save": "Save",
+    "saved": "Camera settings saved.",
+    "restarted": "The running application was restarted to apply them.",
+    "saveFailed": "Failed to save camera settings",
+    "busy": "Another operation is in progress, please retry shortly",
+    "hint": "Saving restarts the running application so the new orientation takes effect."
+  },
+  "focus": {
+    "title": "Focus Assist",
+    "enable": "Focus assist",
+    "enableHint": "Poll the camera's live sharpness score once per second — turn the lens until the bar peaks.",
+    "waiting": "Waiting for the first sample…",
+    "notRunning": "Camera is not running",
+    "score": "Sharpness score",
+    "peak": "session peak: {{peak}}",
+    "hint": "The score is relative — adjust the lens for the highest value. The dark marker is the best score seen this session."
+  },
   "ha": {
     "title": "Home Assistant",
     "subtitle": "Publish detection events to Home Assistant over MQTT and view the camera stream in your dashboard.",

@@ -8,6 +8,8 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { getCurrentAppApi, setAppModelApi } from "@/api/app";
+import { getFocusValueApi } from "@/api/camera";
+import { IGetFocusValueResult } from "@/api/camera/camera";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
 import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
@@ -126,6 +128,56 @@ const Live = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+
+  // Focus assist: while enabled, poll getFocusValue at 1s and draw a bar of
+  // the current sharpness score with the session peak marked. null = no
+  // sample yet.
+  const [focusOn, setFocusOn] = useState(false);
+  const [focus, setFocus] = useState<IGetFocusValueResult | null>(null);
+  const [focusPeak, setFocusPeak] = useState(0);
+  useEffect(() => {
+    if (!focusOn) {
+      setFocus(null);
+      setFocusPeak(0);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await getFocusValueApi();
+        if (cancelled) return;
+        if (isOk(res) && res.data) {
+          setFocus(res.data);
+          if (res.data.available && typeof res.data.fv === "number") {
+            const v = res.data.fv;
+            setFocusPeak((p) => (v > p ? v : p));
+          }
+        } else {
+          setFocus({ available: false });
+        }
+      } catch (e) {
+        if (!cancelled) setFocus({ available: false });
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [focusOn]);
+
+  const focusValue =
+    focus?.available && typeof focus.fv === "number" ? focus.fv : null;
+  // Relative score with no fixed range: scale against the session peak so
+  // the bar always reads "how close to the sharpest seen so far".
+  const focusScale = Math.max(focusPeak, focusValue ?? 0, 1e-6);
+  const focusPct =
+    focusValue !== null
+      ? Math.min((focusValue / focusScale) * 100, 100)
+      : 0;
+  const focusPeakPct =
+    focusPeak > 0 ? Math.min((focusPeak / focusScale) * 100, 100) : 0;
 
   // App configuration (manifest config_schema) — schema null hides the card.
   const appConfig = useAppConfig(app?.id);
@@ -502,6 +554,90 @@ const Live = () => {
                               <div className="text-12 text-muted mt-6">
                                 {t("live.switchRestarts")}
                               </div>
+                            </div>
+                          )}
+                        </>
+                      ),
+                    },
+                    {
+                      key: "focus",
+                      label: (
+                        <span className="rc-section-label">
+                          {t("focus.title")}
+                        </span>
+                      ),
+                      children: (
+                        <>
+                          <div className="flex items-center justify-between gap-12">
+                            <div>
+                              <div className="text-14 font-medium">
+                                {t("focus.enable")}
+                              </div>
+                              <div className="text-12 text-muted mt-2">
+                                {t("focus.enableHint")}
+                              </div>
+                            </div>
+                            <Switch checked={focusOn} onChange={setFocusOn} />
+                          </div>
+                          {focusOn && (
+                            <div className="mt-16 pt-16 border-t border-line">
+                              {focus === null ? (
+                                <div className="text-13 text-muted">
+                                  {t("focus.waiting")}
+                                </div>
+                              ) : !focus.available ? (
+                                <div className="text-13 text-muted">
+                                  {t("focus.notRunning")}
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="flex items-baseline justify-between gap-8">
+                                    <span className="text-12 text-muted">
+                                      {t("focus.score")}
+                                    </span>
+                                    <span className="rc-mono text-12">
+                                      {focusValue !== null
+                                        ? Math.round(focusValue)
+                                        : "-"}
+                                    </span>
+                                  </div>
+                                  {/* Score bar + session-peak marker */}
+                                  <div
+                                    className="relative w-full mt-8 rounded-6 overflow-hidden"
+                                    style={{
+                                      height: 10,
+                                      background: "rgba(0,0,0,0.08)",
+                                    }}
+                                  >
+                                    <div
+                                      className="absolute left-0 top-0 h-full rounded-6"
+                                      style={{
+                                        width: `${focusPct}%`,
+                                        background: "#8fc31f",
+                                        transition: "width 0.4s ease",
+                                      }}
+                                    />
+                                    {focusPeak > 0 && (
+                                      <div
+                                        className="absolute top-0 h-full"
+                                        style={{
+                                          left: `calc(${focusPeakPct}% - 1px)`,
+                                          width: 2,
+                                          background: "#4a6510",
+                                        }}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="rc-mono text-11 text-muted mt-6">
+                                    {t("focus.peak", {
+                                      peak: Math.round(focusPeak),
+                                    })}
+                                  </div>
+                                  <div className="text-12 text-muted mt-8">
+                                    {t("focus.hint")}
+                                  </div>
+                                </>
+                              )}
                             </div>
                           )}
                         </>

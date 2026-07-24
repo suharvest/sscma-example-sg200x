@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Modal, Progress, Slider, Switch, message } from "antd";
+import { Button, Modal, Progress, Segmented, Slider, Switch, message } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
@@ -9,6 +9,7 @@ import {
   AudioOutlined,
   SoundOutlined,
   DownloadOutlined,
+  VideoCameraOutlined,
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import {
@@ -26,6 +27,8 @@ import {
   setAudioVolumeApi,
 } from "@/api/device/index";
 import { ISensorStatus, IAudioVolume } from "@/api/device/device";
+import { getCameraConfigApi, setCameraConfigApi } from "@/api/camera";
+import { ICameraConfig } from "@/api/camera/camera";
 import { isOk, isBusy } from "@/utils/api";
 import { setLedApi } from "@/api/led";
 import { PowerMode } from "@/enum";
@@ -93,6 +96,19 @@ const DeviceTools = () => {
   >(undefined);
   const recordUrlRef = useRef<string | null>(null);
   const volumeTimer = useRef<ReturnType<typeof setTimeout>>();
+  // Camera picture orientation (camera.conf). undefined=loading,
+  // null=endpoint unavailable (older firmware).
+  const [cameraConf, setCameraConf] = useState<
+    ICameraConfig | null | undefined
+  >(undefined);
+  const [cameraSaved, setCameraSaved] = useState<ICameraConfig | null>(null);
+  const [cameraSaving, setCameraSaving] = useState(false);
+  const cameraDirty =
+    !!cameraConf &&
+    !!cameraSaved &&
+    (cameraConf.mirror !== cameraSaved.mirror ||
+      cameraConf.flip !== cameraSaved.flip ||
+      cameraConf.rotation !== cameraSaved.rotation);
 
   const fetchTime = () => {
     getTimestampApi()
@@ -135,6 +151,18 @@ const DeviceTools = () => {
       })
       .catch(() => setSensor(null));
     fetchTime();
+    // Camera picture orientation (older firmware returns 404)
+    setCameraConf(undefined);
+    getCameraConfigApi()
+      .then((res) => {
+        if (isOk(res) && res.data && typeof res.data.mirror === "boolean") {
+          setCameraConf(res.data);
+          setCameraSaved(res.data);
+        } else {
+          setCameraConf(null);
+        }
+      })
+      .catch(() => setCameraConf(null));
     // Audio volume controls (P3-E endpoint; older firmware returns 404)
     setAudioVolume(undefined);
     getAudioVolumeApi()
@@ -221,6 +249,42 @@ const DeviceTools = () => {
         message.error(t("audio.volumeFailed"));
       }
     }, 400);
+  };
+
+  /** Persist the camera orientation. The backend restarts the active app so
+   *  the setting takes effect (same busy semantics as the HA config). */
+  const onSaveCamera = async () => {
+    if (!cameraConf) return;
+    setCameraSaving(true);
+    try {
+      const res = await setCameraConfigApi({
+        mirror: cameraConf.mirror,
+        flip: cameraConf.flip,
+        rotation: cameraConf.rotation,
+      });
+      if (isOk(res)) {
+        const saved: ICameraConfig = {
+          mirror: !!res.data?.mirror,
+          flip: !!res.data?.flip,
+          rotation: res.data?.rotation === 180 ? 180 : 0,
+        };
+        setCameraConf(saved);
+        setCameraSaved(saved);
+        message.success(
+          res.data?.restarted
+            ? `${t("camera.saved")} ${t("camera.restarted")}`
+            : t("camera.saved")
+        );
+      } else if (isBusy(res)) {
+        message.warning(t("camera.busy"));
+      } else {
+        message.error(res.msg || t("camera.saveFailed"));
+      }
+    } catch (e) {
+      message.error(t("camera.saveFailed"));
+    } finally {
+      setCameraSaving(false);
+    }
   };
 
   const onToggleLed = async (name: string, on: boolean) => {
@@ -618,6 +682,85 @@ const DeviceTools = () => {
             <div className="text-12 text-muted mt-10">
               {showMic ? t("audio.micHint") : t("audio.speakerOnlyHint")}
             </div>
+          </div>
+        )}
+
+        {/* Camera picture orientation — hidden when the endpoint is missing
+            (older firmware). Saving restarts the active application. */}
+        {cameraConf !== null && (
+          <div className="rc-card p-20">
+            <div className="rc-section-label mb-12">{t("camera.card")}</div>
+            {cameraConf === undefined ? (
+              <div className="text-13 text-muted">{t("common.reading")}</div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between py-10">
+                  <div>
+                    <span className="text-14 font-medium">
+                      {t("camera.mirror")}
+                    </span>
+                    <div className="text-12 text-muted mt-2">
+                      {t("camera.mirrorHint")}
+                    </div>
+                  </div>
+                  <Switch
+                    size="small"
+                    checked={cameraConf.mirror}
+                    onChange={(v) =>
+                      setCameraConf({ ...cameraConf, mirror: v })
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between py-10 border-t border-line">
+                  <div>
+                    <span className="text-14 font-medium">
+                      {t("camera.flip")}
+                    </span>
+                    <div className="text-12 text-muted mt-2">
+                      {t("camera.flipHint")}
+                    </div>
+                  </div>
+                  <Switch
+                    size="small"
+                    checked={cameraConf.flip}
+                    onChange={(v) => setCameraConf({ ...cameraConf, flip: v })}
+                  />
+                </div>
+                <div className="flex items-center justify-between py-10 border-t border-line">
+                  <span className="text-14 font-medium">
+                    {t("camera.rotation")}
+                  </span>
+                  <Segmented
+                    size="small"
+                    value={cameraConf.rotation}
+                    onChange={(v) =>
+                      setCameraConf({
+                        ...cameraConf,
+                        rotation: v === 180 ? 180 : 0,
+                      })
+                    }
+                    options={[
+                      { label: "0°", value: 0 },
+                      { label: "180°", value: 180 },
+                    ]}
+                  />
+                </div>
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<VideoCameraOutlined />}
+                  className="mt-10"
+                  loading={cameraSaving}
+                  disabled={!cameraDirty}
+                  onClick={onSaveCamera}
+                >
+                  {t("camera.save")}
+                </Button>
+                <div className="text-12 text-muted mt-10">
+                  {t("camera.hint")}
+                </div>
+              </>
+            )}
           </div>
         )}
 

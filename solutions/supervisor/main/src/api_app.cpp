@@ -1,6 +1,7 @@
 #include "api_app.h"
 
 #include "api_device.h"
+#include "camera_config.h"
 #include "config_schema.hpp"
 #include "ha_config.h"
 
@@ -8,7 +9,9 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <limits.h>
 #include <mosquitto.h>
 #include <netdb.h>
@@ -43,6 +46,9 @@ api_app::api_app()
     REG_API(getHaConfig);
     REG_API(setHaConfig);
     REG_API(testHaConnection);
+    REG_API(getCameraConfig);
+    REG_API(setCameraConfig);
+    REG_API(getFocusValue);
 }
 
 const char* api_app::state_str(app_state s)
@@ -1474,4 +1480,149 @@ api_status_t api_app::testHaConnection(request_t req, response_t res)
         },
         []() { _ha_test_busy.clear(std::memory_order_release); },
         res);
+}
+
+// --- Camera picture orientation + focus assist ---
+
+namespace {
+
+json camera_conf_to_json(const camera_config::conf& c)
+{
+    json data = json::object();
+    data["mirror"] = c.mirror;
+    data["flip"] = c.flip;
+    data["rotation"] = c.rotation;
+    return data;
+}
+
+} // namespace
+
+// GET/POST /api/appMgr/getCameraConfig
+// -> {mirror:bool, flip:bool, rotation:0|180}
+api_status_t api_app::getCameraConfig(request_t req, response_t res)
+{
+    response(res, 0, STR_OK, camera_conf_to_json(camera_config::load()));
+    return API_STATUS_OK;
+}
+
+// POST /api/appMgr/setCameraConfig
+// body: {mirror:bool, flip:bool, rotation:0|180} (each field optional, the
+// stored value is kept when absent). Shares the app op busy gate (same level
+// as switchApp/setHaConfig); after the atomic conf write the active app (if
+// any) is restarted so the new orientation takes effect. Reply data carries
+// the saved config + restarted bool.
+api_status_t api_app::setCameraConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    if (!body.is_object()) {
+        response(res, -1, "Invalid request body (JSON object required)");
+        return API_STATUS_OK;
+    }
+
+    camera_config::conf next = camera_config::load();
+
+    if (body.contains("mirror")) {
+        if (!body["mirror"].is_boolean()) {
+            response(res, -1, "Invalid mirror (boolean required)");
+            return API_STATUS_OK;
+        }
+        next.mirror = body["mirror"].get<bool>();
+    }
+    if (body.contains("flip")) {
+        if (!body["flip"].is_boolean()) {
+            response(res, -1, "Invalid flip (boolean required)");
+            return API_STATUS_OK;
+        }
+        next.flip = body["flip"].get<bool>();
+    }
+    if (body.contains("rotation")) {
+        if (!body["rotation"].is_number_integer()) {
+            response(res, -1, "Invalid rotation (0 or 180 required)");
+            return API_STATUS_OK;
+        }
+        int r = body["rotation"].get<int>();
+        if (r != 0 && r != 180) {
+            response(res, -1, "Invalid rotation (0 or 180 required)");
+            return API_STATUS_OK;
+        }
+        next.rotation = r;
+    }
+
+    // Same busy level as switchApp: writing the conf and restarting the
+    // active app must not race a concurrent app operation.
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
+        return API_STATUS_OK;
+    }
+
+    if (!camera_config::save(next)) {
+        response(res, -1, "Failed to persist camera config");
+        return API_STATUS_OK;
+    }
+
+    json data = camera_conf_to_json(next);
+
+    // Restart the active app (if any) so the new orientation takes effect.
+    json state = read_state();
+    std::string active = jstr(state, "active_app");
+    if (active.empty()) {
+        data["restarted"] = false;
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    json manifests = load_manifests();
+    if (!manifests.contains(active)) {
+        data["restarted"] = false;
+        data["note"] = "active app manifest missing, not restarted";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    return restart_after_change(manifests[active], active, data, g, res);
+}
+
+// GET/POST /api/appMgr/getFocusValue
+// Reads /tmp/camera_fv.json ({"fv":N,"ts":M}, refreshed ~200ms by the active
+// app's video component) and echoes it plus available:bool. Freshness is
+// judged by the file's mtime (the embedded ts is device-monotonic, not
+// comparable to wall time): missing file or mtime older than 2s ->
+// available:false. Lightweight read-only poll target: no lock, no busy gate.
+api_status_t api_app::getFocusValue(request_t req, response_t res)
+{
+    static constexpr const char* FV_FILE = "/tmp/camera_fv.json";
+    static constexpr double FV_STALE_SECONDS = 2.0;
+
+    json data = json::object();
+    data["available"] = false;
+
+    struct stat st {};
+    if (::stat(FV_FILE, &st) != 0) {
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+
+    std::ifstream f(FV_FILE);
+    if (!f.is_open()) {
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    json fv = json::parse(f, nullptr, false);
+    if (fv.is_discarded() || !fv.is_object() || !fv.contains("fv") || !fv["fv"].is_number()) {
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+
+    data["fv"] = fv["fv"];
+    if (fv.contains("ts")) {
+        data["ts"] = fv["ts"];
+    }
+
+    // Freshness: writer updates every ~200ms while the camera runs. A stale
+    // mtime means the camera stopped without removing the file.
+    struct timespec now {};
+    ::clock_gettime(CLOCK_REALTIME, &now);
+    double age = (double)(now.tv_sec - st.st_mtim.tv_sec) + (double)(now.tv_nsec - st.st_mtim.tv_nsec) / 1e9;
+    data["available"] = (age >= 0.0 && age <= FV_STALE_SECONDS);
+
+    response(res, 0, STR_OK, data);
+    return API_STATUS_OK;
 }

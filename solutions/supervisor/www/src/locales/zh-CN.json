@@ -511,6 +511,30 @@
     "title": "集成",
     "subtitle": "将 reCamera 接入第三方平台与服务。"
   },
+  "camera": {
+    "card": "摄像头画面",
+    "mirror": "镜像",
+    "mirrorHint": "水平翻转画面。",
+    "flip": "翻转",
+    "flipHint": "垂直翻转画面。",
+    "rotation": "旋转",
+    "save": "保存",
+    "saved": "摄像头设置已保存。",
+    "restarted": "已重启运行中的应用使其生效。",
+    "saveFailed": "保存摄像头设置失败",
+    "busy": "另一个操作正在进行中，请稍后重试",
+    "hint": "保存后会重启运行中的应用，新的画面方向才会生效。"
+  },
+  "focus": {
+    "title": "对焦辅助",
+    "enable": "对焦辅助",
+    "enableHint": "每秒轮询摄像头的实时清晰度分数——旋转镜头，让分数条达到峰值。",
+    "waiting": "等待首个采样…",
+    "notRunning": "摄像头未运行",
+    "score": "清晰度分数",
+    "peak": "本次会话峰值：{{peak}}",
+    "hint": "分数为相对值——调整镜头使其尽可能高。深色标记为本次会话的最佳分数。"
+  },
   "ha": {
     "title": "Home Assistant",
     "subtitle": "通过 MQTT 将检测事件推送到 Home Assistant，并在仪表盘中查看摄像头画面。",

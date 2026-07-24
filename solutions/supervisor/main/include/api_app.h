@@ -47,6 +47,11 @@ private:
     static api_status_t getHaConfig(request_t req, response_t res);
     static api_status_t setHaConfig(request_t req, response_t res);
     static api_status_t testHaConnection(request_t req, response_t res);
+    // Camera picture orientation (/userdata/local/camera.conf, see
+    // camera_config.h) + read-only focus assist (/tmp/camera_fv.json).
+    static api_status_t getCameraConfig(request_t req, response_t res);
+    static api_status_t setCameraConfig(request_t req, response_t res);
+    static api_status_t getFocusValue(request_t req, response_t res);
 
     // helpers
     static bool valid_app_id(const std::string& id);
