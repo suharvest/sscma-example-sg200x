@@ -18,6 +18,7 @@
 #include "person_tracker.h"
 #include "zone_metrics.h"
 #include "mqtt_payload.h"
+#include "app_config.h"
 
 using namespace ma;
 using namespace retail_vision;
@@ -69,6 +70,11 @@ static struct {
     bool enable_mqtt = true;
     bool verbose = false;
 } g_config;
+
+// Supervisor-managed per-app config (drawn zones/lines + tuned numbers).
+// Absent file => defaults => behavior identical to before this mechanism.
+static const char* APP_CONFIG_PATH = "/userdata/local/apps/retail-vision.config.json";
+static retail_vision::AppConfig g_app_config;
 
 static std::atomic<bool> g_running(true);
 static Detector* g_detector = nullptr;
@@ -179,6 +185,40 @@ static bool parse_args(int argc, char** argv) {
     return true;
 }
 
+// Load the supervisor-managed config sidecar and fold the numeric overrides
+// into g_config (must run before init_detector/init_tracker). Zone/line are
+// kept in g_app_config and applied to the tracker in init_tracker().
+static void apply_app_config() {
+    if (!load_app_config(APP_CONFIG_PATH, g_app_config)) {
+        MA_LOGI(TAG, "No app config at %s, using defaults", APP_CONFIG_PATH);
+        return;
+    }
+    if (g_app_config.has_confidence) {
+        g_config.conf_threshold = g_app_config.confidence;
+    }
+    if (g_app_config.has_dwell_engaged) {
+        g_config.dwell_min_duration = g_app_config.dwell_engaged;
+    }
+    if (g_app_config.has_dwell_assist) {
+        g_config.dwell_assistance_threshold = g_app_config.dwell_assist;
+    }
+    if (g_app_config.has_dwell_speed) {
+        g_config.dwell_speed_threshold = g_app_config.dwell_speed;
+    }
+    if (g_app_config.has_window_duration) {
+        g_config.window_duration = g_app_config.window_duration;
+    }
+    if (g_app_config.has_person_height) {
+        g_config.person_height = g_app_config.person_height;
+    }
+    if (g_app_config.zone_enabled) {
+        MA_LOGI(TAG, "Config: counting zone with %zu points", g_app_config.zone_points.size());
+    }
+    if (g_app_config.line_enabled) {
+        MA_LOGI(TAG, "Config: entry line enabled (%s)", g_app_config.line_ab_in ? "ab_in" : "ab_out");
+    }
+}
+
 static bool init_detector() {
     g_detector = new Detector();
     if (!g_detector->init(g_config.model_path)) {
@@ -201,6 +241,14 @@ static bool init_tracker() {
     cfg.frame_height = g_config.inference_height;
     cfg.avg_person_height_m = g_config.person_height;
     g_tracker->setConfig(cfg);
+
+    // Apply drawn spatial config (no-op when the operator hasn't drawn them).
+    if (g_app_config.zone_enabled) {
+        g_tracker->setCountZone(g_app_config.zone_points);
+    }
+    if (g_app_config.line_enabled) {
+        g_tracker->setEntryLine(g_app_config.line_a, g_app_config.line_b, g_app_config.line_ab_in);
+    }
 
     g_zone_metrics = new ZoneMetrics();
     g_zone_metrics->setWindowDuration(g_config.window_duration);
@@ -530,6 +578,9 @@ static void process_frame() {
 
 int main(int argc, char** argv) {
     if (!parse_args(argc, argv)) return 1;
+
+    // CLI args first; the supervisor config sidecar (if present) overrides them.
+    apply_app_config();
 
     MA_LOGI(TAG, "Starting Retail Vision - People Flow Analytics");
     MA_LOGI(TAG, "Model: %s", g_config.model_path.c_str());

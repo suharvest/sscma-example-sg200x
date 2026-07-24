@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "detector.h"
+#include "geometry.h"
 
 namespace retail_vision {
 
@@ -122,6 +123,21 @@ public:
     void setConfig(const TrackerConfig& config);
     void setTrackRemovedCallback(TrackRemovedCallback cb);
 
+    // Optional spatial config. Both are OFF unless the operator draws them.
+    //
+    // Counting zone: when set, occupancy / dwell state counts (getStateCounts)
+    // only include persons whose FOOT point (bbox bottom-center) is inside the
+    // normalized polygon. Empty polygon (or <3 points) = whole-frame (default).
+    void setCountZone(const std::vector<geom::Point>& polygon);
+    bool hasCountZone() const { return !count_zone_.empty(); }
+
+    // Entry line: when set, entry_count_/exit_count_ are driven by directed
+    // crossings of the track's foot point over the segment a->b (instead of the
+    // default appearance/disappearance counting). ab_in == true: a crossing
+    // from the LEFT of a->b to the RIGHT counts as an entry.
+    void setEntryLine(const geom::Point& a, const geom::Point& b, bool ab_in);
+    bool hasEntryLine() const { return line_enabled_; }
+
     std::vector<TrackedPerson> update(
         const std::vector<DetectionBox>& detections,
         float current_time_sec
@@ -155,6 +171,15 @@ private:
     int entry_count_ = 0;
     int exit_count_ = 0;
     TrackRemovedCallback on_track_removed_;
+
+    // Optional counting zone (empty = whole frame). Uses foot points.
+    std::vector<geom::Point> count_zone_;
+
+    // Optional entry line for directed crossing counts (foot points).
+    bool line_enabled_ = false;
+    geom::Point line_a_ { 0.0f, 0.0f };
+    geom::Point line_b_ { 0.0f, 0.0f };
+    bool line_ab_in_ = true;
 };
 
 }  // namespace retail_vision

@@ -19,6 +19,31 @@ void PersonTracker::setTrackRemovedCallback(TrackRemovedCallback cb) {
     on_track_removed_ = std::move(cb);
 }
 
+void PersonTracker::setCountZone(const std::vector<geom::Point>& polygon) {
+    if (polygon.size() >= 3) {
+        count_zone_ = polygon;
+        MA_LOGI(TAG, "Counting zone enabled (%zu points)", count_zone_.size());
+    } else {
+        count_zone_.clear();
+    }
+}
+
+void PersonTracker::setEntryLine(const geom::Point& a, const geom::Point& b, bool ab_in) {
+    line_a_ = a;
+    line_b_ = b;
+    line_ab_in_ = ab_in;
+    line_enabled_ = true;
+    MA_LOGI(TAG, "Entry line enabled (%s)", ab_in ? "ab_in" : "ab_out");
+}
+
+// Foot point = bbox bottom-center (normalized). Used for zone membership and
+// entry-line crossing so that a person is located by where they stand, not by
+// their bbox center.
+static inline void foot_point(const DetectionBox& d, float& fx, float& fy) {
+    fx = d.x;
+    fy = d.y + d.h * 0.5f;
+}
+
 bool PersonTracker::isNearEdge(const DetectionBox& det) const {
     float margin = config_.edge_margin;
     float cx = det.x;
@@ -287,7 +312,8 @@ void PersonTracker::removeTrack(int track_id, float current_time) {
     const auto& track = it->second;
 
     // UA: exit counted at removal. Use velocity-aware edge classification.
-    if (track.frames_tracked >= config_.min_frames_for_count) {
+    // Skipped when an entry line is configured — crossings drive the counts.
+    if (!line_enabled_ && track.frames_tracked >= config_.min_frames_for_count) {
         // Classify loss zone using velocity direction (UA logic)
         bool is_edge_loss = classifyAsEdgeLoss(track);
 
@@ -349,6 +375,29 @@ std::vector<TrackedPerson> PersonTracker::update(
 
         updateVelocity(track, person_detections[det_idx], dt);
 
+        // Entry-line crossing: compare the track's previous foot point with the
+        // new one. A sign change of the cross-product against the directed line
+        // a->b is a genuine crossing; direction decides entry vs exit. Only
+        // active when an entry line is configured (otherwise the default
+        // appearance/disappearance counting below stays in effect).
+        if (line_enabled_) {
+            float p0x, p0y, p1x, p1y;
+            foot_point(track.detection, p0x, p0y);
+            foot_point(person_detections[det_idx], p1x, p1y);
+            int dir = geom::segment_crossing(line_a_[0], line_a_[1], line_b_[0], line_b_[1],
+                                             p0x, p0y, p1x, p1y);
+            if (dir != 0) {
+                bool is_in = (dir > 0) == line_ab_in_;
+                if (is_in) {
+                    entry_count_++;
+                } else {
+                    exit_count_++;
+                }
+                MA_LOGI(TAG, "Track %d crossed entry line: %s (entry=%d exit=%d)",
+                        track_id, is_in ? "in" : "out", entry_count_, exit_count_);
+            }
+        }
+
         track.detection = person_detections[det_idx];
         track.last_seen_time = current_time_sec;
         track.frames_tracked++;
@@ -398,8 +447,11 @@ std::vector<TrackedPerson> PersonTracker::update(
 
             tracks_[new_track.track_id] = new_track;
 
-            // UA: count entry when track is created
-            entry_count_++;
+            // UA: count entry when track is created. Skipped when an entry line
+            // is configured — crossings drive the counts instead (see above).
+            if (!line_enabled_) {
+                entry_count_++;
+            }
         }
     }
 
@@ -420,6 +472,17 @@ StateCount PersonTracker::getStateCounts() const {
     for (const auto& pair : tracks_) {
         const auto& track = pair.second;
         if (track.lost_frames > 0) continue;
+
+        // With a counting zone configured, only persons whose FOOT point (bbox
+        // bottom-center) is inside the polygon contribute to zone occupancy /
+        // dwell counts. Empty zone = whole frame (default, unchanged).
+        if (!count_zone_.empty()) {
+            float fx, fy;
+            foot_point(track.detection, fx, fy);
+            if (!geom::point_in_polygon(fx, fy, count_zone_)) {
+                continue;
+            }
+        }
 
         counts.total++;
         switch (track.dwell_state) {
