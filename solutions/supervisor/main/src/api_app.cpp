@@ -22,6 +22,23 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+
+// Node-RED mode gate: while Node-RED owns the camera the C++ app stack is
+// parked, so app lifecycle operations (switch / setModel / setConfig /
+// installApp) must not stop/start apps. They are refused with code -3 (the
+// frontend recognizes it); config-only writes (setHaConfig) skip the restart
+// instead. Read from the persisted mode file — same source getRunMode uses.
+constexpr int CODE_NODERED_MODE = -3;
+constexpr const char* MSG_NODERED_MODE = "Not available in Node-RED mode";
+
+bool in_nodered_mode()
+{
+    return api_device::read_run_mode_file() == "nodered";
+}
+
+} // namespace
+
 api_app::api_app()
     : api_base("appMgr")
 {
@@ -619,6 +636,11 @@ api_status_t api_app::switchApp(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
+    if (in_nodered_mode()) {
+        response(res, CODE_NODERED_MODE, MSG_NODERED_MODE);
+        return API_STATUS_OK;
+    }
+
     op_guard g;
     if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
@@ -793,6 +815,11 @@ api_status_t api_app::setModel(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
+    if (in_nodered_mode()) {
+        response(res, CODE_NODERED_MODE, MSG_NODERED_MODE);
+        return API_STATUS_OK;
+    }
+
     op_guard g;
     if (!acquire_op_or_busy(res, g)) {
         return API_STATUS_OK;
@@ -908,6 +935,11 @@ api_status_t api_app::setConfig(request_t req, response_t res)
         return API_STATUS_OK;
     }
     const json& values = body["values"];
+
+    if (in_nodered_mode()) {
+        response(res, CODE_NODERED_MODE, MSG_NODERED_MODE);
+        return API_STATUS_OK;
+    }
 
     op_guard g;
     if (!acquire_op_or_busy(res, g)) {
@@ -1051,6 +1083,11 @@ api_status_t api_app::installApp(request_t req, response_t res)
     std::string path = body.value("path", "");
     if (path.empty() || path.size() >= PATH_MAX) {
         response(res, -1, "Missing or oversized path");
+        return API_STATUS_OK;
+    }
+
+    if (in_nodered_mode()) {
+        response(res, CODE_NODERED_MODE, MSG_NODERED_MODE);
         return API_STATUS_OK;
     }
 
@@ -1398,6 +1435,16 @@ api_status_t api_app::setHaConfig(request_t req, response_t res)
     }
 
     json data = ha_conf_to_json(next);
+
+    // Node-RED mode: the conf is persisted, but the C++ app stack is parked —
+    // never restart it (that would start a camera app under Node-RED's feet).
+    // The saved config takes effect when the device returns to console mode.
+    if (in_nodered_mode()) {
+        data["restarted"] = false;
+        data["note"] = "nodered_mode";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
 
     // Restart the active app (if any) so the new config takes effect.
     json state = read_state();

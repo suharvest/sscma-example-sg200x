@@ -4,6 +4,7 @@ import {
   AppstoreOutlined,
   PlaySquareOutlined,
   ControlOutlined,
+  ApiOutlined,
 } from "@ant-design/icons";
 import useConfigStore from "@/store/config";
 import EditImg from "@/assets/images/svg/edit.svg";
@@ -31,6 +32,7 @@ const iconMap: Record<string, React.ReactNode> = {
   applications: <AppstoreOutlined style={{ fontSize: 16 }} />,
   live: <PlaySquareOutlined style={{ fontSize: 16 }} />,
   device: <ControlOutlined style={{ fontSize: 16 }} />,
+  integrations: <ApiOutlined style={{ fontSize: 16 }} />,
   overview: <img className="w-16 h-16" src={OverviewImg} alt="" />,
   dashboard: <img className="w-16 h-16" src={DashboardImg} alt="" />,
   workspace: <img className="w-16 h-16" src={ApplicationImg} alt="" />,
@@ -140,10 +142,9 @@ const PCLayout: React.FC<Props> = ({ children }) => {
             </div>
           ))}
         </div>
-        <div style={{ maxWidth: "1180px" }} className="w-full px-32">
-          {children}
+        <div className="flex-1 min-w-0 px-32 bg-white">
+          <div className="w-full max-w-[1520px] mx-auto">{children}</div>
         </div>
-        <div className="flex-1 h-full bg-white"></div>
       </div>
 
       <Modal

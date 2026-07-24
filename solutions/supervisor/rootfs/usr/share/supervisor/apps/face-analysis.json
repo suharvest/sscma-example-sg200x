@@ -1,39 +1,39 @@
 {
-    "id": "face-analysis",
-    "name": "Face Analysis",
-    "name_zh": "人脸分析",
-    "scene": "Safety & Access",
-    "scene_zh": "安防与门禁",
-    "description": "Real-time face detection with age, gender, race and emotion analysis. Publishes results over MQTT and streams H.264 via RTSP.",
-    "description_zh": "实时人脸检测，含年龄、性别、种族与情绪分析。通过 MQTT 发布结果，并以 RTSP 推送 H.264 视频。",
-    "type": "native",
-    "init_script": "/etc/init.d/K92face-analysis",
-    "image": "/apps/face-analysis.svg",
-    "rtsp_url": "rtsp://{host}:8554/live0",
-    "mqtt_topic": "recamera/face-analysis/results",
-    "debug_ws": {
-        "port": 8001,
-        "video_path": "/",
-        "results_path": "/results"
+  "id": "face-analysis",
+  "name": "Face Analysis",
+  "name_zh": "人脸分析",
+  "scene": "Retail Insights",
+  "scene_zh": "零售洞察",
+  "description": "A round-the-clock audience analyst for your store: builds hourly visitor profiles by gender and age group and reads emotional feedback, informing product selection, displays and campaigns. Analysis stays on the device — no face images leave the camera.",
+  "description_zh": "为门店配一位全天候“客群统计员”：自动统计进店顾客的性别与年龄段构成，感知情绪反馈，形成分时段客群画像，为选品、陈列和活动策划提供依据。全程端侧分析，人脸影像不出设备，天生照顾隐私合规。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92face-analysis",
+  "image": "/apps/face-analysis.png",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/face-analysis/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "models": [],
+  "pipeline": [
+    {
+      "name": "yolov8n-face",
+      "path": "/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel",
+      "task": "face-detect"
     },
-    "models": [],
-    "pipeline": [
-        {
-            "name": "yolov8n-face",
-            "path": "/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel",
-            "task": "face-detect"
-        },
-        {
-            "name": "fairface",
-            "path": "/userdata/local/models/fairface_int8.cvimodel",
-            "task": "age-gender-race"
-        },
-        {
-            "name": "hsemotion",
-            "path": "/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel",
-            "task": "emotion"
-        }
-    ],
-    "version": "1.0.0",
-    "author": "Seeed Studio"
+    {
+      "name": "fairface",
+      "path": "/userdata/local/models/fairface_int8.cvimodel",
+      "task": "age-gender-race"
+    },
+    {
+      "name": "hsemotion",
+      "path": "/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel",
+      "task": "emotion"
+    }
+  ],
+  "version": "1.0.0",
+  "author": "Seeed Studio"
 }

@@ -122,7 +122,7 @@ function System() {
   }, [systemUpdateState.batteryAvailable]);
 
   return (
-    <div className="my-8 p-16">
+    <div className="rc-page-narrow my-8 p-16">
       {!isDashboard && (
         <>
           <div className="font-bold text-18 mb-14">
@@ -200,23 +200,31 @@ function System() {
       )}
 
       <div className="font-bold text-18 mb-14 my-24">{t("menu.power")}</div>
-      <div className="bg-white rounded-20 px-24 py-20 flex flex-col gap-12">
-        <Button
-          block
-          color="danger"
-          variant="outlined"
-          onClick={() => onPowerOp(PowerMode.Restart)}
-        >
-          {t("power.reboot")}
-        </Button>
-        <Button
-          block
-          color="danger"
-          variant="outlined"
-          onClick={() => onPowerOp(PowerMode.Shutdown)}
-        >
-          {t("power.shutdown")}
-        </Button>
+      <div className="bg-white rounded-20 px-24">
+        <div className="flex justify-between py-24 border-b border-black/5">
+          <span className="opacity-60 self-center mr-20">
+            {t("power.reboot")}
+          </span>
+          <Button
+            color="danger"
+            variant="outlined"
+            onClick={() => onPowerOp(PowerMode.Restart)}
+          >
+            {t("power.reboot")}
+          </Button>
+        </div>
+        <div className="flex justify-between py-24">
+          <span className="opacity-60 self-center mr-20">
+            {t("power.shutdown")}
+          </span>
+          <Button
+            color="danger"
+            variant="outlined"
+            onClick={() => onPowerOp(PowerMode.Shutdown)}
+          >
+            {t("power.shutdown")}
+          </Button>
+        </div>
       </div>
 
       <div className="font-bold text-18 mb-14">{t("system.update")}</div>

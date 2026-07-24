@@ -4,6 +4,8 @@
 
 ## Overview
 
+**Typical uses**: retail audience profiling (hourly gender/age mix of visitors), campaign feedback via emotion trends, showroom audience analytics. All analysis stays on the device — raw face imagery never leaves the camera.
+
 Real-time face detection with per-face attribute analysis (age, gender, race, emotion) running fully on-device (reCamera SG2002, RISC-V + TPU). The application is a fixed multi-model pipeline:
 
 1. **Face detection** — YOLOv8n-face, run on every inference frame.

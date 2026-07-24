@@ -32,7 +32,8 @@ import {
   resolveDebugVideoUrl,
   resolveDebugResultsUrl,
 } from "@/utils/appStream";
-import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
+import { pickLocalized } from "@/utils/appLocale";
+import { getAppTags } from "@/utils/appTags";
 import IntegrationDoc from "@/components/integration-doc";
 import useCapabilitiesStore from "@/store/capabilities";
 
@@ -514,10 +515,8 @@ const Live = () => {
                 <span className="font-display font-semibold text-15">
                   {pickLocalized(app, "name") || app.id}
                 </span>
-                {pickLocalizedAlt(app, "name") && (
-                  <span className="text-muted text-13">
-                    {pickLocalizedAlt(app, "name")}
-                  </span>
+                {getAppTags(app) && (
+                  <span className="text-muted text-12">{getAppTags(app)}</span>
                 )}
                 <span className={`rc-badge ${running ? "accent" : ""}`}>
                   <span
@@ -538,12 +537,12 @@ const Live = () => {
               )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-16 mt-16">
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(280px,320px)] gap-16 mt-16">
               {/* Player */}
-              <div className="lg:col-span-3">
+              <div className="min-w-0">
                 <div
                   ref={containerRef}
-                  className="relative w-full bg-black rounded-12 overflow-hidden"
+                  className="relative w-full max-w-[1120px] mx-auto bg-black rounded-12 overflow-hidden"
                   style={{ aspectRatio: "16 / 9" }}
                 >
                   {debugOn && hasDebugWs && status !== "error" ? (

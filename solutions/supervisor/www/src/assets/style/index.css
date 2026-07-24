@@ -135,6 +135,18 @@ svg {
 .rc-mono {
 	font-family: var(--rc-mono);
 }
+/* Narrow settings pages (security / network / integrations / system):
+   centered column instead of full-width stretch on large screens. */
+.rc-page-narrow {
+	width: 100%;
+	max-width: 760px;
+	margin-left: auto;
+	margin-right: auto;
+}
+/* Body copy readability cap (subtitles, hints). */
+.rc-prose {
+	max-width: 65ch;
+}
 .rc-side-link {
 	display: flex;
 	align-items: center;

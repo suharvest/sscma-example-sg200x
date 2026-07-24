@@ -390,6 +390,7 @@
     "busy": "A mode switch is already in progress, please wait",
     "failed": "Failed to switch the runtime mode",
     "noderedBanner": "The device is running in Node-RED mode — console applications are stopped and unavailable.",
+    "actionUnavailable": "Not available in Node-RED mode. Switch back to Console mode first.",
     "switchBack": "Switch to Console",
     "forceConsole": "Force Console",
     "forceConsoleDesc": "Emergency recovery: if Node-RED mode stops responding, forcibly kill its services and return to Console mode.",
@@ -542,9 +543,15 @@
     "peak": "session peak: {{peak}}",
     "hint": "The score is relative — adjust the lens for the highest value. The dark marker is the best score seen this session."
   },
+  "terminal": {
+    "eyebrow": "System",
+    "title": "Terminal",
+    "subtitle": "A web shell on the device itself — full command-line access without SSH."
+  },
   "ha": {
     "title": "Home Assistant",
     "subtitle": "Publish detection events to Home Assistant over MQTT and view the camera stream in your dashboard.",
+    "noderedNotice": "The device is in Node-RED mode. The HA integration is provided by the Console application — settings saved here take effect after switching back to Console mode.",
     "enabled": "Enable Home Assistant integration",
     "brokerHost": "MQTT broker host",
     "brokerPort": "MQTT broker port",

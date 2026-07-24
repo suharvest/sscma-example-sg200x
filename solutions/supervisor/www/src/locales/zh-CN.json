@@ -388,6 +388,7 @@
     "busy": "已有一个模式切换正在进行，请稍候",
     "failed": "运行模式切换失败",
     "noderedBanner": "设备当前处于 Node-RED 模式，Console 应用已停止且不可用。",
+    "actionUnavailable": "Node-RED 模式下不可用，请先切回 Console 模式。",
     "switchBack": "切回 Console 模式",
     "forceConsole": "强制恢复 Console",
     "forceConsoleDesc": "紧急恢复：当 Node-RED 模式无响应时，强制杀掉相关服务并切回 Console 模式。",
@@ -537,9 +538,15 @@
     "peak": "本次会话峰值：{{peak}}",
     "hint": "分数为相对值——调整镜头使其尽可能高。深色标记为本次会话的最佳分数。"
   },
+  "terminal": {
+    "eyebrow": "系统",
+    "title": "终端",
+    "subtitle": "设备上的网页终端 —— 无需 SSH 即可获得完整命令行访问。"
+  },
   "ha": {
     "title": "Home Assistant",
     "subtitle": "通过 MQTT 将检测事件推送到 Home Assistant，并在仪表盘中查看摄像头画面。",
+    "noderedNotice": "当前为 Node-RED 模式，HA 集成由 Console 应用提供，切回 Console 模式后生效。",
     "enabled": "启用 Home Assistant 集成",
     "brokerHost": "MQTT Broker 地址",
     "brokerPort": "MQTT Broker 端口",

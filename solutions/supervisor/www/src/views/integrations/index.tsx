@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Alert,
   App,
   Button,
   Collapse,
@@ -13,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { getHaConfigApi, setHaConfigApi, testHaConnectionApi } from "@/api/ha";
 import { ISetHaConfigParams } from "@/api/ha/ha";
 import { getDeviceHost } from "@/utils/appStream";
+import useConfigStore from "@/store/config";
 
 interface IHaFormValues {
   enabled: boolean;
@@ -71,6 +73,13 @@ const HomeAssistantCard = () => {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [form] = Form.useForm<IHaFormValues>();
+
+  // Node-RED mode hint: HA publishing is done by the Console application,
+  // which is parked while Node-RED owns the camera. Config saved here is
+  // persisted but only takes effect back in Console mode.
+  const { galleryMode, deviceInfo } = useConfigStore();
+  const modeKnown = Boolean(deviceInfo?.appName);
+  const noderedMode = modeKnown && !galleryMode;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -209,6 +218,15 @@ const HomeAssistantCard = () => {
       <div className="text-black opacity-60 mt-4 mb-16 text-13">
         {t("ha.subtitle")}
       </div>
+
+      {noderedMode && (
+        <Alert
+          className="mb-16"
+          type="info"
+          showIcon
+          message={t("ha.noderedNotice")}
+        />
+      )}
 
       <div>
         <Form
@@ -356,7 +374,7 @@ const Integrations = () => {
   const { t } = useTranslation();
 
   return (
-    <div className="my-8 p-16">
+    <div className="rc-page-narrow my-8 p-16">
       <div className="font-bold text-18">{t("integrations.title")}</div>
       <div className="text-black opacity-60 mt-4 mb-12 text-13">
         {t("integrations.subtitle")}

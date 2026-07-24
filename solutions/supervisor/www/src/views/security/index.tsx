@@ -41,7 +41,7 @@ const Security = () => {
   };
 
   return (
-    <div className="my-8 p-16">
+    <div className="rc-page-narrow my-8 p-16">
       <div className="font-bold text-18 ">{t("security.user")}</div>
       <div className="rounded-16 bg-white p-30 mt-12 mb-24">
         <div className="flex justify-between mb-16">

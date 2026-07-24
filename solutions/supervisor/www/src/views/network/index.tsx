@@ -86,7 +86,7 @@ function Network() {
   const [showPingInput, setShowPingInput] = useState(false);
 
   return (
-    <div className="px-16 pb-24">
+    <div className="rc-page-narrow px-16 pb-24">
       <div className="text-24 font-bold mt-24">{t("network.internet")}</div>
       {!state.wifiChecked &&
         state.etherStatus === NetworkStatus.Disconnected && (

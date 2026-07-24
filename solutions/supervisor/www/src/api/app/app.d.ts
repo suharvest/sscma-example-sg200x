@@ -36,6 +36,13 @@ export interface IAppManifest {
   scene_zh?: string;
   description?: string;
   description_zh?: string;
+  /**
+   * Optional pre-joined scene-tag line shown under the app name
+   * (e.g. "Perimeter security · Parking"). Frontend falls back to a
+   * built-in per-app-id wordlist (utils/appTags.ts) when absent.
+   */
+  tags?: string;
+  tags_zh?: string;
   type: AppType;
   init_script?: string;
   /** Optional preview image URL (e.g. "/apps/<id>.svg"), shown on the card. */

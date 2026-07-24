@@ -1,88 +1,88 @@
 {
-    "id": "yolo-detector",
-    "name": "Object Detection",
-    "name_zh": "通用目标检测",
-    "scene": "General",
-    "scene_zh": "通用",
-    "description": "General-purpose YOLO object detection. Publishes detection results over MQTT and streams H.264 via RTSP. Supports switching between detection models.",
-    "description_zh": "通用 YOLO 目标检测。通过 MQTT 发布检测结果，并以 RTSP 推送 H.264 视频。支持切换检测模型。",
-    "type": "native",
-    "init_script": "/etc/init.d/K92yolo-detector",
-    "image": "/apps/yolo-detector.svg",
-    "rtsp_url": "rtsp://{host}:8554/live0",
-    "mqtt_topic": "recamera/yolo-detector/results",
-    "debug_ws": {
-        "port": 8001,
-        "video_path": "/",
-        "results_path": "/results"
+  "id": "yolo-detector",
+  "name": "Object Detection",
+  "name_zh": "通用目标检测",
+  "scene": "Security & Monitoring",
+  "scene_zh": "安防监控",
+  "description": "Keep an eye on what matters: people entering, vehicles arriving, objects appearing — 80 everyday object classes out of the box. Ideal for unattended entrances, warehouses and parking spots, with events pushed live to Home Assistant for alerts and automations.",
+  "description_zh": "看住你在意的每个角落：人员闯入、车辆到访、物品出现，80 类常见目标开箱即用。适合出入口、仓库、车位的无人值守监控，事件可实时推送到 Home Assistant 触发告警与联动。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92yolo-detector",
+  "image": "/apps/yolo-detector.png",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/yolo-detector/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "models": [
+    {
+      "name": "yolo11n",
+      "path": "/userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel",
+      "task": "detect"
     },
-    "models": [
-        {
-            "name": "yolo11n",
-            "path": "/userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel",
-            "task": "detect"
-        },
-        {
-            "name": "yolo11n-pose",
-            "path": "/userdata/local/models/yolo11n_pose_cv181x_int8.cvimodel",
-            "task": "pose"
-        },
-        {
-            "name": "yolo26n",
-            "path": "/userdata/local/models/yolo26n_cv181x_int8.cvimodel",
-            "task": "detect"
-        }
-    ],
-    "default_model": "yolo11n",
-    "config_schema": {
-        "groups": [
-            {
-                "key": "detection",
-                "title": "Detection",
-                "title_zh": "检测",
-                "items": [
-                    {
-                        "key": "confidence",
-                        "type": "number",
-                        "title": "Confidence threshold",
-                        "title_zh": "置信度阈值",
-                        "min": 0.05,
-                        "max": 0.95,
-                        "step": 0.05,
-                        "default": 0.25
-                    },
-                    {
-                        "key": "tracking",
-                        "type": "boolean",
-                        "title": "Person tracking",
-                        "title_zh": "人员追踪",
-                        "default": true
-                    }
-                ]
-            },
-            {
-                "key": "spatial",
-                "title": "Zones & Lines",
-                "title_zh": "区域与划线",
-                "items": [
-                    {
-                        "key": "count_zone",
-                        "type": "zone",
-                        "title": "Counting zone",
-                        "title_zh": "统计区域",
-                        "maxPoints": 8
-                    },
-                    {
-                        "key": "entry_line",
-                        "type": "line",
-                        "title": "Entry line",
-                        "title_zh": "进出计数线",
-                        "directional": true
-                    }
-                ]
-            }
+    {
+      "name": "yolo11n-pose",
+      "path": "/userdata/local/models/yolo11n_pose_cv181x_int8.cvimodel",
+      "task": "pose"
+    },
+    {
+      "name": "yolo26n",
+      "path": "/userdata/local/models/yolo26n_cv181x_int8.cvimodel",
+      "task": "detect"
+    }
+  ],
+  "default_model": "yolo11n",
+  "config_schema": {
+    "groups": [
+      {
+        "key": "detection",
+        "title": "Detection",
+        "title_zh": "检测",
+        "items": [
+          {
+            "key": "confidence",
+            "type": "number",
+            "title": "Confidence threshold",
+            "title_zh": "置信度阈值",
+            "min": 0.05,
+            "max": 0.95,
+            "step": 0.05,
+            "default": 0.25
+          },
+          {
+            "key": "tracking",
+            "type": "boolean",
+            "title": "Person tracking",
+            "title_zh": "人员追踪",
+            "default": true
+          }
         ]
-    },
-    "version": "1.1.0",
-    "author": "Seeed Studio"
+      },
+      {
+        "key": "spatial",
+        "title": "Zones & Lines",
+        "title_zh": "区域与划线",
+        "items": [
+          {
+            "key": "count_zone",
+            "type": "zone",
+            "title": "Counting zone",
+            "title_zh": "统计区域",
+            "maxPoints": 8
+          },
+          {
+            "key": "entry_line",
+            "type": "line",
+            "title": "Entry line",
+            "title_zh": "进出计数线",
+            "directional": true
+          }
+        ]
+      }
+    ]
+  },
+  "version": "1.1.0",
+  "author": "Seeed Studio"
 }

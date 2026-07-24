@@ -4,6 +4,8 @@
 
 ## Overview
 
+**Typical uses**: reading meters and gauges into your system, capturing container/waybill/label codes on the line, digitizing signage and station tags — replacing manual transcription.
+
 Scene text reading running fully on-device (reCamera SG2002, RISC-V + TPU) with a fixed two-model PP-OCRv3 pipeline:
 
 1. **Text detection** — DBNet (MobileNetV3 + RSE-FPN head, 480x480 input, mixed INT8/BF16 quantization) finds text regions as 4-point polygons.

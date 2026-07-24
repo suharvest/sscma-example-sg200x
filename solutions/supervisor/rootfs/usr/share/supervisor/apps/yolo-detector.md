@@ -4,6 +4,8 @@
 
 ## Overview
 
+**Typical uses**: unattended entrance/perimeter monitoring (person or vehicle shows up -> instant notification), package-arrival detection, parking-spot occupancy, shelf/asset presence checks. Events integrate with Home Assistant or any MQTT consumer for alerts and automations.
+
 General-purpose YOLO object detection (80 COCO classes) running fully on-device (reCamera SG2002, RISC-V + TPU). Supports switchable models (YOLO11 / YOLO26 family, detect or pose task). By default it also runs a **person tracker** that adds per-person dwell-state analytics on top of raw detections.
 
 Outputs:

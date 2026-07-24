@@ -91,8 +91,6 @@ private:
     // Hard escape hatch (#20): force console without the graceful hand-over,
     // independent of Node-RED health. Used to recover a wedged device.
     static api_status_t forceConsole(request_t req, response_t res);
-    // Reads /userdata/local/apps/mode; anything but "nodered" -> "console".
-    static std::string read_run_mode_file();
 
     // Battery collector thread function
     static void battery_collector_thread();
@@ -101,6 +99,10 @@ private:
     static bool check_adc_available();
 
 public:
+    // Reads /userdata/local/apps/mode; anything but "nodered" -> "console".
+    // Public so appMgr can gate app lifecycle operations in Node-RED mode.
+    static std::string read_run_mode_file();
+
     // Cached capability set for other API groups (appMgr requires[] gating).
     // Probes on first use; all handlers run on the single mongoose poll
     // thread (see setRunMode notes), so no locking is needed.

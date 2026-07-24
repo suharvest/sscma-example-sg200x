@@ -4,6 +4,8 @@
 
 ## Overview
 
+**Typical uses**: store entry/exit counting for staffing decisions, dwell hot-spot discovery for display placement, assistance-needed detection for on-floor service.
+
 People flow analytics running fully on-device (reCamera SG2002, RISC-V + TPU). A YOLO11n detector finds persons, a tracker follows them across frames, and every person is classified into a dwell state:
 
 | State | Meaning |

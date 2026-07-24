@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Modal, Progress, Segmented, Slider, Switch, message } from "antd";
+import { Button, Dropdown, Modal, Progress, Segmented, Slider, Switch, Tooltip, message } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
@@ -399,16 +399,44 @@ const DeviceTools = () => {
           <h1 className="font-display font-bold text-24 m-0 tracking-tight">
             {t("device.title")}
           </h1>
-          <p className="text-muted text-13 mt-4 mb-0">
+          <p className="text-muted text-13 mt-4 mb-0 rc-prose">
             {t("device.subtitle")}
           </p>
         </div>
-        <Button icon={<ReloadOutlined />} onClick={fetchAll}>
-          {t("common.refresh")}
-        </Button>
+        <div className="flex gap-8">
+          <Button icon={<ReloadOutlined />} onClick={fetchAll}>
+            {t("common.refresh")}
+          </Button>
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  key: "reboot",
+                  icon: <ReloadOutlined />,
+                  label: t("device.reboot"),
+                },
+                {
+                  key: "shutdown",
+                  icon: <PoweroffOutlined />,
+                  label: t("device.shutdown"),
+                  danger: true,
+                },
+              ],
+              onClick: ({ key }) =>
+                onPower(
+                  key === "reboot" ? PowerMode.Restart : PowerMode.Shutdown
+                ),
+            }}
+            trigger={["click"]}
+          >
+            <Tooltip title={t("device.power")}>
+              <Button icon={<PoweroffOutlined />} loading={powerLoading} />
+            </Tooltip>
+          </Dropdown>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-16 mt-24">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-16 mt-24">
         {/* Hardware variant (P5): device_type + capability badges */}
         {capabilities && (
           <div className="rc-card p-20">
@@ -764,31 +792,6 @@ const DeviceTools = () => {
           </div>
         )}
 
-        {/* Power */}
-        <div className="rc-card p-20">
-          <div className="rc-section-label mb-12">{t("device.power")}</div>
-          <div className="flex flex-col gap-10">
-            <Button
-              danger
-              icon={<ReloadOutlined />}
-              loading={powerLoading}
-              onClick={() => onPower(PowerMode.Restart)}
-            >
-              {t("device.reboot")}
-            </Button>
-            <Button
-              danger
-              icon={<PoweroffOutlined />}
-              loading={powerLoading}
-              onClick={() => onPower(PowerMode.Shutdown)}
-            >
-              {t("device.shutdown")}
-            </Button>
-          </div>
-          <div className="text-12 text-muted mt-10">
-            {t("device.powerHint")}
-          </div>
-        </div>
       </div>
     </div>
   );

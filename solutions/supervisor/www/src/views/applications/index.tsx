@@ -22,6 +22,7 @@ import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import { resolveRtspUrl } from "@/utils/appStream";
 import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
+import { getAppTags } from "@/utils/appTags";
 import IntegrationDoc from "@/components/integration-doc";
 import useConfigStore from "@/store/config";
 import useRunModeSwitch from "@/hooks/useRunModeSwitch";
@@ -300,6 +301,9 @@ const Applications = () => {
         const res = await switchAppApi({ app_id: app.id });
         if (isOk(res)) {
           message.success(t("apps.activated", { name }));
+        } else if (Number(res.code) === -3) {
+          // Backend Node-RED mode gate (P6): app operations are refused.
+          message.warning(t("runtimeMode.actionUnavailable"));
         } else {
           message.error(res.msg || t("apps.activateFailed"));
         }
@@ -436,11 +440,11 @@ const Applications = () => {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-16 mt-24">
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-16 mt-24">
             {sortedApps.map((app) => {
               const isActive = app.id === activeId;
               const displayName = pickLocalized(app, "name") || app.id;
-              const altName = pickLocalizedAlt(app, "name");
+              const tagsLine = getAppTags(app);
               // P5: hardware dependency gating (backend appMgr/list fields).
               const hwUnsupported = app.hw_supported === false;
               const missingList = (app.missing_capabilities || [])
@@ -509,8 +513,8 @@ const Applications = () => {
                     <div className="font-display font-semibold text-16 leading-snug">
                       {displayName}
                     </div>
-                    {altName && (
-                      <div className="text-muted text-13 mt-2">{altName}</div>
+                    {tagsLine && (
+                      <div className="text-muted text-12 mt-2">{tagsLine}</div>
                     )}
                   </div>
 
@@ -553,6 +557,15 @@ const Applications = () => {
                       <Tooltip
                         title={t("apps.hwMissingTooltip", { list: missingList })}
                       >
+                        {/* span wrapper: antd Tooltip needs a non-disabled DOM target */}
+                        <span>
+                          <Button type="primary" size="small" disabled>
+                            {t("common.activate")}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    ) : noderedMode ? (
+                      <Tooltip title={t("runtimeMode.actionUnavailable")}>
                         {/* span wrapper: antd Tooltip needs a non-disabled DOM target */}
                         <span>
                           <Button type="primary" size="small" disabled>
