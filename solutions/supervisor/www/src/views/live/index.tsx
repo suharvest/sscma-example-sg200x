@@ -24,10 +24,7 @@ import {
 } from "@/api/camera/camera";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
-import useDebugStream, {
-  IOverlayFrame,
-  IResultClassification,
-} from "@/hooks/useDebugStream";
+import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
 import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import {
@@ -39,6 +36,12 @@ import { pickLocalized } from "@/utils/appLocale";
 import { getAppTags } from "@/utils/appTags";
 import IntegrationDoc from "@/components/integration-doc";
 import useCapabilitiesStore from "@/store/capabilities";
+// Shared, app-agnostic overlay renderer — single source of truth in
+// app_collaboration/frontend/src/overlay/renderer.js, vendored here (see that
+// file's header for the sync procedure). Same renderer the Tauri preview and
+// the sensecraft draw_*.js adapters use, so boxes/cards look identical
+// everywhere.
+import { render as renderOverlay } from "@/vendor/recamera-overlay";
 
 interface ContentRect {
   left: number;
@@ -47,20 +50,79 @@ interface ContentRect {
   height: number;
 }
 
-/** Bounding-box overlay. Coordinates follow the SSCMA convention:
- *  x,y = box center, relative to the inference resolution (pixels);
- *  values <= 1 are treated as already-normalized. */
-function BoxOverlay({
+/** Map a debug-stream overlay frame to a shared-renderer `model`.
+ *  - boxes: SSCMA center coords (inference px, or already-normalized when <=1)
+ *    → normalized TOP-LEFT bbox the contract expects.
+ *  - classification → a `card:classification` layer.
+ *  Covers every box app uniformly (yolo / face / retail / ocr / facemesh —
+ *  facemesh's debug envelope is center boxes with a "state EAR" label). */
+function adaptDebugFrame(frame: IOverlayFrame) {
+  const layers: Array<Record<string, unknown>> = [];
+  const { resW, resH, boxes, classification } = frame;
+  if (boxes && boxes.length) {
+    const items = boxes.map((b) => {
+      const normalized = b.x <= 1 && b.y <= 1 && b.w <= 1 && b.h <= 1;
+      const cx = normalized ? b.x : b.x / resW;
+      const cy = normalized ? b.y : b.y / resH;
+      const w = normalized ? b.w : b.w / resW;
+      const h = normalized ? b.h : b.h / resH;
+      const label =
+        b.label ??
+        (b.target !== undefined && b.target !== null
+          ? String(b.target)
+          : undefined);
+      return { bbox: { x: cx - w / 2, y: cy - h / 2, w, h }, label, confidence: b.score };
+    });
+    layers.push({ type: "boxes", items });
+  }
+  if (classification) {
+    const scores: Record<string, number> = {};
+    for (const s of classification.scores) scores[s.name] = s.score;
+    layers.push({
+      type: "card",
+      variant: "classification",
+      anchor: "tl",
+      data: {
+        label: classification.label,
+        confidence: classification.confidence,
+        scores,
+      },
+    });
+  }
+  return { layers };
+}
+
+/** Canvas overlay driven by the shared RecameraOverlay renderer. Replaces the
+ *  old SVG BoxOverlay + DOM ClassificationOverlay with one <canvas> so the
+ *  device Console draws through the exact same code path as the app previews. */
+function OverlayCanvas({
   frame,
   rect,
 }: {
   frame: IOverlayFrame;
   rect: ContentRect;
 }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !rect.width || !rect.height) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.round(rect.width);
+    const H = Math.round(rect.height);
+    if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    renderOverlay(ctx, adaptDebugFrame(frame), { width: W, height: H });
+  }, [frame, rect.width, rect.height]);
   if (!rect.width || !rect.height) return null;
-  const { resW, resH, boxes } = frame;
   return (
-    <svg
+    <canvas
+      ref={ref}
       className="absolute pointer-events-none"
       style={{
         left: rect.left,
@@ -68,135 +130,7 @@ function BoxOverlay({
         width: rect.width,
         height: rect.height,
       }}
-      viewBox={`0 0 ${resW} ${resH}`}
-      preserveAspectRatio="none"
-    >
-      {boxes.map((b, i) => {
-        const normalized = b.x <= 1 && b.y <= 1 && b.w <= 1 && b.h <= 1;
-        const x = normalized ? b.x * resW : b.x;
-        const y = normalized ? b.y * resH : b.y;
-        const w = normalized ? b.w * resW : b.w;
-        const h = normalized ? b.h * resH : b.h;
-        const left = x - w / 2;
-        const top = y - h / 2;
-        const pct = (b.score <= 1 ? b.score * 100 : b.score).toFixed(0);
-        // Prefer the app's rich label (e.g. "male 20-29 neutral") over the
-        // bare box target ("face"); append the detection score.
-        const label = b.label
-          ? `${b.label} ${pct}%`
-          : b.target !== undefined && b.target !== null
-          ? `${b.target} ${pct}%`
-          : "";
-        return (
-          <g key={i}>
-            <rect
-              x={left}
-              y={top}
-              width={w}
-              height={h}
-              fill="none"
-              stroke="#8fc31f"
-              strokeWidth={Math.max(2, resW / 320)}
-            />
-            {label && (
-              <text
-                x={left + 4}
-                y={Math.max(top - 6, 12)}
-                fill="#8fc31f"
-                fontSize={Math.max(12, resW / 40)}
-                fontFamily="SFMono-Regular, Menlo, monospace"
-                paintOrder="stroke"
-                stroke="rgba(255,255,255,0.85)"
-                strokeWidth={3}
-              >
-                {label}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-/** Classification overlay: semi-transparent card pinned to the top-left of
- *  the video content area. Big label + confidence, then up to 5 per-class
- *  scores (name + thin bar + value, already sorted descending). Styled like
- *  the other in-video chrome: deep black backdrop, white text, theme green. */
-function ClassificationOverlay({
-  cls,
-  rect,
-}: {
-  cls: IResultClassification;
-  rect: ContentRect;
-}) {
-  if (!rect.width || !rect.height) return null;
-  const pct = (v: number) => (v <= 1 ? v * 100 : v);
-  return (
-    <div
-      className="absolute pointer-events-none rounded-8"
-      style={{
-        left: rect.left + 12,
-        top: rect.top + 12,
-        width: Math.min(240, rect.width - 24),
-        background: "rgba(0,0,0,0.65)",
-        padding: "10px 14px",
-      }}
-    >
-      <div className="flex items-baseline gap-8">
-        <span
-          className="font-display font-semibold truncate"
-          style={{ color: "#8fc31f", fontSize: 20 }}
-        >
-          {cls.label}
-        </span>
-        <span
-          className="rc-mono flex-none"
-          style={{ color: "#ffffff", fontSize: 13, opacity: 0.85 }}
-        >
-          {pct(cls.confidence).toFixed(0)}%
-        </span>
-      </div>
-      {cls.scores.slice(0, 5).map((s) => (
-        <div
-          key={s.name}
-          className="flex items-center gap-8"
-          style={{ marginTop: 6 }}
-        >
-          <span
-            className="truncate flex-none"
-            style={{ color: "#ffffff", fontSize: 11, opacity: 0.8, width: 64 }}
-          >
-            {s.name}
-          </span>
-          <div
-            className="flex-1 rounded-2 overflow-hidden"
-            style={{ height: 4, background: "rgba(255,255,255,0.2)" }}
-          >
-            <div
-              style={{
-                width: `${Math.min(pct(s.score), 100)}%`,
-                height: "100%",
-                background: "#8fc31f",
-                transition: "width 0.2s ease",
-              }}
-            />
-          </div>
-          <span
-            className="rc-mono flex-none"
-            style={{
-              color: "#ffffff",
-              fontSize: 10,
-              opacity: 0.7,
-              width: 32,
-              textAlign: "right",
-            }}
-          >
-            {pct(s.score).toFixed(0)}%
-          </span>
-        </div>
-      ))}
-    </div>
+    />
   );
 }
 
@@ -677,13 +611,7 @@ const Live = () => {
                         playsInline
                       />
                       {overlayOn && overlay && (
-                        <BoxOverlay frame={overlay} rect={contentRect} />
-                      )}
-                      {overlayOn && overlay?.classification && (
-                        <ClassificationOverlay
-                          cls={overlay.classification}
-                          rect={contentRect}
-                        />
+                        <OverlayCanvas frame={overlay} rect={contentRect} />
                       )}
                       {status === "connecting" && (
                         <div className="absolute inset-0 flex items-center justify-center">
