@@ -7,6 +7,8 @@
 #include <fstream>
 #include <sstream>
 
+#include <unistd.h>
+
 #include <mosquitto.h>
 
 #define TAG "ha_mqtt"
@@ -218,6 +220,21 @@ bool MqttPublisher::init(const ClientOptions& options) {
     }
 
     sn_ = options_.device_identifier.empty() ? readDeviceIdentifier() : options_.device_identifier;
+
+    // Resolve a friendly device name for HA discovery + results payload.
+    // The compiled-in default is "reCamera"; when left at the default (or
+    // empty) fall back to the actual hostname, which supervisor keeps in sync
+    // with the user-set device name (updateDeviceName -> hostname + avahi).
+    // device.identifiers stays recamera_<sn> (stable unique key); only the
+    // human-facing name changes.
+    if (options_.device_name.empty() || options_.device_name == "reCamera") {
+        char host[256] = {0};
+        if (gethostname(host, sizeof(host) - 1) == 0 && host[0] != '\0') {
+            options_.device_name = host;
+        } else {
+            options_.device_name = "reCamera";
+        }
+    }
 
     mosquitto_lib_init();
 
@@ -450,7 +467,25 @@ void MqttPublisher::publishDiscoveryConfigs() {
 // ---- publishing ----
 
 bool MqttPublisher::publishResultsJson(const std::string& payload) {
-    return publishText(options_.results_topic, payload,
+    // Inject a top-level "device" field so bare MQTT consumers can identify the
+    // source device. Back-compatible: an extra leading field only; all existing
+    // fields are preserved untouched.
+    std::string out;
+    size_t brace = payload.find('{');
+    if (brace == std::string::npos) {
+        out = payload;  // not a JSON object; leave as-is
+    } else {
+        size_t next = payload.find_first_not_of(" \t\r\n", brace + 1);
+        bool empty_obj = (next == std::string::npos || payload[next] == '}');
+        out.reserve(payload.size() + options_.device_name.size() + 16);
+        out.append(payload, 0, brace + 1);
+        out += "\"device\":\"";
+        out += jsonEscape(options_.device_name);
+        out += "\"";
+        if (!empty_obj) out += ",";
+        out.append(payload, brace + 1, std::string::npos);
+    }
+    return publishText(options_.results_topic, out,
                        options_.results_qos, options_.results_retain);
 }
 

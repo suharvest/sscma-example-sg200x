@@ -85,6 +85,11 @@ public:
     bool isConnected() const { return connected_.load(); }
     bool haEnabled() const { return ha_.enabled; }
 
+    // Friendly device name resolved at init() (hostname, or "reCamera"
+    // fallback). Used for HA discovery device.name and the results "device"
+    // field.
+    std::string deviceName() const { return options_.device_name; }
+
     // Publish a results JSON payload to options.results_topic.
     bool publishResultsJson(const std::string& payload);
 
