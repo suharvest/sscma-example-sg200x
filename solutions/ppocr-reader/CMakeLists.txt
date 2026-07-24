@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(ppocr-reader VERSION 0.5.0 LANGUAGES C CXX)
+project(ppocr-reader VERSION 0.5.1 LANGUAGES C CXX)
 
 set(PROJECT_DESCRIPTION "PP-OCRv3 Text Detection & Recognition for ReCamera")
 
