@@ -20,6 +20,8 @@ private:
     static api_status_t forgetWiFi(request_t req, response_t res);
     static api_status_t getWiFiInfoList(request_t req, response_t res);
     static api_status_t switchWiFi(request_t req, response_t res);
+    static api_status_t getIpConfig(request_t req, response_t res);
+    static api_status_t setIpConfig(request_t req, response_t res);
 
 public:
     api_wifi()
@@ -31,6 +33,8 @@ public:
         REG_API(forgetWiFi);
         REG_API(getWiFiInfoList);
         REG_API(switchWiFi);
+        REG_API(getIpConfig);
+        REG_API(setIpConfig);
 
         start_wifi();
     }

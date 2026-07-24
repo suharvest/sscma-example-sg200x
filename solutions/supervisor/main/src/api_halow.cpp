@@ -53,8 +53,10 @@ json api_halow::get_halow_current()
     c["auth"] = c.value("key_mgmt", "").find("SAE") != std::string::npos ? 1 : 0;
     c["macAddress"] = c.value("address", "");
     c["ip"] = ip;
-    c["ipAssignment"] = 1; // static/dhcp
-    c["subnetMask"] = "255.255.255.0";
+    // main.sh appends ip_assignment (1=dhcp, 0=static, from dhcpcd.conf) and
+    // subnet_mask (real ifconfig mask) to the wpa_cli_s1g status dump.
+    c["ipAssignment"] = c.value("ip_assignment", "") == "0" ? 0 : 1;
+    c["subnetMask"] = c.value("subnet_mask", "");
 
     _halow_mutex.lock();
     int status = 2; // 1=not connected, 2=connecting, 3=connected

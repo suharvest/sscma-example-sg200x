@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -9,7 +9,13 @@ import {
   Tabs,
   Select,
   InputNumber,
+  message,
 } from "antd";
+import {
+  getIpConfigApi,
+  setIpConfigApi,
+  IIpConfig,
+} from "@/api/network";
 import { LoadingOutlined, InfoCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import WarnImg from "@/assets/images/warn.png";
 import LockImg from "@/assets/images/svg/lock.svg";
@@ -58,6 +64,35 @@ const titleObj = {
   [FormType.Disabled]: "network.disableWifiTitle",
   [FormType.HalowConfig]: "network.halowConfigTitle",
 };
+
+// --- static IP config helpers (eth0/wlan0) ---
+const isIpv4 = (s: string) =>
+  /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) &&
+  s.split(".").every((p) => Number(p) <= 255);
+
+/** /prefix -> dotted subnet mask, e.g. 24 -> 255.255.255.0 */
+const prefixToMask = (p: number) => {
+  const m = p <= 0 ? 0 : (0xffffffff << (32 - Math.min(p, 32))) >>> 0;
+  return [24, 16, 8, 0].map((s) => (m >>> s) & 255).join(".");
+};
+
+interface IIpForm {
+  mode: "dhcp" | "static";
+  ip: string;
+  prefix: number;
+  gateway: string;
+  dns1: string;
+  dns2: string;
+}
+const defaultIpForm: IIpForm = {
+  mode: "dhcp",
+  ip: "",
+  prefix: 24,
+  gateway: "",
+  dns1: "",
+  dns2: "",
+};
+
 function Network() {
   const { t } = useTranslation();
   const {
@@ -84,6 +119,109 @@ function Network() {
     handleStopPing,
   } = useData();
   const [showPingInput, setShowPingInput] = useState(false);
+
+  // --- static IP config (eth0/wlan0 only) ---
+  // Ethernet detail rows reuse selectedWifiInfo; the ethernet entry has no
+  // ssid, which is how we tell eth0 apart from a wlan0 STA network.
+  const isEthernetSelected =
+    !!state.selectedWifiInfo && !state.selectedWifiInfo.ssid;
+  const ipIface: "eth0" | "wlan0" | null =
+    state.activeTab !== "wifi" || !state.selectedWifiInfo
+      ? null
+      : isEthernetSelected
+      ? "eth0"
+      : "wlan0";
+  // eth0: always editable. wlan0: only from the currently-connected network's
+  // detail view (the config belongs to the interface, not the SSID).
+  const canEditIp =
+    !!ipIface &&
+    (isEthernetSelected ||
+      state.selectedWifiInfo?.status === NetworkStatus.Connected);
+
+  const [ipCfg, setIpCfg] = useState<IIpConfig | null>(null);
+  const [ipEditing, setIpEditing] = useState(false);
+  const [ipSaving, setIpSaving] = useState(false);
+  const [ipForm, setIpForm] = useState<IIpForm>(defaultIpForm);
+  const patchIpForm = (patch: Partial<IIpForm>) =>
+    setIpForm((prev) => ({ ...prev, ...patch }));
+
+  const loadIpConfig = async (iface: "eth0" | "wlan0") => {
+    try {
+      const { data } = await getIpConfigApi({ iface });
+      setIpCfg(data);
+      setIpForm({
+        mode: data.mode === "static" ? "static" : "dhcp",
+        ip: data.ip || "",
+        prefix: data.prefix >= 1 && data.prefix <= 32 ? data.prefix : 24,
+        gateway: data.gateway || "",
+        dns1: data.dns1 || "",
+        dns2: data.dns2 || "",
+      });
+    } catch (e) {
+      setIpCfg(null);
+    }
+  };
+
+  useEffect(() => {
+    if (state.wifiVisible && ipIface && canEditIp) {
+      setIpCfg(null);
+      setIpEditing(false);
+      loadIpConfig(ipIface);
+    }
+    if (!state.wifiVisible) {
+      setIpEditing(false);
+      setIpCfg(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.wifiVisible, ipIface, canEditIp]);
+
+  const onSaveIpConfig = () => {
+    if (!ipIface) return;
+    if (ipForm.mode === "static") {
+      if (
+        !isIpv4(ipForm.ip) ||
+        ipForm.prefix < 1 ||
+        ipForm.prefix > 32 ||
+        !isIpv4(ipForm.gateway) ||
+        (ipForm.dns1 && !isIpv4(ipForm.dns1)) ||
+        (ipForm.dns2 && !isIpv4(ipForm.dns2))
+      ) {
+        message.error(t("network.ipInvalid"));
+        return;
+      }
+    }
+    Modal.confirm({
+      title: t("network.ipConfirmTitle"),
+      content: t("network.ipConfirmContent"),
+      okText: t("common.confirm"),
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        setIpSaving(true);
+        try {
+          await setIpConfigApi(
+            ipForm.mode === "dhcp"
+              ? { iface: ipIface, mode: "dhcp" }
+              : {
+                  iface: ipIface,
+                  mode: "static",
+                  ip: ipForm.ip,
+                  prefix: ipForm.prefix,
+                  gateway: ipForm.gateway,
+                  dns1: ipForm.dns1 || undefined,
+                  dns2: ipForm.dns2 || undefined,
+                }
+          );
+          message.success(t("network.ipSaved"));
+          setIpEditing(false);
+          await loadIpConfig(ipIface);
+          setStates({ needRefresh: true });
+        } catch (e) {
+          /* supervisorRequest already toasts the error */
+        }
+        setIpSaving(false);
+      },
+    });
+  };
 
   return (
     <div className="rc-page-narrow px-16 pb-24">
@@ -925,18 +1063,132 @@ function Network() {
                 ? state.selectedWifiInfo
                 : state.selectedHalowInfo) && (
                 <div>
-                  <div className="font-bold border-b mt-24 py-6">
-                    {t("network.ipv4Address")}
+                  <div className="font-bold border-b mt-24 py-6 flex justify-between items-center">
+                    <span>{t("network.ipv4Address")}</span>
+                    {canEditIp && !ipEditing && (
+                      <Button
+                        size="small"
+                        onClick={() => setIpEditing(true)}
+                        disabled={!ipCfg}
+                      >
+                        {t("common.edit")}
+                      </Button>
+                    )}
                   </div>
+                  {canEditIp && ipEditing ? (
+                    <div className="py-10">
+                      <div className="flex justify-between items-center py-6">
+                        <span>{t("network.ipAssignment")}</span>
+                        <Select
+                          style={{ width: 160 }}
+                          value={ipForm.mode}
+                          onChange={(mode) => patchIpForm({ mode })}
+                          options={[
+                            { label: t("network.automatic"), value: "dhcp" },
+                            { label: t("network.staticIp"), value: "static" },
+                          ]}
+                        />
+                      </div>
+                      {ipForm.mode === "static" && (
+                        <>
+                          <div className="flex justify-between items-center py-6">
+                            <span>{t("network.ipAddress")}</span>
+                            <Input
+                              style={{ width: 160 }}
+                              value={ipForm.ip}
+                              placeholder="192.168.1.100"
+                              onChange={(e) =>
+                                patchIpForm({ ip: e.target.value.trim() })
+                              }
+                            />
+                          </div>
+                          <div className="flex justify-between items-center py-6">
+                            <span>{t("network.prefixLen")}</span>
+                            <div className="flex items-center">
+                              <span className="text-8d text-black opacity-60 mr-8 text-12">
+                                {prefixToMask(ipForm.prefix)}
+                              </span>
+                              <InputNumber
+                                style={{ width: 70 }}
+                                min={1}
+                                max={32}
+                                value={ipForm.prefix}
+                                onChange={(v) =>
+                                  patchIpForm({ prefix: Number(v) || 24 })
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div className="flex justify-between items-center py-6">
+                            <span>{t("network.gateway")}</span>
+                            <Input
+                              style={{ width: 160 }}
+                              value={ipForm.gateway}
+                              placeholder="192.168.1.1"
+                              onChange={(e) =>
+                                patchIpForm({ gateway: e.target.value.trim() })
+                              }
+                            />
+                          </div>
+                          <div className="flex justify-between items-center py-6">
+                            <span>{t("network.dns1")}</span>
+                            <Input
+                              style={{ width: 160 }}
+                              value={ipForm.dns1}
+                              placeholder="223.5.5.5"
+                              onChange={(e) =>
+                                patchIpForm({ dns1: e.target.value.trim() })
+                              }
+                            />
+                          </div>
+                          <div className="flex justify-between items-center py-6">
+                            <span>{t("network.dns2")}</span>
+                            <Input
+                              style={{ width: 160 }}
+                              value={ipForm.dns2}
+                              onChange={(e) =>
+                                patchIpForm({ dns2: e.target.value.trim() })
+                              }
+                            />
+                          </div>
+                        </>
+                      )}
+                      <div className="flex mt-12">
+                        <Button
+                          block
+                          onClick={() => {
+                            setIpEditing(false);
+                            if (ipIface) loadIpConfig(ipIface);
+                          }}
+                        >
+                          {t("common.cancel")}
+                        </Button>
+                        <Button
+                          block
+                          type="primary"
+                          style={{ marginLeft: 12 }}
+                          loading={ipSaving}
+                          onClick={onSaveIpConfig}
+                        >
+                          {t("common.save")}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
                   <div className="flex justify-between border-b py-6">
                     <span className="self-center">
                       {t("network.ipAssignment")}
                     </span>
                     <span className="text-8d text-black opacity-60">
-                      {(state.activeTab === "wifi"
-                        ? state.selectedWifiInfo
-                        : state.selectedHalowInfo
-                      )?.ipAssignment === WifiIpAssignmentRule.Automatic
+                      {(
+                        canEditIp && ipCfg
+                          ? ipCfg.mode === "dhcp"
+                          : (state.activeTab === "wifi"
+                              ? state.selectedWifiInfo
+                              : state.selectedHalowInfo
+                            )?.ipAssignment === WifiIpAssignmentRule.Automatic
+                      )
                         ? t("network.automatic")
                         : t("network.staticIp")}
                     </span>
@@ -977,6 +1229,8 @@ function Network() {
                       )?.dns2 || t("network.na")}
                     </span>
                   </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>

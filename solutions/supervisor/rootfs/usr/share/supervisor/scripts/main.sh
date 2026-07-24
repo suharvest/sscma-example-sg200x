@@ -618,6 +618,8 @@ function get_sta_connected() {
 function get_sta_current() {
     local out=$WORK_DIR/${FUNCNAME[0]}
     $WPA_CLI status 2>/dev/null >"$out"
+    echo "subnet_mask=$(_mask wlan0)" >>"$out"
+    echo "ip_assignment=$(_ipcfg_assignment wlan0)" >>"$out"
     echo "$out"
 }
 
@@ -630,10 +632,122 @@ function get_eth() {
     "macAddress": "$(_mac "$ifname")",
     "gateway": "$(_gateway "$ifname")",
     "dns1": "$(_dns "$ifname")",
-    "dns2": "$(_dns2 "$ifname")"
+    "dns2": "$(_dns2 "$ifname")",
+    "ipAssignment": $(_ipcfg_assignment "$ifname")
 }
 EOF
 }
+
+##################################################
+# static IP config (dhcpcd.conf, supervisor-managed blocks)
+# dhcpcd is the only IP manager on the device. Per-interface static blocks
+# already exist for usb0/wlan1 (NOT ours — never touch them). Supervisor owns
+# only marker-wrapped blocks:
+#   # supervisor-ipcfg <iface> begin ... # supervisor-ipcfg <iface> end
+readonly DHCPCD_CONF="/etc/dhcpcd.conf"
+readonly DHCPCD_SERVICE="/etc/init.d/S41dhcpcd"
+
+# Only eth0/wlan0 may be managed through the API.
+_ipcfg_check_iface() {
+    case "$1" in
+    eth0 | wlan0) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# WifiIpAssignmentRule enum used by the web UI: 1=Automatic(dhcp), 0=Static.
+# Detects ANY `interface <iface>` block carrying a static ip_address (marker
+# or hand-written), so the UI reflects reality even for manual edits.
+_ipcfg_assignment() {
+    awk -v i="$1" '
+        $1 == "interface" { f = ($2 == i) ? 1 : 0; next }
+        f && $1 == "static" && $2 ~ /^ip_address=/ { found = 1 }
+        END { print found ? 0 : 1 }' "$DHCPCD_CONF" 2>/dev/null
+}
+
+# Remove ONLY our marker-wrapped block for the given iface (idempotent).
+_ipcfg_strip() {
+    sed -i "/^# supervisor-ipcfg $1 begin$/,/^# supervisor-ipcfg $1 end$/d" "$DHCPCD_CONF"
+}
+
+# getIpConfig <iface>
+# -> {"iface","mode":"dhcp"|"static","ip","prefix","gateway","dns1","dns2"}
+function getIpConfig() {
+    local iface="$2"
+    _ipcfg_check_iface "$iface" || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    local block=$(sed -n "/^# supervisor-ipcfg $iface begin$/,/^# supervisor-ipcfg $iface end$/p" "$DHCPCD_CONF" 2>/dev/null)
+    local ipp=$(echo "$block" | awk -F'=' '/^static ip_address=/ {print $2}')
+    local ip="${ipp%%/*}"
+    local prefix=""
+    [ "$ipp" != "$ip" ] && prefix="${ipp##*/}"
+    local gw=$(echo "$block" | awk -F'=' '/^static routers=/ {print $2}')
+    local dns=$(echo "$block" | awk -F'=' '/^static domain_name_servers=/ {print $2}')
+    local mode="dhcp"
+    [ -n "$ipp" ] && mode="static"
+    cat <<EOF
+{
+    "iface": "$iface",
+    "mode": "$mode",
+    "ip": "$ip",
+    "prefix": $((prefix)),
+    "gateway": "$gw",
+    "dns1": "$(echo "$dns" | awk '{print $1}')",
+    "dns2": "$(echo "$dns" | awk '{print $2}')"
+}
+EOF
+}
+
+# setIpConfig <iface> dhcp
+# setIpConfig <iface> static <ip/prefix> <gateway> <dns1> [dns2]
+function setIpConfig() {
+    local iface="$2" mode="$3" ipp="$4" gw="$5" dns1="$6" dns2="$7"
+    _ipcfg_check_iface "$iface" || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    case "$mode" in
+    dhcp)
+        _ipcfg_strip "$iface"
+        ;;
+    static)
+        if [ -z "$ipp" ] || [ -z "$gw" ]; then
+            echo "$STR_FAILED"
+            return 1
+        fi
+        _ipcfg_strip "$iface"
+        {
+            echo "# supervisor-ipcfg $iface begin"
+            echo "interface $iface"
+            echo "static ip_address=$ipp"
+            echo "static routers=$gw"
+            [ -n "$dns1" ] && echo "static domain_name_servers=$dns1${dns2:+ $dns2}"
+            echo "# supervisor-ipcfg $iface end"
+        } >>"$DHCPCD_CONF"
+        ;;
+    *)
+        echo "$STR_FAILED"
+        return 1
+        ;;
+    esac
+    sync
+    # The stock init script's `reload` action calls `dhcpcd -s reload`, which
+    # is an invalid use of -s/--inform and does nothing. Apply the new config
+    # with stop -> flush target iface -> start: the flush happens while no
+    # dhcpcd is running (no mid-configure race), and it touches ONLY the
+    # whitelisted eth0/wlan0 — never usb0/wlan1. The `persistent` option in
+    # dhcpcd.conf keeps every other interface's address across the restart,
+    # so the USB recovery channel (192.168.42.1) is never interrupted.
+    "$DHCPCD_SERVICE" stop >/dev/null 2>&1
+    sleep 1
+    ip addr flush dev "$iface" >/dev/null 2>&1
+    "$DHCPCD_SERVICE" start >/dev/null 2>&1
+    echo "$STR_OK"
+}
+# static IP config
+##################################################
 
 function get_scan_list() {
     local out=$WORK_DIR/${FUNCNAME[0]}
@@ -794,6 +908,7 @@ function get_halow_current() {
     local out=$WORK_DIR/${FUNCNAME[0]}
     $WPA_CLI_S1G status 2>/dev/null > "$out"
     echo "subnet_mask=$(_mask halow0)" >> "$out"
+    echo "ip_assignment=$(_ipcfg_assignment halow0)" >> "$out"
     echo "$out"
 }
 

@@ -34,6 +34,37 @@ export const switchWiFiApi = async (data: { mode: WifiEnable }) =>
     method: "post",
     data,
   });
+// 静态 IP 配置（仅 eth0/wlan0）
+export interface IIpConfig {
+  iface: string;
+  mode: "dhcp" | "static";
+  ip: string;
+  prefix: number;
+  gateway: string;
+  dns1: string;
+  dns2: string;
+}
+export const getIpConfigApi = async (data: { iface: string }) =>
+  supervisorRequest<IIpConfig>({
+    url: "api/wifiMgr/getIpConfig",
+    method: "post",
+    data,
+  });
+export const setIpConfigApi = async (data: {
+  iface: string;
+  mode: "dhcp" | "static";
+  ip?: string;
+  prefix?: number;
+  gateway?: string;
+  dns1?: string;
+  dns2?: string;
+}) =>
+  supervisorRequest({
+    url: "api/wifiMgr/setIpConfig",
+    method: "post",
+    data,
+  });
+
 // wifi忘记
 export const forgetWiFiApi = async (data: { ssid: string }) =>
   supervisorRequest({

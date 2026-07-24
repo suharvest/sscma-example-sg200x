@@ -15,7 +15,8 @@
     "reading": "Reading…",
     "notDeclared": "Not declared.",
     "unknown": "unknown",
-    "model": "model"
+    "model": "model",
+    "edit": "Edit"
   },
   "menu": {
     "sectionConsole": "Console",
@@ -350,7 +351,13 @@
     "subnetMask": "Subnet Mask",
     "dns1": "DNS 1",
     "dns2": "DNS 2",
-    "na": "N/A"
+    "na": "N/A",
+    "prefixLen": "Prefix Length",
+    "gateway": "Gateway",
+    "ipInvalid": "Invalid IP configuration. Check the IP address, prefix length (1-32), gateway and DNS fields.",
+    "ipConfirmTitle": "Apply IP configuration?",
+    "ipConfirmContent": "If you are changing the network interface you are currently using to access this device, you will need to reconnect using the new address after saving. The USB direct connection address 192.168.42.1 always remains available as a recovery channel.",
+    "ipSaved": "IP configuration applied"
   },
   "security": {
     "user": "User",

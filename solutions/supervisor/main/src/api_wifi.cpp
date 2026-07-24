@@ -12,7 +12,20 @@
 #include <iostream>
 #include <string>
 
+#include <arpa/inet.h>
+
 #include "api_wifi.h"
+
+static bool _valid_ipv4(const std::string& s)
+{
+    struct in_addr addr;
+    return !s.empty() && inet_pton(AF_INET, s.c_str(), &addr) == 1;
+}
+
+static bool _valid_ipcfg_iface(const std::string& iface)
+{
+    return iface == "eth0" || iface == "wlan0";
+}
 
 static std::string parse_escaped_string(const std::string& input)
 {
@@ -41,7 +54,12 @@ json api_wifi::get_eth()
     if (ip.find("169.254") == 0) {
         ip = "";
     }
-    e["ipAssignment"] = 1; // static / dhcp
+    // ipAssignment (1=dhcp, 0=static) comes from main.sh, derived from the
+    // presence of a static block in dhcpcd.conf. Default to dhcp when absent
+    // (older script).
+    if (!e.contains("ipAssignment")) {
+        e["ipAssignment"] = 1;
+    }
     e["status"] = ip.empty() ? 1 : 3; // 1=not connected, 2=connecting, 3=connected
     return e;
 }
@@ -64,8 +82,10 @@ json api_wifi::get_sta_current()
     c["auth"] = c.value("key_mgmt", "").find("WPA") != std::string::npos ? 1 : 0;
     c["macAddress"] = c.value("address", "");
     c["ip"] = ip;
-    c["ipAssignment"] = 1; // static/dhcp
-    c["subnetMask"] = "255.255.255.0";
+    // main.sh appends ip_assignment (1=dhcp, 0=static, from dhcpcd.conf) and
+    // subnet_mask (real ifconfig mask) to the wpa_cli status dump.
+    c["ipAssignment"] = c.value("ip_assignment", "") == "0" ? 0 : 1;
+    c["subnetMask"] = c.value("subnet_mask", "");
 
     _wifi_mutex.lock();
     int status = 2; // 1=not connected, 2=connecting, 3=connected
@@ -310,6 +330,55 @@ api_status_t api_wifi::getWiFiInfoList(request_t req, response_t res)
 {
     std::lock_guard<std::mutex> lock(_wifi_mutex);
     response(res, 0, STR_OK, _nw_info);
+    trigger_scan();
+    return API_STATUS_OK;
+}
+
+api_status_t api_wifi::getIpConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    std::string iface = body.value("iface", "");
+    if (!_valid_ipcfg_iface(iface)) {
+        response(res, -1, "invalid iface");
+        return API_STATUS_OK;
+    }
+    auto&& cfg = parse_result(script(__func__, iface));
+    if (!cfg.is_object() || cfg.value("mode", "").empty()) {
+        response(res, -1, STR_FAILED);
+        return API_STATUS_OK;
+    }
+    response(res, 0, STR_OK, cfg);
+    return API_STATUS_OK;
+}
+
+api_status_t api_wifi::setIpConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    std::string iface = body.value("iface", "");
+    std::string mode = body.value("mode", "");
+    if (!_valid_ipcfg_iface(iface) || (mode != "dhcp" && mode != "static")) {
+        response(res, -1, "invalid params");
+        return API_STATUS_OK;
+    }
+
+    std::string result;
+    if (mode == "dhcp") {
+        result = script(__func__, iface, mode);
+    } else {
+        std::string ip = body.value("ip", "");
+        int prefix = body.value("prefix", 0);
+        std::string gateway = body.value("gateway", "");
+        std::string dns1 = body.value("dns1", "");
+        std::string dns2 = body.value("dns2", "");
+        if (!_valid_ipv4(ip) || prefix < 1 || prefix > 32 || !_valid_ipv4(gateway)
+            || (!dns1.empty() && !_valid_ipv4(dns1))
+            || (!dns2.empty() && !_valid_ipv4(dns2))) {
+            response(res, -1, "invalid params");
+            return API_STATUS_OK;
+        }
+        result = script(__func__, iface, mode, ip + "/" + std::to_string(prefix), gateway, dns1, dns2);
+    }
+    response(res, result == STR_OK ? 0 : -1, result);
     trigger_scan();
     return API_STATUS_OK;
 }

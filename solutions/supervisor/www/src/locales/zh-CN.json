@@ -15,7 +15,8 @@
     "reading": "读取中…",
     "notDeclared": "未声明。",
     "unknown": "未知",
-    "model": "模型"
+    "model": "模型",
+    "edit": "编辑"
   },
   "menu": {
     "sectionConsole": "控制台",
@@ -348,7 +349,13 @@
     "subnetMask": "子网掩码",
     "dns1": "DNS 1",
     "dns2": "DNS 2",
-    "na": "N/A"
+    "na": "N/A",
+    "prefixLen": "前缀长度",
+    "gateway": "网关",
+    "ipInvalid": "IP 配置无效，请检查 IP 地址、前缀长度（1-32）、网关和 DNS。",
+    "ipConfirmTitle": "应用 IP 配置？",
+    "ipConfirmContent": "若修改的是当前访问所用的网络接口，保存后需用新地址重新访问设备；USB 直连地址 192.168.42.1 始终可用作恢复通道。",
+    "ipSaved": "IP 配置已应用"
   },
   "security": {
     "user": "用户",
