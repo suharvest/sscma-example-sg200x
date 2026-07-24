@@ -37,6 +37,64 @@ bool in_nodered_mode()
     return api_device::read_run_mode_file() == "nodered";
 }
 
+// Wedge-defense (B): true if a VPSS group with GrpID 0 is still present in the
+// driver. Parses /proc/cvitek/vpss and looks for a data row (leading "# N")
+// under the "VPSS GRP ATTR" table whose GrpID is exactly 0. When no app owns
+// the camera the GRP ATTR table has no data rows, so this returns false.
+bool vpss_grp0_present()
+{
+    std::ifstream f("/proc/cvitek/vpss");
+    if (!f.is_open()) {
+        return false; // driver not exposing the file -> nothing to wait on
+    }
+    std::string line;
+    bool in_grp_attr = false;
+    while (std::getline(f, line)) {
+        if (line.find("VPSS GRP ATTR") != std::string::npos) {
+            in_grp_attr = true;
+            continue;
+        }
+        if (!in_grp_attr) {
+            continue;
+        }
+        if (line.find("-----") != std::string::npos) {
+            break; // reached the next section without finding grp 0
+        }
+        size_t h = line.find('#');
+        if (h == std::string::npos) {
+            continue; // column-header row ("GrpID ...") has no '#'
+        }
+        size_t p = h + 1;
+        while (p < line.size() && line[p] == ' ') {
+            ++p;
+        }
+        // GrpID token is exactly "0" (not 10, 20, ...)
+        if (p < line.size() && line[p] == '0' &&
+            (p + 1 >= line.size() || !std::isdigit(static_cast<unsigned char>(line[p + 1])))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Poll up to max_ms for Grp(0) to be released after an app stop. Returns true
+// if released in time, false on timeout (caller logs and proceeds). Cheap
+// fallback: if the proc file is unreadable, vpss_grp0_present() returns false
+// so this returns immediately.
+bool wait_vpss_grp0_released(int max_ms)
+{
+    const int step_ms = 200;
+    int waited = 0;
+    while (waited < max_ms) {
+        if (!vpss_grp0_present()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
+        waited += step_ms;
+    }
+    return !vpss_grp0_present();
+}
+
 } // namespace
 
 api_app::api_app()
@@ -459,8 +517,19 @@ void api_app::sh_stop(const std::string& script_path, app_op& o)
         LOGE("%s", o.stop_err.c_str());
         return;
     }
-    // VPSS/camera release grace period (kernel driver is fragile, do not rush).
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    // Wedge-defense (B): instead of a blind 2s sleep, actively confirm the VPSS
+    // group the old app owned is released before we let the next app start.
+    // Starting while Grp(0) is still alive is exactly what produces
+    // "Grp(0) is occupied" / "get chn frame fail". Poll up to 5s; if it still
+    // has not released, log loudly but proceed (the driver may be wedged — the
+    // next start will fail cleanly rather than us hanging forever).
+    if (wait_vpss_grp0_released(5000)) {
+        LOGD("VPSS Grp(0) released after stopping %s", script_path.c_str());
+    } else {
+        LOGW("VPSS Grp(0) still present 5s after stopping %s - starting next app anyway", script_path.c_str());
+    }
+    // Small settle margin for the VI/SYS side after the group is gone.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
 }
 
 // worker thread: start script_path (already fs-validated on the poll thread).
