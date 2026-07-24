@@ -338,6 +338,15 @@ const HomeAssistantCard = () => {
         </Form>
       </div>
 
+      <div className="font-bold text-16 mt-24">{t("ha.discoveryTitle")}</div>
+      <div className="mt-12">
+        <Alert
+          type="info"
+          showIcon
+          message={t("ha.discoveryHint")}
+        />
+      </div>
+
       <div className="font-bold text-16 mt-24">{t("ha.rtspTitle")}</div>
       <div className="mt-12">
         <div className="text-black opacity-60 mb-8 text-13">

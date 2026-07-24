@@ -16,7 +16,7 @@ import {
   setIpConfigApi,
   IIpConfig,
 } from "@/api/network";
-import { LoadingOutlined, InfoCircleOutlined, PlusOutlined } from "@ant-design/icons";
+import { LoadingOutlined, InfoCircleOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
 import WarnImg from "@/assets/images/warn.png";
 import LockImg from "@/assets/images/svg/lock.svg";
 import ConnectedImg from "@/assets/images/svg/connected.svg";
@@ -243,7 +243,7 @@ function Network() {
           </div>
           <div className="border-b text-16">
             <div
-              className="flex justify-between border-t py-10"
+              className="flex justify-between items-center border-t py-10 cursor-pointer hover:bg-black/[0.02] -mx-8 px-8 rounded-8"
               onClick={onClickEthernetItem}
             >
               <span className="flex flex-1 truncate">
@@ -251,6 +251,10 @@ function Network() {
                 <span className="self-center truncate">
                   {t("network.ethernet")}
                 </span>
+              </span>
+              <span className="flex items-center text-13 text-muted shrink-0">
+                {t("network.viewConfig")}
+                <RightOutlined className="ml-6 text-11" />
               </span>
             </div>
           </div>

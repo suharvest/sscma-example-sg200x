@@ -84,6 +84,11 @@ const DELAY_FLUSH_MS = 1000;
 const LIVE_EDGE_CHECK_MS = 500;
 const LIVE_EDGE_MAX_LAG = 0.6; // seconds behind buffered end before snapping
 const LIVE_EDGE_TARGET = 0.15; // seconds from the edge to land on after a snap
+/** Auto-reconnect: attempts within the grace window keep status "connecting"
+ *  (a quick app restart shouldn't flash the RTSP fallback); beyond it the UI
+ *  shows "error" while the hook keeps retrying at the capped interval. */
+const RECONNECT_GRACE = 3;
+const RECONNECT_MAX_MS = 5000;
 
 /** Parse an optional top-level `classification` object (defensive). */
 function parseClassification(
@@ -196,6 +201,14 @@ export default function useDebugStream({
   const [lastFrameDelay, setLastFrameDelay] = useState<number | null>(null);
   const [lastFrameTs, setLastFrameTs] = useState<number | null>(null);
 
+  // Auto-reconnect: a dropped stream (the camera app restarting to apply a
+  // config/orientation change, a transient network blip) retries on its own
+  // instead of getting stuck. Bumping reconnectNonce re-runs the connect
+  // effect; attempts drive the backoff and the connecting→error handoff.
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+  const attemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const videoWsRef = useRef<WebSocket | null>(null);
   const resultsWsRef = useRef<WebSocket | null>(null);
   const jmuxerRef = useRef<JMuxer | null>(null);
@@ -255,8 +268,13 @@ export default function useDebugStream({
   }, [videoRef]);
 
   useEffect(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     if (!enabled) {
       cleanup();
+      attemptRef.current = 0;
       setStatus("idle");
       setOverlay(null);
       setLastFrameDelay(null);
@@ -264,12 +282,40 @@ export default function useDebugStream({
       return;
     }
     if (!wsUrl && !resultsUrl) {
-      setStatus("error");
+      setStatus("error"); // config problem (no endpoints) — not retryable
       return;
     }
 
     let disposed = false;
-    setStatus("connecting");
+
+    // A transient drop (app restarting to apply orientation, network blip)
+    // schedules a reconnect with backoff instead of getting stuck. The first
+    // few attempts stay "connecting" (a brief restart shouldn't flash the RTSP
+    // fallback); after the grace window it surfaces "error" but keeps retrying
+    // underneath, so the stream recovers on its own when the app is back.
+    const scheduleReconnect = () => {
+      if (disposed || !enabled) return;
+      cleanup();
+      attemptRef.current += 1;
+      setStatus(attemptRef.current <= RECONNECT_GRACE ? "connecting" : "error");
+      const delay = Math.min(1500 * attemptRef.current, RECONNECT_MAX_MS);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        setReconnectNonce((n) => n + 1);
+      }, delay);
+    };
+    const markStreaming = () => {
+      attemptRef.current = 0;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      setStatus("streaming");
+    };
+
+    // Fresh (user-initiated) connect shows "connecting"; a reconnect re-run
+    // keeps the status scheduleReconnect already set (connecting or error).
+    if (attemptRef.current === 0) setStatus("connecting");
     setMessages([]);
     setOverlay(null);
     frameDelayRef.current = null;
@@ -291,6 +337,7 @@ export default function useDebugStream({
         );
         // Results-only apps (no video ws) still count as "streaming".
         if (!wsUrl) {
+          attemptRef.current = 0;
           setStatus("streaming");
         }
       }
@@ -336,7 +383,7 @@ export default function useDebugStream({
       try {
         ws = new WebSocket(wsUrl);
       } catch (e) {
-        setStatus("error");
+        scheduleReconnect();
         return dispose;
       }
       ws.binaryType = "arraybuffer";
@@ -345,8 +392,7 @@ export default function useDebugStream({
       // No infinite loading: fail hard if nothing arrives in time.
       timeoutRef.current = setTimeout(() => {
         if (!disposed) {
-          cleanup();
-          setStatus("error");
+          scheduleReconnect();
         }
       }, connectTimeout);
 
@@ -373,19 +419,13 @@ export default function useDebugStream({
           clearTimeout(timeoutRef.current);
           timeoutRef.current = null;
         }
-        setStatus("streaming");
+        markStreaming();
       };
       ws.onerror = () => {
-        if (!disposed) {
-          cleanup();
-          setStatus("error");
-        }
+        if (!disposed) scheduleReconnect();
       };
       ws.onclose = () => {
-        if (!disposed) {
-          cleanup();
-          setStatus("error");
-        }
+        if (!disposed) scheduleReconnect();
       };
     }
 
@@ -400,8 +440,7 @@ export default function useDebugStream({
         if (!wsUrl) {
           resultsTimeoutRef.current = setTimeout(() => {
             if (!disposed) {
-              cleanup();
-              setStatus("error");
+              scheduleReconnect();
             }
           }, connectTimeout);
         }
@@ -415,7 +454,7 @@ export default function useDebugStream({
           // wait for the first business message. With video present, video
           // drives the status (leave it alone).
           if (!wsUrl) {
-            setStatus("streaming");
+            markStreaming();
           }
         };
         rws.onmessage = (evt: MessageEvent) => {
@@ -441,29 +480,21 @@ export default function useDebugStream({
         };
         // Results channel failures are non-fatal when video works.
         rws.onerror = () => {
-          if (!disposed && !wsUrl) {
-            cleanup();
-            setStatus("error");
-          }
+          if (!disposed && !wsUrl) scheduleReconnect();
         };
         // Drop after connecting: tear down and (results-only) surface the
         // error, unless we're disposing intentionally.
         rws.onclose = () => {
-          if (!disposed && !wsUrl) {
-            cleanup();
-            setStatus("error");
-          }
+          if (!disposed && !wsUrl) scheduleReconnect();
         };
       } catch (e) {
-        if (!wsUrl) {
-          setStatus("error");
-        }
+        if (!wsUrl) scheduleReconnect();
       }
     }
 
     return dispose;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, wsUrl, resultsUrl]);
+  }, [enabled, wsUrl, resultsUrl, reconnectNonce]);
 
   return { status, messages, overlay, lastFrameDelay, lastFrameTs };
 }
