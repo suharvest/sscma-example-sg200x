@@ -1,0 +1,46 @@
+#!/bin/sh
+
+# Post-installation script for weather-classifier
+
+echo "Installing Weather Classifier..."
+
+# Create data directories if not exists
+mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
+
+# Set permissions
+chmod +x /usr/local/bin/weather-classifier
+chmod +x /etc/init.d/K92weather-classifier 2>/dev/null || true
+
+# Register with the supervisor app gallery (vendor path):
+# app debs ship their own manifest + integration docs and install them into
+# /userdata/local/apps/, which the supervisor scans (user manifests there
+# override built-ins with the same id).
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/weather-classifier
+for f in weather-classifier.json weather-classifier.md weather-classifier.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/weather-classifier.json"
+
+echo "Weather Classifier installed successfully!"
+echo ""
+echo "Model directory: /userdata/local/models/"
+echo "  - weather_mobilenetv3_small_bf16.cvimodel  (weather classification)"
+echo ""
+echo "Labels file:        /usr/share/weather-classifier/labels.txt"
+echo "Configuration file: /etc/weather-classifier.conf"
+echo ""
+echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:      recamera/weather/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+# Migration: remove the auto-start (S-prefixed) script from older external
+# package layouts. Gallery apps must NOT start at boot — only the supervisor's
+# app_restore starts the single active application (K-prefix is skipped
+# by SysVinit but still invocable by path).
+rm -f /etc/init.d/S92weather-classifier
+
+exit 0

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 210" role="img" aria-label="Weather classification preview">
+  <style>
+    .bg{fill:#eef2e6}.panel{fill:#ffffff}.mut{fill:#c8d2bb}
+    .cloud{fill:#dbe4cd}.txt{fill:#3a4633}.row{fill:#dbe4cd}
+    @media (prefers-color-scheme:dark){
+      .bg{fill:#161a13}.panel{fill:#1e241a}.mut{fill:#3a4633}
+      .cloud{fill:#2b3324}.txt{fill:#c7d3b6}.row{fill:#2b3324}
+    }
+  </style>
+  <rect class="bg" width="400" height="210" rx="10"/>
+  <rect class="panel" x="14" y="14" width="372" height="182" rx="8"/>
+  <!-- sun peeking behind the cloud -->
+  <g stroke="#8fc31f" stroke-width="3" fill="none" stroke-linecap="round">
+    <circle cx="88" cy="72" r="18"/>
+    <path d="M88 42 v-8 M88 102 v3 M58 72 h-8 M118 72 h4 M67 51 l-6 -6 M109 51 l6 -6 M67 93 l-3 3"/>
+  </g>
+  <!-- cloud -->
+  <g>
+    <path class="cloud" d="M70 128
+      a20 20 0 0 1 20 -20
+      a26 26 0 0 1 48 -8
+      a18 18 0 0 1 22 18
+      a15 15 0 0 1 -4 30
+      h-70
+      a20 20 0 0 1 -16 -20 z"/>
+    <path d="M70 128 a20 20 0 0 1 20 -20 a26 26 0 0 1 48 -8 a18 18 0 0 1 22 18 a15 15 0 0 1 -4 30 h-70 a20 20 0 0 1 -16 -20 z"
+          fill="none" stroke="#8fc31f" stroke-width="2.5" stroke-linejoin="round"/>
+  </g>
+  <!-- rain strokes under the cloud -->
+  <g stroke="#8fc31f" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M92 160 l-6 14"/>
+    <path d="M116 160 l-6 14"/>
+    <path d="M140 160 l-6 14"/>
+  </g>
+  <!-- detection bracket around the scene -->
+  <g fill="none" stroke="#8fc31f" stroke-width="2.5" stroke-linecap="round">
+    <path d="M42 34 h-6 v6 M172 34 h6 v6 M42 186 h-6 v-6 M172 186 h6 v-6"/>
+  </g>
+  <!-- classification panel -->
+  <g font-family="monospace" font-size="12">
+    <rect x="210" y="46" width="150" height="26" rx="6" fill="#8fc31f"/>
+    <text x="220" y="63" fill="#1a2410" font-weight="bold">rainy    0.87</text>
+    <rect class="row" x="210" y="80" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="96">cloudy   0.08</text>
+    <rect class="row" x="210" y="112" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="128">foggy    0.03</text>
+    <rect class="row" x="210" y="144" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="160">clear    0.01</text>
+  </g>
+</svg>

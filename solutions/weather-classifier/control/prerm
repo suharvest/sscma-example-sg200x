@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Pre-removal script for weather-classifier
+
+echo "Removing Weather Classifier..."
+
+# Stop the service if running
+for script in /etc/init.d/[SK]92weather-classifier; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/weather-classifier 2>/dev/null || true
+
+echo "Weather Classifier removed."
+
+exit 0

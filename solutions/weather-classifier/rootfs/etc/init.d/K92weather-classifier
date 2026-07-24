@@ -1,0 +1,167 @@
+#!/bin/sh
+
+### BEGIN INIT INFO
+# Provides:          weather-classifier
+# Required-Start:    $network $local_fs
+# Required-Stop:     $network $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Weather Classifier (scene weather classification)
+### END INIT INFO
+
+NAME=weather-classifier
+DAEMON=/usr/local/bin/weather-classifier
+PIDFILE=/var/run/$NAME.pid
+LOGFILE=/var/log/$NAME.log
+
+# Library paths required for CVI SDK
+export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
+
+# Load global reCamera config (MQTT_HOST, MQTT_PORT, etc.)
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+
+# Load solution-specific config (can override global settings)
+[ -f /etc/weather-classifier.conf ] && . /etc/weather-classifier.conf
+
+# Build options from config
+DAEMON_OPTS=""
+[ -n "$MODEL" ] && DAEMON_OPTS="$DAEMON_OPTS --model $MODEL"
+[ -n "$LABELS" ] && DAEMON_OPTS="$DAEMON_OPTS --labels $LABELS"
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS -m $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS -p $MQTT_PORT"
+[ -n "$MQTT_TOPIC" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
+[ -n "$CAMERA_WIDTH" ] && DAEMON_OPTS="$DAEMON_OPTS --camera-width $CAMERA_WIDTH"
+[ -n "$CAMERA_HEIGHT" ] && DAEMON_OPTS="$DAEMON_OPTS --camera-height $CAMERA_HEIGHT"
+[ -n "$CAMERA_FPS" ] && DAEMON_OPTS="$DAEMON_OPTS --camera-fps $CAMERA_FPS"
+[ -n "$STREAM_WIDTH" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-width $STREAM_WIDTH"
+[ -n "$STREAM_HEIGHT" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-height $STREAM_HEIGHT"
+[ -n "$STREAM_FPS" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-fps $STREAM_FPS"
+[ -n "$PRINT_INTERVAL" ] && DAEMON_OPTS="$DAEMON_OPTS --print-interval $PRINT_INTERVAL"
+[ "$RTSP_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-rtsp"
+[ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
+
+# Stop conflicting services that use the camera.
+# NOTE: the supervisor is deliberately NOT stopped here — it is the app
+# manager that orchestrates starting/stopping this service.
+stop_conflicting_services() {
+    echo "Stopping conflicting services..."
+    for prefix in S K; do
+        [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
+        [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
+    done
+    # Stop other camera-using solutions
+    for svc in face-analysis facemesh-reader ppocr-reader detection-blur retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector yolo-detector; do
+        for script in /etc/init.d/[SK]*${svc}; do
+            [ -x "$script" ] && "$script" stop 2>/dev/null || true
+        done
+    done
+    sleep 2
+}
+
+start() {
+    echo "Starting $NAME..."
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is already running (PID: $PID)"
+            return 1
+        fi
+        rm -f $PIDFILE
+    fi
+
+    stop_conflicting_services
+
+    start-stop-daemon -S -b -m -p $PIDFILE -a /bin/sh -- -c "exec $DAEMON $DAEMON_OPTS >> $LOGFILE 2>&1"
+    if [ $? -ne 0 ]; then
+        echo "$NAME failed to start (start-stop-daemon error)"
+        rm -f $PIDFILE
+        return 1
+    fi
+
+    # Stability window: a fatal init error (e.g. a missing model) makes the
+    # daemon exit within the first second. Poll the PID so a crash-on-start is
+    # never reported as success. sleep 1, then 3 x 0.5s liveness checks.
+    sleep 1
+    i=0
+    while [ $i -lt 3 ]; do
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+            echo "$NAME exited immediately after start"
+            rm -f $PIDFILE
+            return 1
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+    echo "OK"
+    return 0
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    if [ ! -f $PIDFILE ]; then
+        echo "$NAME is not running"
+        return 0
+    fi
+    PID=$(cat $PIDFILE 2>/dev/null)
+    if [ -z "$PID" ]; then
+        rm -f $PIDFILE
+        echo "$NAME is not running"
+        return 0
+    fi
+    # Send TERM but DO NOT drop the pidfile / report OK yet: the app needs time
+    # to release VPSS/camera (stopStream, debug_stream_destroy, RTSP/VENC deinit
+    # can take >2s). Reporting OK before the process is gone lets the switcher
+    # start the next app while this one still owns the camera -> VPSS collision /
+    # kernel oops. Poll /proc/$PID until the process actually exits.
+    start-stop-daemon -K -p $PIDFILE -s TERM 2>/dev/null || true
+    i=0
+    while [ $i -lt 16 ]; do            # up to ~8s graceful (16 x 0.5s)
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        i=$((i + 1))
+    done
+    # Refused SIGTERM: escalate to SIGKILL, then a short confirm window.
+    kill -KILL "$PID" 2>/dev/null || true
+    j=0
+    while [ $j -lt 6 ]; do             # up to ~3s after KILL (6 x 0.5s)
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        j=$((j + 1))
+    done
+    # Still alive (e.g. uninterruptible D-state): keep the pidfile as a
+    # diagnostic and report failure so the caller does NOT assume the camera
+    # is free.
+    echo "$NAME failed to stop (PID $PID still alive)"
+    return 1
+}
+
+restart() {
+    stop
+    sleep 2
+    start
+}
+
+status() {
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is running (PID: $PID)"
+            return 0
+        fi
+        # Stale PID file (process gone): drop it so we do not misreport.
+        rm -f $PIDFILE
+    fi
+    echo "$NAME is not running"
+    return 1
+}
+
+case "$1" in
+    start) start; exit $? ;;
+    stop) stop; exit $? ;;
+    restart) restart; exit $? ;;
+    status) status; exit $? ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+
+exit 0
