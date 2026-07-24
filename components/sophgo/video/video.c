@@ -119,11 +119,23 @@ static void applyCameraConf(void) {
 int deinitVideo(void) {
     app_ipcam_FvMonitor_Stop();
     if (is_started) {
-        APP_CHK_RET(app_ipcam_Venc_Stop(APP_VENC_ALL), "Venc Stop");
-        APP_CHK_RET(app_ipcam_Vpss_DeInit(), "Vpss DeInit");
-        APP_CHK_RET(app_ipcam_Vi_DeInit(), "Vi DeInit");
-        APP_CHK_RET(app_ipcam_Sys_DeInit(), "System DeInit");
+        /* Wedge-defense (A): the teardown chain VENC->VPSS->VI->SYS must run to
+         * completion even if an earlier step errors. The old APP_CHK_RET
+         * early-returned on the first failure, so a VENC or VPSS hiccup skipped
+         * VPSS/VI/SYS DeInit -> Grp(0) and VI resources leak and the next app
+         * gets "Grp(0) is occupied" / a corrupted pipeline. Run every step,
+         * keep the first error, and only clear is_started at the end. */
+        int rc, first = 0;
+        rc = app_ipcam_Venc_Stop(APP_VENC_ALL);
+        if (rc != CVI_SUCCESS) { APP_PROF_LOG_PRINT(LEVEL_ERROR, "Venc Stop failed %#x\n", rc); if (!first) first = rc; }
+        rc = app_ipcam_Vpss_DeInit();
+        if (rc != CVI_SUCCESS) { APP_PROF_LOG_PRINT(LEVEL_ERROR, "Vpss DeInit failed %#x\n", rc); if (!first) first = rc; }
+        rc = app_ipcam_Vi_DeInit();
+        if (rc != CVI_SUCCESS) { APP_PROF_LOG_PRINT(LEVEL_ERROR, "Vi DeInit failed %#x\n", rc); if (!first) first = rc; }
+        rc = app_ipcam_Sys_DeInit();
+        if (rc != CVI_SUCCESS) { APP_PROF_LOG_PRINT(LEVEL_ERROR, "System DeInit failed %#x\n", rc); if (!first) first = rc; }
         is_started = false;
+        return first;
     }
     return 0;
 }

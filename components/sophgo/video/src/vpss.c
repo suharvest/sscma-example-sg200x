@@ -34,6 +34,7 @@ APP_PARAM_VPSS_CFG_T *app_ipcam_Vpss_Param_Get(void)
 static int app_ipcam_Vpss_Destroy(VPSS_GRP VpssGrp)
 {
     CVI_S32 s32Ret = CVI_SUCCESS;
+    CVI_S32 s32FirstErr = CVI_SUCCESS; /* remember first failure, keep tearing down */
 
     APP_VPSS_GRP_CFG_T *pstVpssGrpCfg = &g_pstVpssCfg->astVpssGrpCfg[VpssGrp];
     if (!pstVpssGrpCfg->bCreate) {
@@ -41,13 +42,18 @@ static int app_ipcam_Vpss_Destroy(VPSS_GRP VpssGrp)
         return CVI_SUCCESS;
     }
 
+    /* Wedge-defense (A): teardown must be atomic. Never early-return on an
+     * intermediate failure or CVI_VPSS_DestroyGrp gets skipped and the group
+     * leaks ("Grp(0) is occupied" on the next start). Run EVERY step, disable
+     * every channel, accumulate the first error and return it at the end. */
     for (VPSS_CHN VpssChn = 0; VpssChn < VPSS_MAX_PHY_CHN_NUM; VpssChn++) {
         if (pstVpssGrpCfg->abChnCreate[VpssChn]) {
             s32Ret = CVI_VPSS_DisableChn(VpssGrp, VpssChn);
             if (s32Ret != CVI_SUCCESS) {
                 APP_PROF_LOG_PRINT(LEVEL_ERROR, "CVI_VPSS_DisableChn failed with %#x!\n", s32Ret);
-                return CVI_FAILURE;
+                if (s32FirstErr == CVI_SUCCESS) s32FirstErr = s32Ret;
             }
+            /* clear the flag regardless: the channel is no longer usable */
             pstVpssGrpCfg->abChnCreate[VpssChn] = CVI_FALSE;
         }
     }
@@ -55,18 +61,22 @@ static int app_ipcam_Vpss_Destroy(VPSS_GRP VpssGrp)
     s32Ret = CVI_VPSS_StopGrp(VpssGrp);
     if (s32Ret != CVI_SUCCESS) {
         APP_PROF_LOG_PRINT(LEVEL_ERROR, "CVI_VPSS_StopGrp failed with %#x!\n", s32Ret);
-        return CVI_FAILURE;
+        if (s32FirstErr == CVI_SUCCESS) s32FirstErr = s32Ret;
     }
 
+    /* Always attempt DestroyGrp even if StopGrp/DisableChn failed above — this
+     * is the call that actually releases the group id back to the driver. */
     s32Ret = CVI_VPSS_DestroyGrp(VpssGrp);
     if (s32Ret != CVI_SUCCESS) {
         APP_PROF_LOG_PRINT(LEVEL_ERROR, "CVI_VPSS_DestroyGrp failed with %#x!\n", s32Ret);
-        return CVI_FAILURE;
+        if (s32FirstErr == CVI_SUCCESS) s32FirstErr = s32Ret;
     }
 
+    /* Mark the group torn down so a subsequent Create path is not blocked by a
+     * stale bCreate; the driver-side id is gone after DestroyGrp above. */
     pstVpssGrpCfg->bCreate = CVI_FALSE;
 
-    return CVI_SUCCESS;
+    return s32FirstErr;
 }
 
 static int app_ipcam_Vpss_Create(VPSS_GRP VpssGrp)
@@ -219,22 +229,28 @@ static int app_ipcam_Vpss_Bind(VPSS_GRP VpssGrp)
 int app_ipcam_Vpss_DeInit(void)
 {
     CVI_S32 s32Ret = CVI_SUCCESS;
+    CVI_S32 s32FirstErr = CVI_SUCCESS;
 
+    /* Wedge-defense (A): never early-return between Unbind and Destroy, and
+     * never skip a later group because an earlier one failed. A skipped
+     * DestroyGrp is exactly what leaks Grp(0). Unbind failure must NOT abort
+     * the Destroy that frees the group id. */
     for (CVI_U32 VpssGrp = 0; VpssGrp < g_pstVpssCfg->u32GrpCnt; VpssGrp++) {
         s32Ret = app_ipcam_Vpss_Unbind(VpssGrp);
         if (s32Ret != CVI_SUCCESS) {
             APP_PROF_LOG_PRINT(LEVEL_ERROR, "Vpss grp(%d) Unbind failed with 0x%x!\n", VpssGrp, s32Ret);
-            return s32Ret;
+            if (s32FirstErr == CVI_SUCCESS) s32FirstErr = s32Ret;
+            /* fall through: still destroy the group */
         }
 
         s32Ret = app_ipcam_Vpss_Destroy(VpssGrp);
         if (s32Ret != CVI_SUCCESS) {
             APP_PROF_LOG_PRINT(LEVEL_ERROR, "Vpss grp(%d) Destroy failed with 0x%x!\n", VpssGrp, s32Ret);
-            return s32Ret;
+            if (s32FirstErr == CVI_SUCCESS) s32FirstErr = s32Ret;
         }
     }
 
-    return CVI_SUCCESS;
+    return s32FirstErr;
 }
 
 int app_ipcam_Vpss_Init(void)

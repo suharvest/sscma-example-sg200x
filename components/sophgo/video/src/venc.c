@@ -2,6 +2,8 @@
 #include <sys/prctl.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include <cvi_type.h>
 #include <cvi_vpss.h>
@@ -908,14 +910,36 @@ static void* Thread_Streaming_Proc(void* pArgs)
     prctl(PR_SET_NAME, TaskName, 0, 0, 0);
     APP_PROF_LOG_PRINT(LEVEL_INFO, "Venc channel_%d start running\n", VencChn);
 
+    /* Wedge-defense watchdog (C): a corrupted VPSS pipeline makes
+     * CVI_VPSS_GetChnFrame fail forever ("get chn frame fail"). The old code
+     * spun on `continue` indefinitely, holding VENC/VPSS resources and wedging
+     * the whole device (SSH/HTTP go dark). Instead, count CONSECUTIVE failures
+     * and, past a threshold (~10 x 3s GetChnFrame timeout ~= 30s), signal the
+     * process to shut down CLEANLY (SIGTERM -> app stop flag -> main loop exits
+     * -> deinitVideo() runs the ordered VENC->VPSS->VI->SYS teardown from A).
+     * We do NOT abort()/_exit() — a hard exit would skip DestroyGrp and leak
+     * Grp(0). A clean exit keeps the device SSH-manageable and lets the
+     * supervisor restart the app. */
+    unsigned int u32GetFrameFailCnt = 0;
+    const unsigned int u32GetFrameFailMax = 10;
+
     pastVencChnCfg->bStart = CVI_TRUE;
     while (pastVencChnCfg->bStart) {
         VIDEO_FRAME_INFO_S stVpssFrame = { 0 };
 
         if (pastVencChnCfg->enBindMode == VENC_BIND_DISABLE) {
             if (CVI_VPSS_GetChnFrame(vpssGrp, vpssChn, &stVpssFrame, 3000) != CVI_SUCCESS) {
+                if (++u32GetFrameFailCnt >= u32GetFrameFailMax) {
+                    APP_PROF_LOG_PRINT(LEVEL_ERROR,
+                        "VencChn-%d get chn frame fail %u times in a row (grp %d chn %d) - "
+                        "VPSS pipeline looks wedged; requesting clean shutdown via SIGTERM\n",
+                        VencChn, u32GetFrameFailCnt, vpssGrp, vpssChn);
+                    kill(getpid(), SIGTERM); /* -> app stop flag -> ordered teardown */
+                    break;                    /* stop spinning immediately */
+                }
                 continue;
             }
+            u32GetFrameFailCnt = 0; /* healthy frame: reset the watchdog */
             APP_PROF_LOG_PRINT(LEVEL_DEBUG, "VencChn-%d Get Frame takes %u ms \n", VencChn, (GetCurTimeInMsec() - iTime));
             iTime = GetCurTimeInMsec();
 
