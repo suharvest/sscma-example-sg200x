@@ -1,221 +1,401 @@
-#include <iostream>
+#include <getopt.h>
 #include <signal.h>
 #include <syslog.h>
 #include <unistd.h>
-#include <quirc.h>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <utility>
 #include <vector>
+
+#include <quirc.h>
+
+#include <debug_stream.h>
+#include <ha_mqtt.h>
+
+#include "mqtt_payload.h"
 #include "rtsp_demo.h"
 #include "video.h"
 
-// Signal handler for program termination
-static CVI_VOID app_ipcam_ExitSig_handle(CVI_S32 signo) {
+using Clock = std::chrono::steady_clock;
+
+#define TAG "qrcode-reader"
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+static struct {
+    // Inference (CH0) frame — QR detection runs on this RGB888 buffer.
+    int camera_w   = 640;
+    int camera_h   = 640;
+    int camera_fps = 10;
+
+    std::string mqtt_host  = "localhost";
+    int mqtt_port          = 1883;
+    std::string mqtt_topic = "recamera/qrcode-reader/results";
+    bool enable_mqtt       = true;
+
+    bool enable_rtsp  = true;
+    int stream_width  = 1920;
+    int stream_height = 1080;
+    int stream_fps    = 30;
+
+    bool enable_debug = true;  // H.264-over-WS + results JSON for supervisor console
+    bool verbose      = false;
+
+    int print_interval = 30;
+} g_config;
+
+static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
+
+// QR decoding state reused across callback invocations (the CH0 consumer is a
+// single producer thread; the mutex only guards against an unexpected reentry).
+static struct quirc* g_qr = nullptr;
+static std::mutex g_qr_mutex;
+static std::atomic<uint64_t> g_frame_id{0};
+
+// ---------------------------------------------------------------------------
+// Letterbox mapping
+// ---------------------------------------------------------------------------
+
+// Map a point in inference-frame pixels to normalized [0,1] display-frame
+// coords, replicating debug_stream_letterbox_to_display()'s content-fit math
+// (the box helper only transforms boxes, so QR corners get an equivalent
+// per-point mapping). The sensor content (display aspect) is fit into the
+// inference frame preserving aspect and centered; we recover that sub-rect and
+// scale into the display frame, then normalize.
+static void map_point_norm(float px, float py,
+                           int inf_w, int inf_h, int disp_w, int disp_h,
+                           float& nx, float& ny) {
+    float content_w = static_cast<float>(inf_w);
+    float content_h = static_cast<float>(inf_h);
+    float x_off = 0.f, y_off = 0.f;
+    const long long disp_vs_inf =
+        static_cast<long long>(disp_w) * inf_h - static_cast<long long>(disp_h) * inf_w;
+    if (disp_vs_inf > 0) {
+        // Display wider than inference frame -> bars top/bottom in inference.
+        content_h = static_cast<float>(inf_w) * disp_h / disp_w;
+        y_off     = (inf_h - content_h) * 0.5f;
+    } else if (disp_vs_inf < 0) {
+        // Display taller -> bars left/right.
+        content_w = static_cast<float>(inf_h) * disp_w / disp_h;
+        x_off     = (inf_w - content_w) * 0.5f;
+    }
+    nx = (px - x_off) / content_w;  // ((px-x_off)*sx)/disp_w with sx=disp_w/content_w
+    ny = (py - y_off) / content_h;
+    if (nx < 0.f) nx = 0.f;
+    if (nx > 1.f) nx = 1.f;
+    if (ny < 0.f) ny = 0.f;
+    if (ny > 1.f) ny = 1.f;
+}
+
+// ---------------------------------------------------------------------------
+// Signal handling
+// ---------------------------------------------------------------------------
+
+static void app_ipcam_ExitSig_handle(int signo) {
     signal(SIGINT, SIG_IGN);
     signal(SIGTERM, SIG_IGN);
 
     if ((SIGINT == signo) || (SIGTERM == signo)) {
+        if (g_config.enable_debug) debug_stream_destroy();
         deinitVideo();
         deinitRtsp();
-        printf("ipcam receive a signal(%d) from terminate\n", signo);
+        if (g_mqtt_publisher) {
+            g_mqtt_publisher->deinit();
+            delete g_mqtt_publisher;
+            g_mqtt_publisher = nullptr;
+        }
+        if (g_qr) {
+            quirc_destroy(g_qr);
+            g_qr = nullptr;
+        }
+        std::printf("[INFO] received signal %d, shutting down\n", signo);
     }
 
-    exit(-1);
+    exit(0);
 }
-static int count = 0;
-// Process QR code frame using Quirc
-static int fpProcessQRCodeFrame(void* pData, void* pArgs, void* pUserData) {
-    VIDEO_FRAME_INFO_S* VpssFrame = (VIDEO_FRAME_INFO_S*)pData;
-    VIDEO_FRAME_S* f = &VpssFrame->stVFrame;
 
-    count ++;
-    if(count != 30){
-        return 1;
-    }else{
-        count = 0;
-    }
-    
-    // Map frame memory
+// ---------------------------------------------------------------------------
+// Debug /results envelope: QR detection has no boxes — the overlay box array is
+// empty and the decoded codes ride as an extra top-level "qrcodes" member.
+// ---------------------------------------------------------------------------
+
+static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
+                                            double detect_cost_ms,
+                                            const std::vector<qrcode_reader::QrCode>& codes) {
+    const std::string extra = qrcode_reader::buildQrcodesExtra(codes);
+    const std::vector<debug_stream_box_t> no_boxes;
+    return debug_stream_build_results(timestamp_ms, frame_id,
+                                      static_cast<float>(detect_cost_ms),
+                                      g_config.stream_width, g_config.stream_height,
+                                      no_boxes, nullptr, extra);
+}
+
+// ---------------------------------------------------------------------------
+// QR detection callback (CH0 RGB888 consumer, index 0)
+// ---------------------------------------------------------------------------
+
+static int fpProcessQRCodeFrame(void* pData, void* /*pArgs*/, void* /*pUserData*/) {
+    VIDEO_FRAME_INFO_S* VpssFrame = (VIDEO_FRAME_INFO_S*)pData;
+    VIDEO_FRAME_S* f              = &VpssFrame->stVFrame;
+
+    std::lock_guard<std::mutex> lk(g_qr_mutex);
+
+    const int W = static_cast<int>(f->u32Width);
+    const int H = static_cast<int>(f->u32Height);
+
     CVI_U8* pu8VirAddr = (CVI_U8*)CVI_SYS_Mmap(f->u64PhyAddr[0], f->u32Length[0]);
     if (!pu8VirAddr) {
         CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to map frame memory\n");
         return CVI_FAILURE;
     }
 
-    // Initialize Quirc
-    struct quirc* qr = quirc_new();
-    if (!qr) {
+    // Lazily (re)create the quirc context sized to the frame.
+    if (!g_qr) {
+        g_qr = quirc_new();
+        if (g_qr && quirc_resize(g_qr, W, H) < 0) {
+            quirc_destroy(g_qr);
+            g_qr = nullptr;
+        }
+    }
+    if (!g_qr) {
         CVI_SYS_Munmap(pu8VirAddr, f->u32Length[0]);
         CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to initialize Quirc\n");
         return CVI_FAILURE;
     }
 
-    // Resize Quirc buffer to match image dimensions
-    if (quirc_resize(qr, f->u32Width, f->u32Height) < 0) {
-        quirc_destroy(qr);
-        CVI_SYS_Munmap(pu8VirAddr, f->u32Length[0]);
-        CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to resize Quirc buffer\n");
-        return CVI_FAILURE;
+    const auto t0 = Clock::now();
+
+    // RGB888 -> grayscale straight into the quirc buffer.
+    uint8_t* buffer = quirc_begin(g_qr, nullptr, nullptr);
+    const uint32_t npix = f->u32Width * f->u32Height;
+    for (uint32_t i = 0; i < npix; ++i) {
+        const uint8_t r = pu8VirAddr[i * 3];
+        const uint8_t g = pu8VirAddr[i * 3 + 1];
+        const uint8_t b = pu8VirAddr[i * 3 + 2];
+        buffer[i]       = static_cast<uint8_t>(0.299f * r + 0.587f * g + 0.114f * b);
     }
+    quirc_end(g_qr);
 
-    // Convert RGB888 to grayscale (Y = 0.299R + 0.587G + 0.114B)
-    std::vector<uint8_t> gray(f->u32Width * f->u32Height);
-    for (uint32_t i = 0; i < f->u32Width * f->u32Height; ++i) {
-        uint8_t r = pu8VirAddr[i * 3];
-        uint8_t g = pu8VirAddr[i * 3 + 1];
-        uint8_t b = pu8VirAddr[i * 3 + 2];
-        gray[i] = static_cast<uint8_t>(0.299 * r + 0.587 * g + 0.114 * b);
-    }
+    std::vector<qrcode_reader::QrCode> codes;
+    const int count = quirc_count(g_qr);
+    for (int j = 0; j < count; ++j) {
+        struct quirc_code code;
+        struct quirc_data data;
+        quirc_extract(g_qr, j, &code);
+        if (quirc_decode(&code, &data) != QUIRC_SUCCESS) continue;
 
-    // Perform decoding for 10 iterations to calculate average time
-    std::vector<double> decode_times;
-    std::vector<std::string> qr_codes;
-    const int iterations = 10;
-
-    for (int i = 0; i < iterations; ++i) {
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        // Copy grayscale data to Quirc buffer
-        uint8_t* buffer = quirc_begin(qr, nullptr, nullptr);
-        memcpy(buffer, gray.data(), f->u32Width * f->u32Height);
-        quirc_end(qr);
-
-        // Extract and decode QR codes (only store results from first iteration)
-        if (i == 0) {
-            int count = quirc_count(qr);
-            qr_codes.clear();
-            for (int j = 0; j < count; ++j) {
-                struct quirc_code code;
-                struct quirc_data data;
-                quirc_extract(qr, j, &code);
-                if (quirc_decode(&code, &data) == QUIRC_SUCCESS) {
-                    qr_codes.push_back(std::string(reinterpret_cast<char*>(data.payload)));
-                }
-            }
+        qrcode_reader::QrCode qc;
+        qc.text.assign(reinterpret_cast<char*>(data.payload),
+                       static_cast<size_t>(data.payload_len));
+        for (int p = 0; p < 4; ++p) {
+            float nx = 0.f, ny = 0.f;
+            map_point_norm(static_cast<float>(code.corners[p].x),
+                           static_cast<float>(code.corners[p].y),
+                           W, H, g_config.stream_width, g_config.stream_height, nx, ny);
+            qc.points[p][0] = nx;
+            qc.points[p][1] = ny;
         }
-
-        // Record decoding time
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
-        decode_times.push_back(elapsed.count());
+        codes.push_back(std::move(qc));
     }
 
-    // Calculate average decoding time
-    double total_time = 0.0;
-    for (double time : decode_times) {
-        total_time += time;
-    }
-    double average_time_ms = decode_times.empty() ? 0.0 : total_time / decode_times.size();
+    const auto t1              = Clock::now();
+    const double detect_ms     = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    const bool qr_found        = !codes.empty();
+    const uint64_t frame_id    = g_frame_id.fetch_add(1) + 1;
 
-    // Output results
-    if (!qr_codes.empty()) {
-        for (const auto& code : qr_codes) {
-            printf("QR code text: %s, Average decode time: %.2f ms\n", code.c_str(), average_time_ms);
-        }
-    } else {
-        APP_PROF_LOG_PRINT(LEVEL_DEBUG, "No QR code found, Average decode time: %.2f ms\n", average_time_ms);
-    }
-
-    // Clean up
-    quirc_destroy(qr);
     CVI_SYS_Munmap(pu8VirAddr, f->u32Length[0]);
 
-    return CVI_SUCCESS;
-}
+    // Publish every frame (empty codes too: clears the Console overlay and the
+    // HA qr_count on the frame after a code leaves the view).
+    if (g_config.enable_mqtt && g_mqtt_publisher) {
+        const std::string payload =
+            qrcode_reader::buildResultJson(frame_id, qr_found, detect_ms, codes);
+        g_mqtt_publisher->publishResultsJson(payload);
+    }
 
-// Save encoded video frame (unchanged)
-static int fpSaveVencFrame(void* pData, void* pArgs, void* pUserData) {
-    VENC_STREAM_S* pstStream = (VENC_STREAM_S*)pData;
-    APP_DATA_CTX_S* pstDataCtx = (APP_DATA_CTX_S*)pArgs;
-    APP_DATA_PARAM_S* pstDataParam = &pstDataCtx->stDataParam;
-    APP_VENC_CHN_CFG_S* pstVencChnCfg = (APP_VENC_CHN_CFG_S*)pstDataParam->pParam;
+    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        const uint64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+        const std::string dj =
+            build_debug_results_json(ts_ms, static_cast<uint32_t>(frame_id), detect_ms, codes);
+        debug_stream_publish_result(dj.c_str(), dj.size());
+    }
 
-    static uint32_t count = 0;
-    {
-        if (pstVencChnCfg->pFile == NULL) {
-            char szFilePath[100] = {0};
-            sprintf(szFilePath,
-                    "/userdata/local/VENC%d_%d%s",
-                    pstVencChnCfg->VencChn,
-                    count++,
-                    app_ipcam_Postfix_Get(pstVencChnCfg->enType));
-            count %= 10;
-            printf("start save file to %s\n", szFilePath);
-            pstVencChnCfg->pFile = fopen(szFilePath, "wb");
-            if (pstVencChnCfg->pFile == NULL) {
-                APP_PROF_LOG_PRINT(LEVEL_ERROR, "open file err, %s\n", szFilePath);
-                return CVI_FAILURE;
+    if (g_config.verbose || (frame_id % static_cast<uint64_t>(g_config.print_interval)) == 0) {
+        if (qr_found) {
+            for (const auto& c : codes) {
+                std::printf("[RESULT] frame=%llu qr=\"%s\" detect=%.2fms\n",
+                            static_cast<unsigned long long>(frame_id), c.text.c_str(), detect_ms);
             }
-        }
-
-        VENC_PACK_S* ppack;
-        if ((pstVencChnCfg->enType == PT_H264) || (pstVencChnCfg->enType == PT_H265)) {
-            if (pstVencChnCfg->fileNum == 0 && pstStream->u32PackCount < 2) {
-                printf("skip first I-frame\n");
-                return CVI_SUCCESS;
-            }
-        }
-        for (CVI_U32 i = 0; i < pstStream->u32PackCount; i++) {
-            ppack = &pstStream->pstPack[i];
-            fwrite(ppack->pu8Addr + ppack->u32Offset,
-                   ppack->u32Len - ppack->u32Offset,
-                   1,
-                   pstVencChnCfg->pFile);
-
-            printf(
-                "pack[%d], PTS = %lu, Addr = %p, Len = 0x%X, Offset = 0x%X DataType=%d\n",
-                i,
-                ppack->u64PTS,
-                ppack->pu8Addr,
-                ppack->u32Len,
-                ppack->u32Offset,
-                ppack->DataType.enH265EType);
-        }
-
-        if (pstVencChnCfg->enType == PT_JPEG) {
-            fclose(pstVencChnCfg->pFile);
-            pstVencChnCfg->pFile = NULL;
-            printf("End save! \n");
         } else {
-            if (++pstVencChnCfg->fileNum > pstVencChnCfg->u32Duration) {
-                pstVencChnCfg->fileNum = 0;
-                fclose(pstVencChnCfg->pFile);
-                pstVencChnCfg->pFile = NULL;
-                printf("End save! \n");
-            }
+            std::printf("[RESULT] frame=%llu no QR code (detect=%.2fms)\n",
+                        static_cast<unsigned long long>(frame_id), detect_ms);
         }
+        std::fflush(stdout);
     }
 
     return CVI_SUCCESS;
 }
 
-// Main function
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+static void print_usage(const char* prog) {
+    std::printf("QR Code Reader for ReCamera\n");
+    std::printf("Usage: %s [options]\n\n", prog);
+    std::printf("Options:\n");
+    std::printf("  --camera-width N      Inference frame width (default: %d)\n", g_config.camera_w);
+    std::printf("  --camera-height N     Inference frame height (default: %d)\n", g_config.camera_h);
+    std::printf("  --camera-fps N        Inference frame rate (default: %d)\n", g_config.camera_fps);
+    std::printf("  -m, --mqtt-host HOST  MQTT broker host (default: %s)\n", g_config.mqtt_host.c_str());
+    std::printf("  -p, --mqtt-port PORT  MQTT broker port (default: %d)\n", g_config.mqtt_port);
+    std::printf("  --mqtt-topic TOPIC    MQTT publish topic (default: %s)\n", g_config.mqtt_topic.c_str());
+    std::printf("  --no-mqtt             Disable MQTT publishing\n");
+    std::printf("  --no-rtsp             Disable RTSP streaming\n");
+    std::printf("  --stream-width N      RTSP encode width (default: %d)\n", g_config.stream_width);
+    std::printf("  --stream-height N     RTSP encode height (default: %d)\n", g_config.stream_height);
+    std::printf("  --stream-fps N        RTSP encode fps (default: %d)\n", g_config.stream_fps);
+    std::printf("  --print-interval N    Print every N frames (default: %d)\n", g_config.print_interval);
+    std::printf("  -v, --verbose         Enable verbose logging\n");
+    std::printf("  -h, --help            Show this help message\n\n");
+    std::printf("RTSP stream: rtsp://<device-ip>:8554/live0\n");
+}
+
+static bool parse_args(int argc, char** argv) {
+    static struct option long_options[] = {
+        {"camera-width",   required_argument, 0,  1 },
+        {"camera-height",  required_argument, 0,  2 },
+        {"camera-fps",     required_argument, 0,  3 },
+        {"mqtt-host",      required_argument, 0, 'm'},
+        {"mqtt-port",      required_argument, 0, 'p'},
+        {"mqtt-topic",     required_argument, 0,  4 },
+        {"no-mqtt",        no_argument,       0,  5 },
+        {"no-rtsp",        no_argument,       0,  6 },
+        {"stream-width",   required_argument, 0,  7 },
+        {"stream-height",  required_argument, 0,  8 },
+        {"stream-fps",     required_argument, 0,  9 },
+        {"print-interval", required_argument, 0, 10 },
+        {"verbose",        no_argument,       0, 'v'},
+        {"help",           no_argument,       0, 'h'},
+        {0, 0, 0, 0},
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "m:p:vh", long_options, nullptr)) != -1) {
+        switch (opt) {
+            case  1 : g_config.camera_w       = std::atoi(optarg); break;
+            case  2 : g_config.camera_h       = std::atoi(optarg); break;
+            case  3 : g_config.camera_fps     = std::atoi(optarg); break;
+            case 'm': g_config.mqtt_host      = optarg; break;
+            case 'p': g_config.mqtt_port      = std::atoi(optarg); break;
+            case  4 : g_config.mqtt_topic     = optarg; break;
+            case  5 : g_config.enable_mqtt    = false; break;
+            case  6 : g_config.enable_rtsp    = false; break;
+            case  7 : g_config.stream_width   = std::atoi(optarg); break;
+            case  8 : g_config.stream_height  = std::atoi(optarg); break;
+            case  9 : g_config.stream_fps     = std::atoi(optarg); break;
+            case 10 : g_config.print_interval = std::max(1, std::atoi(optarg)); break;
+            case 'v': g_config.verbose        = true; break;
+            case 'h': print_usage(argv[0]); std::exit(0);
+            default : print_usage(argv[0]); return false;
+        }
+    }
+    return true;
+}
+
+static bool init_mqtt() {
+    if (!g_config.enable_mqtt) {
+        std::printf("[INFO] MQTT publishing disabled\n");
+        return true;
+    }
+
+    ha_mqtt::ClientOptions opts;
+    opts.app_id        = "qrcode-reader";
+    opts.client_id     = "recamera-qrcode-reader";
+    opts.results_topic = g_config.mqtt_topic;
+    opts.legacy_host   = g_config.mqtt_host;
+    opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
+
+    using ha_mqtt::EntityConfig;
+    using ha_mqtt::EntityType;
+    opts.entities = {
+        EntityConfig{EntityType::Sensor, "qr_last_text", "QR Last Text",
+                     "{{ value_json.codes[0].text if value_json.codes | length > 0 else '' }}",
+                     "", "", ""},
+        EntityConfig{EntityType::Sensor, "qr_count", "QR Count",
+                     "{{ value_json.codes | length }}",
+                     "", "", "measurement"},
+    };
+
+    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
+    if (!g_mqtt_publisher->init(opts)) {
+        std::fprintf(stderr, "[ERROR] MQTT publisher init failed\n");
+        return false;
+    }
+    std::printf("[OK] MQTT publishing topic=%s\n", g_config.mqtt_topic.c_str());
+    return true;
+}
+
 int main(int argc, char* argv[]) {
+    if (!parse_args(argc, argv)) return 1;
+
+    std::printf("[INFO] starting qrcode reader\n");
+
     signal(SIGINT, app_ipcam_ExitSig_handle);
     signal(SIGTERM, app_ipcam_ExitSig_handle);
 
-    if (initVideo())
-        return -1;
+    if (!init_mqtt()) return 2;
 
-    video_ch_param_t param;
+    if (initVideo()) {
+        std::fprintf(stderr, "[ERROR] initVideo failed\n");
+        return 3;
+    }
 
-    // ch0: RGB for QR code detection
+    video_ch_param_t param{};
+
+    // CH0: RGB888 for QR detection (callback-driven).
     param.format = VIDEO_FORMAT_RGB888;
-    param.width  = 640;
-    param.height = 640;
-    param.fps    = 1;
+    param.width  = static_cast<uint32_t>(g_config.camera_w);
+    param.height = static_cast<uint32_t>(g_config.camera_h);
+    param.fps    = static_cast<uint8_t>(g_config.camera_fps);
     setupVideo(VIDEO_CH0, &param);
     registerVideoFrameHandler(VIDEO_CH0, 0, fpProcessQRCodeFrame, (void*)".rgb");
 
-    // ch2: H264 with RTSP
-    param.format = VIDEO_FORMAT_H264;
-    param.width  = 1920;
-    param.height = 1080;
-    param.fps    = 30;
-    setupVideo(VIDEO_CH2, &param);
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    initRtsp((0x01 << VIDEO_CH2));
+    // CH2: H.264 with RTSP (+ debug_stream as consumer index 1).
+    if (g_config.enable_rtsp) {
+        param.format = VIDEO_FORMAT_H264;
+        param.width  = static_cast<uint32_t>(g_config.stream_width);
+        param.height = static_cast<uint32_t>(g_config.stream_height);
+        param.fps    = static_cast<uint8_t>(g_config.stream_fps);
+        setupVideo(VIDEO_CH2, &param);
+        registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
+        initRtsp((0x01 << VIDEO_CH2));
+        std::printf("[OK] RTSP streaming rtsp://<device-ip>:8554/live0 (%dx%d@%dfps)\n",
+                    g_config.stream_width, g_config.stream_height, g_config.stream_fps);
+    }
+
+    // Debug stream (non-fatal): registers debug_stream_video_handler as VENC
+    // consumer index 1 on CH2 (RTSP owns index 0).
+    if (g_config.enable_debug && debug_stream_start_or_disable(8001, VIDEO_CH2) != 0) {
+        g_config.enable_debug = false;
+    }
 
     startVideo();
+
+    std::printf("[OK] qrcode reader running (inference %dx%d RGB888)\n",
+                g_config.camera_w, g_config.camera_h);
 
     while (1) {
         sleep(1);

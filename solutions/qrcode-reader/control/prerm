@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Pre-removal script for qrcode-reader
+
+echo "Removing QR Code Reader..."
+
+# Stop the service if running
+for script in /etc/init.d/[SK]92qrcode-reader; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/qrcode-reader 2>/dev/null || true
+
+echo "QR Code Reader removed."
+
+exit 0

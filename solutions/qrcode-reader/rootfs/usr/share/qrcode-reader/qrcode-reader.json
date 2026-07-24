@@ -1,0 +1,30 @@
+{
+  "id": "qrcode-reader",
+  "name": "QR Code Reader",
+  "name_zh": "二维码识别",
+  "scene": "Automation",
+  "scene_zh": "自动化",
+  "description": "Turn the camera into a hands-free scanner: decode one or many QR codes in view at once, read the payload of each, and stream every result to your automations — asset check-in, access gates, kiosk workflows and inventory, no handheld scanner required.",
+  "description_zh": "把摄像头变成免手持扫码枪：一次识别画面中的单个或多个二维码，读出各自内容并把结果实时推送给自动化流程——资产登记、门禁核验、自助终端和库存盘点，无需手持扫码设备。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92qrcode-reader",
+  "image": "/apps/qrcode-reader.svg",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/qrcode-reader/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "tags": ["qrcode", "scanner", "automation", "cpu"],
+  "models": [],
+  "pipeline": [
+    {
+      "name": "quirc",
+      "path": "cpu",
+      "task": "qrcode-decode"
+    }
+  ],
+  "version": "0.1.0",
+  "author": "Seeed Studio"
+}

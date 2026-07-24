@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Post-removal script for qrcode-reader
+#
+# Clean up the gallery registration installed by postinst. On upgrade/reinstall
+# opkg runs prerm -> postrm -> unpack -> postinst, so postinst re-installs these
+# files right after — no data is lost across upgrades. On real removal the app
+# disappears from the supervisor gallery (rather than lingering as a ghost entry
+# whose init_script no longer exists).
+
+for f in qrcode-reader.json qrcode-reader.md qrcode-reader.zh.md; do
+    rm -f "/userdata/local/apps/$f" 2>/dev/null || true
+done
+
+exit 0
