@@ -299,7 +299,7 @@ function Network() {
                           {state.connectedWifiInfoList.map(
                             (wifiItem, index) => (
                               <div
-                                className="flex justify-between border-t py-10"
+                                className="flex justify-between items-center border-t py-10 cursor-pointer hover:bg-black/[0.02] -mx-8 px-8 rounded-8"
                                 key={index}
                                 onClick={() => onClickWifiItem(wifiItem)}
                               >
@@ -546,7 +546,7 @@ function Network() {
                           {state.connectedHalowInfoList.map(
                             (halowItem, index) => (
                               <div
-                                className="flex justify-between border-t py-10"
+                                className="flex justify-between items-center border-t py-10 cursor-pointer hover:bg-black/[0.02] -mx-8 px-8 rounded-8"
                                 key={index}
                                 onClick={() => onClickHalowItem(halowItem)}
                               >
