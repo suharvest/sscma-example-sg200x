@@ -51,10 +51,18 @@ export interface IResultClassification {
   scores: { name: string; score: number }[];
 }
 
+/** One decoded QR code: `points` are the four corners (normalized 0-1). */
+export interface IResultQrcode {
+  text: string;
+  points: number[][];
+}
+
 export interface IOverlayFrame {
   boxes: IResultBox[];
   /** present when the latest results message carries a `classification` */
   classification: IResultClassification | null;
+  /** present when the latest results message carries a top-level `qrcodes` */
+  qrcodes?: IResultQrcode[];
   /** inference resolution the coordinates are relative to */
   resW: number;
   resH: number;
@@ -114,16 +122,44 @@ function parseClassification(
   return { label, confidence, scores };
 }
 
+/** Parse a top-level `qrcodes` array (defensive). Each entry carries the
+ *  decoded text and four normalized corner points. */
+function parseQrcodes(
+  data: Record<string, unknown>
+): IResultQrcode[] | null {
+  const raw = data.qrcodes;
+  if (!Array.isArray(raw)) return null;
+  const out: IResultQrcode[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const o = entry as Record<string, unknown>;
+    const text = typeof o.text === "string" ? o.text : "";
+    const pts = Array.isArray(o.points) ? (o.points as unknown[]) : [];
+    const points: number[][] = [];
+    for (const p of pts) {
+      if (Array.isArray(p) && p.length >= 2) {
+        const x = Number(p[0]);
+        const y = Number(p[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+      }
+    }
+    if (points.length >= 2) out.push({ text, points });
+  }
+  return out;
+}
+
 /** Parse a results JSON message into an overlay frame (defensive). */
 function parseOverlayFrame(
   data: Record<string, unknown> | null
 ): IOverlayFrame | null {
   if (!data) return null;
   const classification = parseClassification(data);
+  const qrcodes = parseQrcodes(data);
   const rawBoxes = data.boxes;
   // Box apps require a boxes[] array; classifier apps may omit it entirely
-  // (or send an empty one) — a classification alone still yields a frame.
-  if (!Array.isArray(rawBoxes) && !classification) return null;
+  // (or send an empty one) — a classification or a top-level qrcodes array
+  // alone still yields a frame (so an empty codes[] clears the overlay).
+  if (!Array.isArray(rawBoxes) && !classification && !qrcodes) return null;
 
   let resW = DEFAULT_RESOLUTION;
   let resH = DEFAULT_RESOLUTION;
@@ -184,7 +220,7 @@ function parseOverlayFrame(
       });
     }
   }
-  return { boxes, classification, resW, resH };
+  return { boxes, classification, qrcodes: qrcodes ?? undefined, resW, resH };
 }
 
 export default function useDebugStream({

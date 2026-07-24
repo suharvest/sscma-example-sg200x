@@ -58,7 +58,7 @@ interface ContentRect {
  *  facemesh's debug envelope is center boxes with a "state EAR" label). */
 function adaptDebugFrame(frame: IOverlayFrame) {
   const layers: Array<Record<string, unknown>> = [];
-  const { resW, resH, boxes, classification } = frame;
+  const { resW, resH, boxes, classification, qrcodes } = frame;
   if (boxes && boxes.length) {
     const items = boxes.map((b) => {
       const normalized = b.x <= 1 && b.y <= 1 && b.w <= 1 && b.h <= 1;
@@ -87,6 +87,14 @@ function adaptDebugFrame(frame: IOverlayFrame) {
         confidence: classification.confidence,
         scores,
       },
+    });
+  }
+  // QR codes: each decoded code is a closed polygon (4 normalized corners) with
+  // its payload as the label, fed to the shared renderer's `polygons` layer.
+  if (qrcodes && qrcodes.length) {
+    layers.push({
+      type: "polygons",
+      items: qrcodes.map((q) => ({ points: q.points, label: q.text })),
     });
   }
   return { layers };

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 210" role="img" aria-label="QR code reader preview">
+  <style>
+    .bg{fill:#eef2e6}.panel{fill:#ffffff}.qr{fill:#3a4633}.qrbg{fill:#f6f9f0}
+    .txt{fill:#3a4633}.row{fill:#dbe4cd}
+    @media (prefers-color-scheme:dark){
+      .bg{fill:#161a13}.panel{fill:#1e241a}.qr{fill:#c7d3b6}.qrbg{fill:#141811}
+      .txt{fill:#c7d3b6}.row{fill:#2b3324}
+    }
+  </style>
+  <rect class="bg" width="400" height="210" rx="10"/>
+  <rect class="panel" x="14" y="14" width="372" height="182" rx="8"/>
+
+  <!-- QR module -->
+  <g transform="translate(40 42)">
+    <rect class="qrbg" x="-6" y="-6" width="140" height="140" rx="6"/>
+    <!-- finder patterns (three corners) -->
+    <g class="qr">
+      <path d="M0 0 h34 v34 h-34 z M8 8 v18 h18 v-18 z" fill-rule="evenodd"/>
+      <path d="M94 0 h34 v34 h-34 z M102 8 v18 h18 v-18 z" fill-rule="evenodd"/>
+      <path d="M0 94 h34 v34 h-34 z M8 102 v18 h18 v-18 z" fill-rule="evenodd"/>
+    </g>
+    <!-- data modules -->
+    <g class="qr">
+      <rect x="42" y="0" width="8" height="8"/><rect x="58" y="0" width="8" height="8"/><rect x="74" y="0" width="8" height="8"/>
+      <rect x="42" y="16" width="8" height="8"/><rect x="66" y="16" width="8" height="8"/>
+      <rect x="50" y="26" width="8" height="8"/><rect x="74" y="26" width="8" height="8"/>
+      <rect x="0" y="42" width="8" height="8"/><rect x="16" y="42" width="8" height="8"/><rect x="26" y="42" width="8" height="8"/>
+      <rect x="50" y="42" width="8" height="8"/><rect x="66" y="42" width="8" height="8"/><rect x="82" y="42" width="8" height="8"/>
+      <rect x="100" y="42" width="8" height="8"/><rect x="120" y="42" width="8" height="8"/>
+      <rect x="8" y="52" width="8" height="8"/><rect x="42" y="52" width="8" height="8"/><rect x="74" y="52" width="8" height="8"/><rect x="110" y="52" width="8" height="8"/>
+      <rect x="0" y="62" width="8" height="8"/><rect x="26" y="62" width="8" height="8"/><rect x="58" y="62" width="8" height="8"/><rect x="90" y="62" width="8" height="8"/><rect x="120" y="62" width="8" height="8"/>
+      <rect x="16" y="72" width="8" height="8"/><rect x="42" y="72" width="8" height="8"/><rect x="66" y="72" width="8" height="8"/><rect x="100" y="72" width="8" height="8"/>
+      <rect x="42" y="100" width="8" height="8"/><rect x="58" y="100" width="8" height="8"/><rect x="82" y="100" width="8" height="8"/><rect x="110" y="100" width="8" height="8"/>
+      <rect x="50" y="110" width="8" height="8"/><rect x="74" y="110" width="8" height="8"/><rect x="100" y="110" width="8" height="8"/><rect x="120" y="110" width="8" height="8"/>
+      <rect x="42" y="120" width="8" height="8"/><rect x="66" y="120" width="8" height="8"/><rect x="90" y="120" width="8" height="8"/>
+    </g>
+  </g>
+
+  <!-- four-corner scanning frame around the QR -->
+  <g fill="none" stroke="#8fc31f" stroke-width="3" stroke-linecap="round">
+    <path d="M28 40 v-8 h8 M172 40 v-8 h-8 M28 148 v8 h8 M172 148 v8 h-8"/>
+  </g>
+
+  <!-- decoded payload panel -->
+  <g font-family="monospace" font-size="12">
+    <rect x="210" y="46" width="150" height="26" rx="6" fill="#8fc31f"/>
+    <text x="220" y="63" fill="#1a2410" font-weight="bold">1 code found</text>
+    <rect class="row" x="210" y="82" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="98">https://</text>
+    <rect class="row" x="210" y="112" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="128">seeed.cc</text>
+    <rect class="row" x="210" y="142" width="150" height="24" rx="5"/>
+    <text class="txt" x="220" y="158">/recamera</text>
+  </g>
+</svg>
