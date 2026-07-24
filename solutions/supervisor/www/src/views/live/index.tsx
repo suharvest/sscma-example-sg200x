@@ -24,7 +24,10 @@ import {
 } from "@/api/camera/camera";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
-import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
+import useDebugStream, {
+  IOverlayFrame,
+  IResultClassification,
+} from "@/hooks/useDebugStream";
 import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import {
@@ -113,6 +116,87 @@ function BoxOverlay({
         );
       })}
     </svg>
+  );
+}
+
+/** Classification overlay: semi-transparent card pinned to the top-left of
+ *  the video content area. Big label + confidence, then up to 5 per-class
+ *  scores (name + thin bar + value, already sorted descending). Styled like
+ *  the other in-video chrome: deep black backdrop, white text, theme green. */
+function ClassificationOverlay({
+  cls,
+  rect,
+}: {
+  cls: IResultClassification;
+  rect: ContentRect;
+}) {
+  if (!rect.width || !rect.height) return null;
+  const pct = (v: number) => (v <= 1 ? v * 100 : v);
+  return (
+    <div
+      className="absolute pointer-events-none rounded-8"
+      style={{
+        left: rect.left + 12,
+        top: rect.top + 12,
+        width: Math.min(240, rect.width - 24),
+        background: "rgba(0,0,0,0.65)",
+        padding: "10px 14px",
+      }}
+    >
+      <div className="flex items-baseline gap-8">
+        <span
+          className="font-display font-semibold truncate"
+          style={{ color: "#8fc31f", fontSize: 20 }}
+        >
+          {cls.label}
+        </span>
+        <span
+          className="rc-mono flex-none"
+          style={{ color: "#ffffff", fontSize: 13, opacity: 0.85 }}
+        >
+          {pct(cls.confidence).toFixed(0)}%
+        </span>
+      </div>
+      {cls.scores.slice(0, 5).map((s) => (
+        <div
+          key={s.name}
+          className="flex items-center gap-8"
+          style={{ marginTop: 6 }}
+        >
+          <span
+            className="truncate flex-none"
+            style={{ color: "#ffffff", fontSize: 11, opacity: 0.8, width: 64 }}
+          >
+            {s.name}
+          </span>
+          <div
+            className="flex-1 rounded-2 overflow-hidden"
+            style={{ height: 4, background: "rgba(255,255,255,0.2)" }}
+          >
+            <div
+              style={{
+                width: `${Math.min(pct(s.score), 100)}%`,
+                height: "100%",
+                background: "#8fc31f",
+                transition: "width 0.2s ease",
+              }}
+            />
+          </div>
+          <span
+            className="rc-mono flex-none"
+            style={{
+              color: "#ffffff",
+              fontSize: 10,
+              opacity: 0.7,
+              width: 32,
+              textAlign: "right",
+            }}
+          >
+            {pct(s.score).toFixed(0)}%
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -556,6 +640,12 @@ const Live = () => {
                       />
                       {overlayOn && overlay && (
                         <BoxOverlay frame={overlay} rect={contentRect} />
+                      )}
+                      {overlayOn && overlay?.classification && (
+                        <ClassificationOverlay
+                          cls={overlay.classification}
+                          rect={contentRect}
+                        />
                       )}
                       {status === "connecting" && (
                         <div className="absolute inset-0 flex items-center justify-center">

@@ -42,8 +42,19 @@ export interface IResultMessage {
   data: Record<string, unknown> | null;
 }
 
+/** Top-level classification result (classifier apps: boxes stays empty). */
+export interface IResultClassification {
+  label: string;
+  /** 0-1 (values > 1 treated as already-percent by the renderer) */
+  confidence: number;
+  /** per-class scores, sorted descending */
+  scores: { name: string; score: number }[];
+}
+
 export interface IOverlayFrame {
   boxes: IResultBox[];
+  /** present when the latest results message carries a `classification` */
+  classification: IResultClassification | null;
   /** inference resolution the coordinates are relative to */
   resW: number;
   resH: number;
@@ -74,13 +85,40 @@ const LIVE_EDGE_CHECK_MS = 500;
 const LIVE_EDGE_MAX_LAG = 0.6; // seconds behind buffered end before snapping
 const LIVE_EDGE_TARGET = 0.15; // seconds from the edge to land on after a snap
 
+/** Parse an optional top-level `classification` object (defensive). */
+function parseClassification(
+  data: Record<string, unknown>
+): IResultClassification | null {
+  const c = data.classification;
+  if (!c || typeof c !== "object" || Array.isArray(c)) return null;
+  const o = c as Record<string, unknown>;
+  const label = typeof o.label === "string" ? o.label : "";
+  if (!label) return null;
+  const confidence = Number(o.confidence) || 0;
+  const scores: { name: string; score: number }[] = [];
+  const rawScores = o.scores;
+  if (rawScores && typeof rawScores === "object" && !Array.isArray(rawScores)) {
+    for (const [name, v] of Object.entries(
+      rawScores as Record<string, unknown>
+    )) {
+      const s = Number(v);
+      if (Number.isFinite(s)) scores.push({ name, score: s });
+    }
+    scores.sort((a, b) => b.score - a.score);
+  }
+  return { label, confidence, scores };
+}
+
 /** Parse a results JSON message into an overlay frame (defensive). */
 function parseOverlayFrame(
   data: Record<string, unknown> | null
 ): IOverlayFrame | null {
   if (!data) return null;
+  const classification = parseClassification(data);
   const rawBoxes = data.boxes;
-  if (!Array.isArray(rawBoxes)) return null;
+  // Box apps require a boxes[] array; classifier apps may omit it entirely
+  // (or send an empty one) — a classification alone still yields a frame.
+  if (!Array.isArray(rawBoxes) && !classification) return null;
 
   let resW = DEFAULT_RESOLUTION;
   let resH = DEFAULT_RESOLUTION;
@@ -115,8 +153,9 @@ function parseOverlayFrame(
   };
 
   const boxes: IResultBox[] = [];
-  for (let i = 0; i < rawBoxes.length; i++) {
-    const b = rawBoxes[i];
+  const boxList = Array.isArray(rawBoxes) ? rawBoxes : [];
+  for (let i = 0; i < boxList.length; i++) {
+    const b = boxList[i];
     if (Array.isArray(b) && b.length >= 4) {
       boxes.push({
         x: Number(b[0]) || 0,
@@ -140,7 +179,7 @@ function parseOverlayFrame(
       });
     }
   }
-  return { boxes, resW, resH };
+  return { boxes, classification, resW, resH };
 }
 
 export default function useDebugStream({
