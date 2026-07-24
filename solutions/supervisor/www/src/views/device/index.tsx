@@ -23,6 +23,7 @@ import {
   setDevicePowerApi,
   audioRecordApi,
   audioPlayTestApi,
+  audioPlayRecordingApi,
   getAudioVolumeApi,
   setAudioVolumeApi,
 } from "@/api/device/index";
@@ -90,6 +91,7 @@ const DeviceTools = () => {
   const [recording, setRecording] = useState(false);
   const [recordUrl, setRecordUrl] = useState<string | null>(null);
   const [playTesting, setPlayTesting] = useState(false);
+  const [playingRecording, setPlayingRecording] = useState(false);
   // undefined=loading, null=unsupported/unavailable
   const [audioVolume, setAudioVolume] = useState<
     IAudioVolume | null | undefined
@@ -223,6 +225,27 @@ const DeviceTools = () => {
       message.error(t("audio.playFailed"));
     } finally {
       setPlayTesting(false);
+    }
+  };
+
+  /** Play the last mic capture back on the device speaker (mic->speaker
+   *  loopback check); the user confirms audibility at the device. Only enabled
+   *  after a successful recording. */
+  const onPlayRecording = async () => {
+    setPlayingRecording(true);
+    try {
+      const res = await audioPlayRecordingApi();
+      if (isOk(res)) {
+        message.success(t("audio.playConfirm"));
+      } else if (isBusy(res)) {
+        message.warning(t("audio.busy"));
+      } else {
+        message.error(t("audio.playRecordingFailed"));
+      }
+    } catch (e) {
+      message.error(t("audio.playRecordingFailed"));
+    } finally {
+      setPlayingRecording(false);
     }
   };
 
@@ -674,17 +697,33 @@ const DeviceTools = () => {
                 <div className={`rc-kpi-label ${showMic ? "mt-16" : ""}`}>
                   {t("audio.speaker")}
                 </div>
-                <div className="mt-6">
+                <div className="mt-6 flex gap-8">
                   <Button
                     size="small"
                     icon={<SoundOutlined />}
                     loading={playTesting}
-                    disabled={recording}
+                    disabled={recording || playingRecording}
                     onClick={onPlayTest}
                   >
                     {t("audio.playBtn")}
                   </Button>
+                  {showMic && (
+                    <Button
+                      size="small"
+                      icon={<SoundOutlined />}
+                      loading={playingRecording}
+                      disabled={recording || playTesting || !recordUrl}
+                      onClick={onPlayRecording}
+                    >
+                      {t("audio.playRecording")}
+                    </Button>
+                  )}
                 </div>
+                {showMic && (
+                  <div className="text-11 text-muted mt-6">
+                    {t("audio.playHint")}
+                  </div>
+                )}
               </>
             )}
 

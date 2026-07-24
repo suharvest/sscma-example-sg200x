@@ -336,6 +336,22 @@ export const audioPlayTestApi = async () =>
     }
   );
 
+// 扬声器播放刚录的音（P3-E 回环）：设备端 aplay 播放 /tmp/audio_probe.wav
+// （最近一次 audioRecord 的录音）。仅在录过音后可用；设备无录音时后端返回
+// code -1。成功仅代表播放命令执行完成，需要人在设备旁确认出声。timeout 20s
+// 覆盖最长 10s 录音回放。
+export const audioPlayRecordingApi = async () =>
+  supervisorRequest(
+    {
+      url: "api/deviceMgr/audioPlayRecording",
+      method: "post",
+      timeout: 20000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
 // 获取音量控制项（P3-E）。supported=false 表示设备没有可用 mixer，
 // 前端不渲染音量滑条。
 export const getAudioVolumeApi = async () =>

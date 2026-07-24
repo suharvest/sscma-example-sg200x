@@ -175,6 +175,33 @@ private:
             res);
     }
 
+    // POST /api/deviceMgr/audioPlayRecording
+    // Plays the most recent recording (/tmp/audio_probe.wav, captured by
+    // audioRecord) back on hw:1,0, closing the mic->speaker loopback. If no
+    // recording exists yet the script fails and this returns an error asking
+    // the user to record first. Shares the audio busy gate with record/playTest.
+    static api_status_t audioPlayRecording(request_t req, response_t res) {
+        if (!audio_try_acquire()) {
+            response(res, -2, "busy: another audio operation is in progress");
+            return API_STATUS_OK;
+        }
+
+        // #14: aplay blocks for the recording duration; run it on a worker.
+        auto result = std::make_shared<std::string>();
+        return submit_async(
+            [result]() { *result = script("audioPlayProbe"); },
+            [result](json& res) -> api_status_t {
+                if (*result != STR_OK) {
+                    response(res, -1, "Playback failed: no recording available (record first)");
+                    return API_STATUS_OK;
+                }
+                response(res, 0, STR_OK);
+                return API_STATUS_OK;
+            },
+            []() { audio_release(); },
+            res);
+    }
+
     // GET  /api/deviceMgr/audioVolume
     //        -> { supported: bool, controls: [{name, percent}] }
     // POST /api/deviceMgr/audioVolume  {control, percent}
@@ -219,6 +246,7 @@ public:
     api_audio() : api_base("deviceMgr") {
         REG_API(audioRecord);
         REG_API(audioPlayTest);
+        REG_API(audioPlayRecording);
         REG_API(audioVolume);
     }
 

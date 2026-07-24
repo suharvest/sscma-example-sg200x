@@ -1938,6 +1938,23 @@ function audioPlayTest() {
     fi
 }
 
+# audioPlayProbe : play back the most recent recording (the probe WAV captured
+# by audioRecord) on the speaker, closing the mic->speaker loopback. Fails if
+# no recording exists yet (record first). The probe is at most 10 s; give aplay
+# a 15 s timeout to guard against a wedged DAC.
+function audioPlayProbe() {
+    [ -s "$AUDIO_PROBE_WAV" ] || {
+        echo "$STR_FAILED"
+        return 1
+    }
+    if _app_run_timeout 15 aplay -D "$AUDIO_PLAYBACK_DEV" "$AUDIO_PROBE_WAV" >/dev/null 2>&1; then
+        echo "$STR_OK"
+    else
+        echo "$STR_FAILED"
+        return 1
+    fi
+}
+
 # audioVolumeGet : probe amixer for simple controls that expose a volume.
 # Output: {"supported": bool, "controls": [{"name": "...", "percent": N}]}
 # Parsing is defensive: no amixer, no controls, or switch-only controls all
