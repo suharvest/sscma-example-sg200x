@@ -598,7 +598,7 @@ const Live = () => {
               <div className="min-w-0">
                 <div
                   ref={containerRef}
-                  className="relative w-full max-w-[1120px] mx-auto bg-black rounded-12 overflow-hidden"
+                  className="relative w-full bg-black rounded-12 overflow-hidden"
                   style={{ aspectRatio: "16 / 9" }}
                 >
                   {debugOn && hasDebugWs && status !== "error" ? (
