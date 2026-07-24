@@ -1,21 +1,29 @@
 {
-    "id": "weather-classifier",
-    "name": "Weather Classification",
-    "name_zh": "天气分类",
-    "scene": "Environment",
-    "scene_zh": "环境",
-    "description": "On-device scene weather classification: a MobileNetV3-Small model classifies the camera view into clear / cloudy / foggy / rainy / snowy with per-class confidence scores. Publishes results over MQTT and streams H.264 via RTSP.",
-    "description_zh": "端侧场景天气分类：MobileNetV3-Small 模型将摄像头画面分类为晴天/多云/雾天/雨天/雪天，并输出各类别置信度。通过 MQTT 发布结果，并以 RTSP 推送 H.264 视频。",
-    "type": "native",
-    "init_script": "/etc/init.d/K92weather-classifier",
-    "image": "/apps/weather-classifier.svg",
-    "rtsp_url": "rtsp://{host}:8554/live0",
-    "mqtt_topic": "recamera/weather/results",
-    "debug_ws": { "port": 8001, "video_path": "/", "results_path": "/results" },
-    "models": [],
-    "pipeline": [
-        { "name": "weather-mobilenetv3-small", "path": "/userdata/local/models/weather_mobilenetv3_small_bf16.cvimodel", "task": "classification" }
-    ],
-    "version": "0.2.0",
-    "author": "Seeed Studio"
+  "id": "weather-classifier",
+  "name": "Weather Classification",
+  "name_zh": "天气分类",
+  "scene": "Smart Outdoor",
+  "scene_zh": "智慧户外",
+  "description": "Let your setup act on the weather it sees: clear, cloudy, foggy, rainy or snowy conditions drive greenhouse vents, awnings, irrigation and outdoor gear automatically — weather-aware automation without a weather station.",
+  "description_zh": "让设备自己看天做事：识别晴/多云/雾/雨/雪，联动温室通风、遮阳、灌溉和庭院设备，天气一变自动响应——不装气象站，也能按天气自动化。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92weather-classifier",
+  "image": "/apps/weather-classifier.png",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/weather/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "models": [],
+  "pipeline": [
+    {
+      "name": "weather-mobilenetv3-small",
+      "path": "/userdata/local/models/weather_mobilenetv3_small_bf16.cvimodel",
+      "task": "classification"
+    }
+  ],
+  "version": "0.2.0",
+  "author": "Seeed Studio"
 }
