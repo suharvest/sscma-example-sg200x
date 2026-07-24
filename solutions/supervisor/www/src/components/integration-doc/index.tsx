@@ -23,9 +23,11 @@ import { apiLang } from "@/i18n";
 const IntegrationDoc = ({
   appId,
   className = "",
+  onHasContent,
 }: {
   appId?: string | null;
   className?: string;
+  onHasContent?: (has: boolean) => void;
 }) => {
   const { t, i18n } = useTranslation();
   const [content, setContent] = useState("");
@@ -33,6 +35,7 @@ const IntegrationDoc = ({
   useEffect(() => {
     let cancelled = false;
     setContent("");
+    onHasContent?.(false);
     if (!appId) return;
     getIntegrationDocApi(appId, apiLang())
       .then((res) => {
@@ -44,10 +47,14 @@ const IntegrationDoc = ({
           setContent(
             res.data.content.replace(/<!--[\s\S]*?-->/g, "").replace(/^\s+/, "")
           );
+          onHasContent?.(true);
+        } else {
+          onHasContent?.(false);
         }
       })
       .catch(() => {
         // No doc / endpoint unavailable -> keep the section hidden.
+        onHasContent?.(false);
       });
     return () => {
       cancelled = true;

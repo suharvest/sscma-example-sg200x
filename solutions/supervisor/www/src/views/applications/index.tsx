@@ -21,7 +21,7 @@ import { uploadFiles, ensureDirectory } from "@/api/files";
 import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import { resolveRtspUrl } from "@/utils/appStream";
-import { pickLocalized, pickLocalizedAlt } from "@/utils/appLocale";
+import { pickLocalized } from "@/utils/appLocale";
 import { getAppTags } from "@/utils/appTags";
 import IntegrationDoc from "@/components/integration-doc";
 import useConfigStore from "@/store/config";
@@ -249,6 +249,7 @@ const Applications = () => {
   const [apps, setApps] = useState<IAppInfo[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detailApp, setDetailApp] = useState<IAppInfo | null>(null);
+  const [detailDocHasContent, setDetailDocHasContent] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
   const navigate = useNavigate();
@@ -301,6 +302,9 @@ const Applications = () => {
         const res = await switchAppApi({ app_id: app.id });
         if (isOk(res)) {
           message.success(t("apps.activated", { name }));
+          // Jump to the Live Debug page so the just-activated app's stream
+          // and results are front and center.
+          navigate("/live");
         } else if (Number(res.code) === -3) {
           // Backend Node-RED mode gate (P6): app operations are refused.
           message.warning(t("runtimeMode.actionUnavailable"));
@@ -600,31 +604,38 @@ const Applications = () => {
           detailApp ? (
             <div className="flex items-baseline gap-8 flex-wrap pr-24">
               <span>{pickLocalized(detailApp, "name") || detailApp.id}</span>
-              {pickLocalizedAlt(detailApp, "name") && (
-                <span className="text-13 text-muted font-normal">
-                  {pickLocalizedAlt(detailApp, "name")}
-                </span>
-              )}
+              <span className="text-12 text-muted font-normal">
+                {getAppTags(detailApp)}
+              </span>
             </div>
           ) : (
             ""
           )
         }
         open={!!detailApp}
-        onCancel={() => setDetailApp(null)}
+        onCancel={() => {
+          setDetailApp(null);
+          setDetailDocHasContent(false);
+        }}
         footer={null}
         centered
         width={Math.min(920, window.innerWidth - 32)}
         styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
       >
         {detailApp && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-20 gap-y-16 text-13 items-start">
-            <div className="flex flex-col gap-16">
+          <div
+            className={`grid grid-cols-1 gap-x-20 gap-y-16 text-13 items-start ${
+              detailDocHasContent ? "md:grid-cols-2" : ""
+            }`}
+          >
+            <div className="flex flex-col gap-16 min-w-0">
               <div>
                 <div className="rc-section-label mb-4">
                   {t("apps.drawer.description")}
                 </div>
-                <div>{pickLocalized(detailApp, "description") || "-"}</div>
+                <div className="rc-prose">
+                  {pickLocalized(detailApp, "description") || "-"}
+                </div>
               </div>
             <div className="grid grid-cols-2 gap-12">
               <div>
@@ -731,8 +742,11 @@ const Applications = () => {
               </div>
             )}
             </div>
-            <div className="min-w-0">
-              <IntegrationDoc appId={detailApp.id} />
+            <div className={detailDocHasContent ? "min-w-0" : "hidden"}>
+              <IntegrationDoc
+                appId={detailApp.id}
+                onHasContent={setDetailDocHasContent}
+              />
             </div>
           </div>
         )}
