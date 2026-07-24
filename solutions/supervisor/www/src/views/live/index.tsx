@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Collapse, Segmented, Select, Spin, Switch } from "antd";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { App, Button, Collapse, Select, Spin, Switch, Tooltip } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
   VideoCameraOutlined,
+  SwapOutlined,
+  SyncOutlined,
+  AimOutlined,
+  WarningOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -13,7 +17,11 @@ import {
   getCameraConfigApi,
   setCameraConfigApi,
 } from "@/api/camera";
-import { ICameraConfig, IGetFocusValueResult } from "@/api/camera/camera";
+import {
+  ICameraConfig,
+  IGetFocusValueResult,
+  ISetCameraConfigParams,
+} from "@/api/camera/camera";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
 import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
@@ -107,6 +115,51 @@ function BoxOverlay({
   );
 }
 
+/** Icon button used by the in-video camera toolbar. Active state fills the
+ *  chip with the theme green; disabled dims it. */
+function CamToolButton({
+  tip,
+  active,
+  disabled,
+  loading,
+  onClick,
+  children,
+}: {
+  tip: string;
+  active?: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip title={tip} placement="top">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        style={{
+          width: 30,
+          height: 30,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: "none",
+          borderRadius: 6,
+          cursor: disabled ? "not-allowed" : "pointer",
+          background: active ? "#8fc31f" : "transparent",
+          color: active ? "#1a1a1a" : "#ffffff",
+          opacity: disabled ? 0.35 : loading ? 0.6 : 1,
+          fontSize: 15,
+          transition: "background 0.15s ease, color 0.15s ease",
+        }}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  );
+}
+
 const Live = () => {
   const { t } = useTranslation();
   const { modal, message } = App.useApp();
@@ -135,41 +188,11 @@ const Live = () => {
 
   // Focus assist: while enabled, poll getFocusValue at 1s and draw a bar of
   // the current sharpness score with the session peak marked. null = no
-  // sample yet.
+  // sample yet. (Polling effect lives below useDebugStream — it also probes
+  // for legacy app packages while the debug stream is playing.)
   const [focusOn, setFocusOn] = useState(false);
   const [focus, setFocus] = useState<IGetFocusValueResult | null>(null);
   const [focusPeak, setFocusPeak] = useState(0);
-  useEffect(() => {
-    if (!focusOn) {
-      setFocus(null);
-      setFocusPeak(0);
-      return;
-    }
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const res = await getFocusValueApi();
-        if (cancelled) return;
-        if (isOk(res) && res.data) {
-          setFocus(res.data);
-          if (res.data.available && typeof res.data.fv === "number") {
-            const v = res.data.fv;
-            setFocusPeak((p) => (v > p ? v : p));
-          }
-        } else {
-          setFocus({ available: false });
-        }
-      } catch (e) {
-        if (!cancelled) setFocus({ available: false });
-      }
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [focusOn]);
 
   const focusValue =
     focus?.available && typeof focus.fv === "number" ? focus.fv : null;
@@ -185,24 +208,16 @@ const Live = () => {
 
   // Camera picture orientation (shared with the Device page; each page pulls
   // its own copy on mount). undefined=loading, null=endpoint unavailable
-  // (older firmware) — the panel is hidden in that case.
+  // (older supervisor) — the overlay toolbar is hidden entirely in that case.
   const [camConf, setCamConf] = useState<ICameraConfig | null | undefined>(
     undefined
   );
-  const [camSaved, setCamSaved] = useState<ICameraConfig | null>(null);
-  const [camSaving, setCamSaving] = useState(false);
-  const camDirty =
-    !!camConf &&
-    !!camSaved &&
-    (camConf.mirror !== camSaved.mirror ||
-      camConf.flip !== camSaved.flip ||
-      camConf.rotation !== camSaved.rotation);
+  const [camBusy, setCamBusy] = useState(false);
   useEffect(() => {
     getCameraConfigApi()
       .then((res) => {
         if (isOk(res) && res.data && typeof res.data.mirror === "boolean") {
           setCamConf(res.data);
-          setCamSaved(res.data);
         } else {
           setCamConf(null);
         }
@@ -210,31 +225,20 @@ const Live = () => {
       .catch(() => setCamConf(null));
   }, []);
 
-  /** Persist the camera orientation. The change is hot-applied by the video
-   *  pipeline within ~1-2 s — no app restart, so the debug stream stays up. */
-  const onSaveCamera = async () => {
-    if (!camConf) return;
-    setCamSaving(true);
+  /** Toggle a single orientation field from the overlay toolbar. The change
+   *  is hot-applied by the video pipeline within ~1-2 s (applied:"live") — no
+   *  app restart, no confirmation. Only the toggled field is sent. */
+  const onToggleCamera = async (patch: ISetCameraConfigParams) => {
+    if (!camConf || camBusy) return;
+    setCamBusy(true);
     try {
-      const res = await setCameraConfigApi({
-        mirror: camConf.mirror,
-        flip: camConf.flip,
-        rotation: camConf.rotation,
-      });
+      const res = await setCameraConfigApi(patch);
       if (isOk(res)) {
-        const saved: ICameraConfig = {
+        setCamConf({
           mirror: !!res.data?.mirror,
           flip: !!res.data?.flip,
           rotation: res.data?.rotation === 180 ? 180 : 0,
-        };
-        setCamConf(saved);
-        setCamSaved(saved);
-        message.success(
-          res.data?.restarted
-            ? `${t("camera.saved")} ${t("camera.restarted")}`
-            : t("camera.saved")
-        );
-        fetchCurrent();
+        });
       } else if (isBusy(res)) {
         message.warning(t("camera.busy"));
       } else {
@@ -243,7 +247,7 @@ const Live = () => {
     } catch (e) {
       message.error(t("camera.saveFailed"));
     } finally {
-      setCamSaving(false);
+      setCamBusy(false);
     }
   };
 
@@ -269,6 +273,66 @@ const Live = () => {
     resultsUrl,
     videoRef,
   });
+
+  // Legacy app-package probe: while the debug stream is actually playing the
+  // camera app is running, so getFocusValue returning available:false for
+  // >= 3 consecutive samples means the installed app predates the focus/
+  // hot-orientation support. Cleared as soon as a sample comes back available.
+  const [legacyApp, setLegacyApp] = useState(false);
+  const legacyMissRef = useRef(0);
+  const streamingNow = debugOn && hasDebugWs && status === "streaming";
+
+  // Poll getFocusValue at 1s while the focus bar is shown, or (in the
+  // background) while the stream is playing so the legacy probe can run.
+  useEffect(() => {
+    if (!focusOn) {
+      setFocus(null);
+      setFocusPeak(0);
+    }
+    if (!focusOn && !streamingNow) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await getFocusValueApi();
+        if (cancelled) return;
+        const data =
+          isOk(res) && res.data ? res.data : ({ available: false } as const);
+        if (focusOn) {
+          setFocus(data);
+          if (data.available && typeof data.fv === "number") {
+            const v = data.fv;
+            setFocusPeak((p) => (v > p ? v : p));
+          }
+        }
+        if (data.available) {
+          legacyMissRef.current = 0;
+          setLegacyApp(false);
+        } else if (streamingNow) {
+          legacyMissRef.current += 1;
+          if (legacyMissRef.current >= 3) setLegacyApp(true);
+        }
+      } catch (e) {
+        if (!cancelled && focusOn) setFocus({ available: false });
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [focusOn, streamingNow]);
+
+  // Reset the miss counter whenever the stream stops so a later session
+  // starts a fresh 3-sample probe.
+  useEffect(() => {
+    if (!streamingNow) legacyMissRef.current = 0;
+  }, [streamingNow]);
+
+  // A legacy app cannot report focus values — force the assist bar off.
+  useEffect(() => {
+    if (legacyApp && focusOn) setFocusOn(false);
+  }, [legacyApp, focusOn]);
 
   const fetchCurrent = async () => {
     setLoading(true);
@@ -527,6 +591,142 @@ const Live = () => {
                     </div>
                   )}
 
+                  {/* Focus assist bar — compact sharpness readout pinned to
+                      the top of the video area while the toolbar's focus
+                      button is on. */}
+                  {focusOn && (
+                    <div
+                      className="absolute left-8 right-8 top-8 rounded-8 px-12 py-6"
+                      style={{ background: "rgba(0,0,0,0.6)" }}
+                    >
+                      {focus === null ? (
+                        <div className="text-12 text-white opacity-70">
+                          {t("focus.waiting")}
+                        </div>
+                      ) : !focus.available ? (
+                        <div className="text-12 text-white opacity-70">
+                          {t("focus.notRunning")}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-12">
+                          <span className="text-11 text-white opacity-70 flex-none">
+                            {t("focus.score")}
+                          </span>
+                          <span className="rc-mono text-12 text-white flex-none">
+                            {focusValue !== null ? Math.round(focusValue) : "-"}
+                          </span>
+                          <div
+                            className="relative flex-1 rounded-6 overflow-hidden"
+                            style={{
+                              height: 8,
+                              background: "rgba(255,255,255,0.2)",
+                            }}
+                          >
+                            <div
+                              className="absolute left-0 top-0 h-full rounded-6"
+                              style={{
+                                width: `${focusPct}%`,
+                                background: "#8fc31f",
+                                transition: "width 0.4s ease",
+                              }}
+                            />
+                            {focusPeak > 0 && (
+                              <div
+                                className="absolute top-0 h-full"
+                                style={{
+                                  left: `calc(${focusPeakPct}% - 1px)`,
+                                  width: 2,
+                                  background: "#ffffff",
+                                }}
+                              />
+                            )}
+                          </div>
+                          <span className="rc-mono text-11 text-white opacity-70 flex-none">
+                            {t("focus.peak", { peak: Math.round(focusPeak) })}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Camera toolbar — orientation toggles + focus assist,
+                      overlaid bottom-right. Hidden entirely when the camera
+                      config endpoint is unavailable (older supervisor). Shown
+                      even while the debug stream is off: orientation writes
+                      do not depend on the stream. */}
+                  {!!camConf && (
+                    <div
+                      className="rc-cam-toolbar absolute right-8 bottom-8 flex items-center gap-4 rounded-8 px-6 py-4"
+                      style={{ background: "rgba(0,0,0,0.6)" }}
+                    >
+                      {legacyApp && (
+                        <Tooltip
+                          title={t("camera.legacyAppHint")}
+                          placement="top"
+                        >
+                          <span
+                            className="flex items-center justify-center"
+                            style={{
+                              width: 30,
+                              height: 30,
+                              color: "#faad14",
+                              fontSize: 15,
+                            }}
+                          >
+                            <WarningOutlined />
+                          </span>
+                        </Tooltip>
+                      )}
+                      <CamToolButton
+                        tip={t("camera.mirror")}
+                        active={camConf.mirror}
+                        loading={camBusy}
+                        onClick={() =>
+                          onToggleCamera({ mirror: !camConf.mirror })
+                        }
+                      >
+                        <SwapOutlined />
+                      </CamToolButton>
+                      <CamToolButton
+                        tip={t("camera.flip")}
+                        active={camConf.flip}
+                        loading={camBusy}
+                        onClick={() => onToggleCamera({ flip: !camConf.flip })}
+                      >
+                        <SwapOutlined rotate={90} />
+                      </CamToolButton>
+                      <CamToolButton
+                        tip={t("camera.rotation")}
+                        active={camConf.rotation === 180}
+                        loading={camBusy}
+                        onClick={() =>
+                          onToggleCamera({
+                            rotation: camConf.rotation === 180 ? 0 : 180,
+                          })
+                        }
+                      >
+                        <SyncOutlined />
+                      </CamToolButton>
+                      <span
+                        className="flex-none"
+                        style={{
+                          width: 1,
+                          height: 18,
+                          background: "rgba(255,255,255,0.25)",
+                          margin: "0 2px",
+                        }}
+                      />
+                      <CamToolButton
+                        tip={t("focus.title")}
+                        active={focusOn}
+                        disabled={legacyApp}
+                        onClick={() => setFocusOn((v) => !v)}
+                      >
+                        <AimOutlined />
+                      </CamToolButton>
+                    </div>
+                  )}
+
                   {/* Zone/line spatial editor overlay (config_schema) */}
                   {editingItem && (
                     <SpatialEditor
@@ -627,178 +827,6 @@ const Live = () => {
                         </>
                       ),
                     },
-                    {
-                      key: "focus",
-                      label: (
-                        <span className="rc-section-label">
-                          {t("focus.title")}
-                        </span>
-                      ),
-                      children: (
-                        <>
-                          <div className="flex items-center justify-between gap-12">
-                            <div>
-                              <div className="text-14 font-medium">
-                                {t("focus.enable")}
-                              </div>
-                              <div className="text-12 text-muted mt-2">
-                                {t("focus.enableHint")}
-                              </div>
-                            </div>
-                            <Switch checked={focusOn} onChange={setFocusOn} />
-                          </div>
-                          {focusOn && (
-                            <div className="mt-16 pt-16 border-t border-line">
-                              {focus === null ? (
-                                <div className="text-13 text-muted">
-                                  {t("focus.waiting")}
-                                </div>
-                              ) : !focus.available ? (
-                                <div className="text-13 text-muted">
-                                  {t("focus.notRunning")}
-                                </div>
-                              ) : (
-                                <>
-                                  <div className="flex items-baseline justify-between gap-8">
-                                    <span className="text-12 text-muted">
-                                      {t("focus.score")}
-                                    </span>
-                                    <span className="rc-mono text-12">
-                                      {focusValue !== null
-                                        ? Math.round(focusValue)
-                                        : "-"}
-                                    </span>
-                                  </div>
-                                  {/* Score bar + session-peak marker */}
-                                  <div
-                                    className="relative w-full mt-8 rounded-6 overflow-hidden"
-                                    style={{
-                                      height: 10,
-                                      background: "rgba(0,0,0,0.08)",
-                                    }}
-                                  >
-                                    <div
-                                      className="absolute left-0 top-0 h-full rounded-6"
-                                      style={{
-                                        width: `${focusPct}%`,
-                                        background: "#8fc31f",
-                                        transition: "width 0.4s ease",
-                                      }}
-                                    />
-                                    {focusPeak > 0 && (
-                                      <div
-                                        className="absolute top-0 h-full"
-                                        style={{
-                                          left: `calc(${focusPeakPct}% - 1px)`,
-                                          width: 2,
-                                          background: "#4a6510",
-                                        }}
-                                      />
-                                    )}
-                                  </div>
-                                  <div className="rc-mono text-11 text-muted mt-6">
-                                    {t("focus.peak", {
-                                      peak: Math.round(focusPeak),
-                                    })}
-                                  </div>
-                                  <div className="text-12 text-muted mt-8">
-                                    {t("focus.hint")}
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </>
-                      ),
-                    },
-                    // Camera picture orientation — hidden when the endpoint
-                    // is missing (older firmware). Compact version of the
-                    // Device page card; saving restarts the active app so the
-                    // debug stream is dropped first.
-                    ...(camConf !== null
-                      ? [
-                          {
-                            key: "camera",
-                            label: (
-                              <span className="flex items-center gap-8">
-                                <span className="rc-section-label">
-                                  {t("camera.card")}
-                                </span>
-                                {camDirty && (
-                                  <span className="rc-badge accent">
-                                    {t("config.unsaved")}
-                                  </span>
-                                )}
-                              </span>
-                            ),
-                            children:
-                              camConf === undefined ? (
-                                <div className="text-13 text-muted">
-                                  {t("common.reading")}
-                                </div>
-                              ) : (
-                                <>
-                                  <div className="flex items-center justify-between gap-12">
-                                    <div className="text-14 font-medium">
-                                      {t("camera.mirror")}
-                                    </div>
-                                    <Switch
-                                      size="small"
-                                      checked={camConf.mirror}
-                                      onChange={(v) =>
-                                        setCamConf({ ...camConf, mirror: v })
-                                      }
-                                    />
-                                  </div>
-                                  <div className="flex items-center justify-between gap-12 mt-12 pt-12 border-t border-line">
-                                    <div className="text-14 font-medium">
-                                      {t("camera.flip")}
-                                    </div>
-                                    <Switch
-                                      size="small"
-                                      checked={camConf.flip}
-                                      onChange={(v) =>
-                                        setCamConf({ ...camConf, flip: v })
-                                      }
-                                    />
-                                  </div>
-                                  <div className="flex items-center justify-between gap-12 mt-12 pt-12 border-t border-line">
-                                    <div className="text-14 font-medium">
-                                      {t("camera.rotation")}
-                                    </div>
-                                    <Segmented
-                                      size="small"
-                                      value={camConf.rotation}
-                                      onChange={(v) =>
-                                        setCamConf({
-                                          ...camConf,
-                                          rotation: v === 180 ? 180 : 0,
-                                        })
-                                      }
-                                      options={[
-                                        { label: "0°", value: 0 },
-                                        { label: "180°", value: 180 },
-                                      ]}
-                                    />
-                                  </div>
-                                  <Button
-                                    size="small"
-                                    type="primary"
-                                    className="mt-12"
-                                    loading={camSaving}
-                                    disabled={!camDirty}
-                                    onClick={onSaveCamera}
-                                  >
-                                    {t("camera.save")}
-                                  </Button>
-                                  <div className="text-12 text-muted mt-8">
-                                    {t("camera.liveHint")}
-                                  </div>
-                                </>
-                              ),
-                          },
-                        ]
-                      : []),
                     ...(appConfig.schema
                       ? [
                           {
