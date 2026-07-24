@@ -12,17 +12,21 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <quirc.h>
 
+#include <sscma.h>
+#include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
 
 #include "mqtt_payload.h"
 #include "rtsp_demo.h"
-#include "video.h"
+
+using namespace ma;
 
 using Clock = std::chrono::steady_clock;
 
@@ -44,8 +48,8 @@ static struct {
     bool enable_mqtt       = true;
 
     bool enable_rtsp  = true;
-    int stream_width  = 1920;
-    int stream_height = 1080;
+    int stream_width  = 1280;
+    int stream_height = 720;
     int stream_fps    = 30;
 
     bool enable_debug = true;  // H.264-over-WS + results JSON for supervisor console
@@ -55,9 +59,11 @@ static struct {
 } g_config;
 
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
+static Camera*                 g_camera         = nullptr;
+static std::atomic<bool>       g_running{true};
 
-// QR decoding state reused across callback invocations (the CH0 consumer is a
-// single producer thread; the mutex only guards against an unexpected reentry).
+// QR decoding state reused across frames (decode runs only on the main loop
+// thread now; the mutex only guards against an unexpected reentry).
 static struct quirc* g_qr = nullptr;
 static std::mutex g_qr_mutex;
 static std::atomic<uint64_t> g_frame_id{0};
@@ -98,30 +104,33 @@ static void map_point_norm(float px, float py,
 }
 
 // ---------------------------------------------------------------------------
-// Signal handling
+// Cleanup / signal handling
 // ---------------------------------------------------------------------------
+
+static void cleanup() {
+    if (g_camera) g_camera->stopStream();
+    if (g_config.enable_debug) debug_stream_destroy();
+    deinitVideo();
+    deinitRtsp();
+    if (g_mqtt_publisher) {
+        g_mqtt_publisher->deinit();
+        delete g_mqtt_publisher;
+        g_mqtt_publisher = nullptr;
+    }
+    if (g_qr) {
+        quirc_destroy(g_qr);
+        g_qr = nullptr;
+    }
+}
 
 static void app_ipcam_ExitSig_handle(int signo) {
     signal(SIGINT, SIG_IGN);
     signal(SIGTERM, SIG_IGN);
 
     if ((SIGINT == signo) || (SIGTERM == signo)) {
-        if (g_config.enable_debug) debug_stream_destroy();
-        deinitVideo();
-        deinitRtsp();
-        if (g_mqtt_publisher) {
-            g_mqtt_publisher->deinit();
-            delete g_mqtt_publisher;
-            g_mqtt_publisher = nullptr;
-        }
-        if (g_qr) {
-            quirc_destroy(g_qr);
-            g_qr = nullptr;
-        }
         std::printf("[INFO] received signal %d, shutting down\n", signo);
+        g_running.store(false);
     }
-
-    exit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,23 +150,18 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
 }
 
 // ---------------------------------------------------------------------------
-// QR detection callback (CH0 RGB888 consumer, index 0)
+// QR detection — runs on the normal-priority main loop (NOT the CH0 realtime
+// VENC consumer thread). Heavy RGB->gray + quirc work here no longer preempts
+// the RTSP/libevent server thread, so :8554 keeps accepting clients.
 // ---------------------------------------------------------------------------
 
-static int fpProcessQRCodeFrame(void* pData, void* /*pArgs*/, void* /*pUserData*/) {
-    VIDEO_FRAME_INFO_S* VpssFrame = (VIDEO_FRAME_INFO_S*)pData;
-    VIDEO_FRAME_S* f              = &VpssFrame->stVFrame;
-
+static void processQRCode(const ma_img_t& frame) {
     std::lock_guard<std::mutex> lk(g_qr_mutex);
 
-    const int W = static_cast<int>(f->u32Width);
-    const int H = static_cast<int>(f->u32Height);
-
-    CVI_U8* pu8VirAddr = (CVI_U8*)CVI_SYS_Mmap(f->u64PhyAddr[0], f->u32Length[0]);
-    if (!pu8VirAddr) {
-        CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to map frame memory\n");
-        return CVI_FAILURE;
-    }
+    const int W = static_cast<int>(frame.width);
+    const int H = static_cast<int>(frame.height);
+    const uint8_t* pu8VirAddr = frame.data;
+    if (!pu8VirAddr) return;
 
     // Lazily (re)create the quirc context sized to the frame.
     if (!g_qr) {
@@ -168,16 +172,15 @@ static int fpProcessQRCodeFrame(void* pData, void* /*pArgs*/, void* /*pUserData*
         }
     }
     if (!g_qr) {
-        CVI_SYS_Munmap(pu8VirAddr, f->u32Length[0]);
         CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to initialize Quirc\n");
-        return CVI_FAILURE;
+        return;
     }
 
     const auto t0 = Clock::now();
 
     // RGB888 -> grayscale straight into the quirc buffer.
     uint8_t* buffer = quirc_begin(g_qr, nullptr, nullptr);
-    const uint32_t npix = f->u32Width * f->u32Height;
+    const uint32_t npix = frame.width * frame.height;
     for (uint32_t i = 0; i < npix; ++i) {
         const uint8_t r = pu8VirAddr[i * 3];
         const uint8_t g = pu8VirAddr[i * 3 + 1];
@@ -213,8 +216,6 @@ static int fpProcessQRCodeFrame(void* pData, void* /*pArgs*/, void* /*pUserData*
     const bool qr_found        = !codes.empty();
     const uint64_t frame_id    = g_frame_id.fetch_add(1) + 1;
 
-    CVI_SYS_Munmap(pu8VirAddr, f->u32Length[0]);
-
     // Publish every frame (empty codes too: clears the Console overlay and the
     // HA qr_count on the frame after a code leaves the view).
     if (g_config.enable_mqtt && g_mqtt_publisher) {
@@ -244,8 +245,6 @@ static int fpProcessQRCodeFrame(void* pData, void* /*pArgs*/, void* /*pUserData*
         }
         std::fflush(stdout);
     }
-
-    return CVI_SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +347,58 @@ static bool init_mqtt() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Camera (CH0 inference frames) — same pattern as facemesh-reader: the frame
+// is pulled on the normal-priority main loop via retrieveFrame/returnFrame,
+// keeping QR decoding off the realtime VENC consumer thread.
+// ---------------------------------------------------------------------------
+
+static bool init_camera() {
+    Device* device = Device::getInstance();
+
+    for (auto& sensor : device->getSensors()) {
+        if (sensor->getType() == ma::Sensor::Type::kCamera) {
+            g_camera = static_cast<Camera*>(sensor);
+            g_camera->init(0);
+
+            Camera::CtrlValue value;
+
+            value.i32 = 0;
+            g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
+
+            // Apply the inference frame rate (else the channel defaults high and
+            // the capture->inference FIFO fills faster than inference drains).
+            value.i32 = g_config.camera_fps;
+            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
+
+            value.u16s[0] = g_config.camera_w;
+            value.u16s[1] = g_config.camera_h;
+            g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
+
+            // CPU-accessible frames (quirc reads pixels).
+            value.i32 = 0;
+            g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
+
+            std::printf("[OK] camera initialized (%dx%d @ %dfps for inference)\n",
+                        g_config.camera_w, g_config.camera_h, g_config.camera_fps);
+            return true;
+        }
+    }
+
+    std::fprintf(stderr, "[ERROR] no camera found\n");
+    return false;
+}
+
+static void process_frame() {
+    ma_img_t frame;
+    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return;
+    }
+    processQRCode(frame);
+    g_camera->returnFrame(frame);
+}
+
 int main(int argc, char* argv[]) {
     if (!parse_args(argc, argv)) return 1;
 
@@ -358,20 +409,16 @@ int main(int argc, char* argv[]) {
 
     if (!init_mqtt()) return 2;
 
+    // CH0 inference frames come through the Camera abstraction (main-loop
+    // retrieveFrame), so no CH0 setupVideo / realtime frame handler here.
+    if (!init_camera()) return 3;
+
     if (initVideo()) {
         std::fprintf(stderr, "[ERROR] initVideo failed\n");
         return 3;
     }
 
     video_ch_param_t param{};
-
-    // CH0: RGB888 for QR detection (callback-driven).
-    param.format = VIDEO_FORMAT_RGB888;
-    param.width  = static_cast<uint32_t>(g_config.camera_w);
-    param.height = static_cast<uint32_t>(g_config.camera_h);
-    param.fps    = static_cast<uint8_t>(g_config.camera_fps);
-    setupVideo(VIDEO_CH0, &param);
-    registerVideoFrameHandler(VIDEO_CH0, 0, fpProcessQRCodeFrame, (void*)".rgb");
 
     // CH2: H.264 with RTSP (+ debug_stream as consumer index 1).
     if (g_config.enable_rtsp) {
@@ -392,14 +439,18 @@ int main(int argc, char* argv[]) {
         g_config.enable_debug = false;
     }
 
+    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
+
     startVideo();
 
     std::printf("[OK] qrcode reader running (inference %dx%d RGB888)\n",
                 g_config.camera_w, g_config.camera_h);
 
-    while (1) {
-        sleep(1);
+    while (g_running.load()) {
+        process_frame();
     }
 
+    cleanup();
+    std::printf("[INFO] qrcode reader terminated\n");
     return 0;
 }

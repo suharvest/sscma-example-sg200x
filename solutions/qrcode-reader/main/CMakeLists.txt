@@ -11,7 +11,7 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS cvi_rtsp sophgo opencv_core opencv_imgcodecs opencv_imgproc quirc ha_mqtt debug_stream ssl crypto cares
+    PRIVATE_REQUIREDS sscma-micro cvi_rtsp sophgo opencv_core opencv_imgcodecs opencv_imgproc quirc ha_mqtt debug_stream ssl crypto cares
 )
 
 
