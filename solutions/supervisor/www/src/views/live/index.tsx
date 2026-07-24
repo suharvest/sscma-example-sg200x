@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Collapse, Select, Spin, Switch } from "antd";
+import { App, Button, Collapse, Segmented, Select, Spin, Switch } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
@@ -8,12 +8,16 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { getCurrentAppApi, setAppModelApi } from "@/api/app";
-import { getFocusValueApi } from "@/api/camera";
-import { IGetFocusValueResult } from "@/api/camera/camera";
+import {
+  getFocusValueApi,
+  getCameraConfigApi,
+  setCameraConfigApi,
+} from "@/api/camera";
+import { ICameraConfig, IGetFocusValueResult } from "@/api/camera/camera";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
 import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
-import { isOk } from "@/utils/api";
+import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import {
   resolveRtspUrl,
@@ -178,6 +182,71 @@ const Live = () => {
       : 0;
   const focusPeakPct =
     focusPeak > 0 ? Math.min((focusPeak / focusScale) * 100, 100) : 0;
+
+  // Camera picture orientation (shared with the Device page; each page pulls
+  // its own copy on mount). undefined=loading, null=endpoint unavailable
+  // (older firmware) — the panel is hidden in that case.
+  const [camConf, setCamConf] = useState<ICameraConfig | null | undefined>(
+    undefined
+  );
+  const [camSaved, setCamSaved] = useState<ICameraConfig | null>(null);
+  const [camSaving, setCamSaving] = useState(false);
+  const camDirty =
+    !!camConf &&
+    !!camSaved &&
+    (camConf.mirror !== camSaved.mirror ||
+      camConf.flip !== camSaved.flip ||
+      camConf.rotation !== camSaved.rotation);
+  useEffect(() => {
+    getCameraConfigApi()
+      .then((res) => {
+        if (isOk(res) && res.data && typeof res.data.mirror === "boolean") {
+          setCamConf(res.data);
+          setCamSaved(res.data);
+        } else {
+          setCamConf(null);
+        }
+      })
+      .catch(() => setCamConf(null));
+  }, []);
+
+  /** Persist the camera orientation. The backend restarts the active app, so
+   *  drop the debug stream first (same pattern as saving the app config). */
+  const onSaveCamera = async () => {
+    if (!camConf) return;
+    setCamSaving(true);
+    setDebugOn(false);
+    try {
+      const res = await setCameraConfigApi({
+        mirror: camConf.mirror,
+        flip: camConf.flip,
+        rotation: camConf.rotation,
+      });
+      if (isOk(res)) {
+        const saved: ICameraConfig = {
+          mirror: !!res.data?.mirror,
+          flip: !!res.data?.flip,
+          rotation: res.data?.rotation === 180 ? 180 : 0,
+        };
+        setCamConf(saved);
+        setCamSaved(saved);
+        message.success(
+          res.data?.restarted
+            ? `${t("camera.saved")} ${t("camera.restarted")}`
+            : t("camera.saved")
+        );
+        fetchCurrent();
+      } else if (isBusy(res)) {
+        message.warning(t("camera.busy"));
+      } else {
+        message.error(res.msg || t("camera.saveFailed"));
+      }
+    } catch (e) {
+      message.error(t("camera.saveFailed"));
+    } finally {
+      setCamSaving(false);
+    }
+  };
 
   // App configuration (manifest config_schema) — schema null hides the card.
   const appConfig = useAppConfig(app?.id);
@@ -643,6 +712,94 @@ const Live = () => {
                         </>
                       ),
                     },
+                    // Camera picture orientation — hidden when the endpoint
+                    // is missing (older firmware). Compact version of the
+                    // Device page card; saving restarts the active app so the
+                    // debug stream is dropped first.
+                    ...(camConf !== null
+                      ? [
+                          {
+                            key: "camera",
+                            label: (
+                              <span className="flex items-center gap-8">
+                                <span className="rc-section-label">
+                                  {t("camera.card")}
+                                </span>
+                                {camDirty && (
+                                  <span className="rc-badge accent">
+                                    {t("config.unsaved")}
+                                  </span>
+                                )}
+                              </span>
+                            ),
+                            children:
+                              camConf === undefined ? (
+                                <div className="text-13 text-muted">
+                                  {t("common.reading")}
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="flex items-center justify-between gap-12">
+                                    <div className="text-14 font-medium">
+                                      {t("camera.mirror")}
+                                    </div>
+                                    <Switch
+                                      size="small"
+                                      checked={camConf.mirror}
+                                      onChange={(v) =>
+                                        setCamConf({ ...camConf, mirror: v })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="flex items-center justify-between gap-12 mt-12 pt-12 border-t border-line">
+                                    <div className="text-14 font-medium">
+                                      {t("camera.flip")}
+                                    </div>
+                                    <Switch
+                                      size="small"
+                                      checked={camConf.flip}
+                                      onChange={(v) =>
+                                        setCamConf({ ...camConf, flip: v })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="flex items-center justify-between gap-12 mt-12 pt-12 border-t border-line">
+                                    <div className="text-14 font-medium">
+                                      {t("camera.rotation")}
+                                    </div>
+                                    <Segmented
+                                      size="small"
+                                      value={camConf.rotation}
+                                      onChange={(v) =>
+                                        setCamConf({
+                                          ...camConf,
+                                          rotation: v === 180 ? 180 : 0,
+                                        })
+                                      }
+                                      options={[
+                                        { label: "0°", value: 0 },
+                                        { label: "180°", value: 180 },
+                                      ]}
+                                    />
+                                  </div>
+                                  <Button
+                                    size="small"
+                                    type="primary"
+                                    className="mt-12"
+                                    loading={camSaving}
+                                    disabled={!camDirty}
+                                    onClick={onSaveCamera}
+                                  >
+                                    {t("camera.save")}
+                                  </Button>
+                                  <div className="text-12 text-muted mt-8">
+                                    {t("camera.liveHint")}
+                                  </div>
+                                </>
+                              ),
+                          },
+                        ]
+                      : []),
                     ...(appConfig.schema
                       ? [
                           {

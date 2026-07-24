@@ -528,7 +528,8 @@
     "restarted": "The running application was restarted to apply them.",
     "saveFailed": "Failed to save camera settings",
     "busy": "Another operation is in progress, please retry shortly",
-    "hint": "Saving restarts the running application so the new orientation takes effect."
+    "hint": "Saving restarts the running application so the new orientation takes effect.",
+    "liveHint": "Saving restarts the running application — the debug stream will drop briefly."
   },
   "focus": {
     "title": "Focus Assist",
