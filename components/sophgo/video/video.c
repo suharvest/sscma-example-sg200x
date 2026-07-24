@@ -1,5 +1,8 @@
 #include "video.h"
 
+#include "app_ipcam_camera_conf.h"
+#include "app_ipcam_fv_monitor.h"
+
 static bool is_started   = false;
 static bool video_mirror = false;
 static bool video_flip   = false;
@@ -93,7 +96,28 @@ int initVideo(void) {
     return 0;
 }
 
+/* Apply device-level orientation from /userdata/local/camera.conf.
+ * CAM_ROTATION=180 is realized as mirror+flip; the effective values are
+ * XOR-composed onto the current mirror/flip flags so an application's own
+ * setVideoMirror()/setVideoFlip() calls still take effect on top of the
+ * device config (and vice versa). Must run before app_ipcam_Vi_Init(),
+ * which pushes the flags to VI via CVI_VI_SetChnFlipMirror. */
+static void applyCameraConf(void) {
+    camera_conf_t conf;
+    app_ipcam_CameraConf_Load(CAMERA_CONF_PATH, &conf);
+
+    bool rot180     = (conf.rotation == 180);
+    bool mirror_eff = ((conf.mirror != 0) != rot180); /* CAM_MIRROR XOR rot180 */
+    bool flip_eff   = ((conf.flip != 0) != rot180);   /* CAM_FLIP XOR rot180 */
+
+    setVideoMirror((getVideoMirror() != 0) != mirror_eff); /* current XOR effective */
+    setVideoFlip((getVideoFlip() != 0) != flip_eff);
+
+    APP_PROF_LOG_PRINT(LEVEL_INFO, "camera.conf: mirror=%d flip=%d rotation=%d -> effective mirror=%d flip=%d\n", conf.mirror, conf.flip, conf.rotation, getVideoMirror(), getVideoFlip());
+}
+
 int deinitVideo(void) {
+    app_ipcam_FvMonitor_Stop();
     if (is_started) {
         APP_CHK_RET(app_ipcam_Venc_Stop(APP_VENC_ALL), "Venc Stop");
         APP_CHK_RET(app_ipcam_Vpss_DeInit(), "Vpss DeInit");
@@ -112,6 +136,9 @@ int startVideo() {
     }
 
     int ret = 0;
+
+    /* device-level orientation config, must precede VI init */
+    applyCameraConf();
 
     /* init modules include <Peripheral; Sys; VI; VB; OSD; Venc; AI; Audio; etc.> */
     ret = app_ipcam_Sys_Init();
@@ -156,6 +183,14 @@ int startVideo() {
     }
 
     is_started = true;
+
+    /* ISP is running now: start background focus-value publisher */
+    {
+        APP_PARAM_VI_CTX_S* vi_ctx = app_ipcam_Vi_Param_Get();
+        int vi_pipe                = (vi_ctx->u32WorkSnsCnt > 0) ? vi_ctx->astChnInfo[0].s32ChnId : 0;
+        app_ipcam_FvMonitor_Start(vi_pipe);
+    }
+
     return 0;
 }
 
