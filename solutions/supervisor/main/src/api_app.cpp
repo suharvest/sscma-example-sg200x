@@ -1555,11 +1555,11 @@ api_status_t api_app::getCameraConfig(request_t req, response_t res)
 // POST /api/appMgr/setCameraConfig
 // body: {mirror:bool, flip:bool, rotation:0|180} (each field optional, the
 // stored value is kept when absent). Shares the app op busy gate (same level
-// as switchApp/setHaConfig). The atomic conf write is all that is needed:
-// the sophgo video component watches camera.conf and hot-applies the new
-// orientation to the running VI channel within ~1-2 s, so the active app is
-// NOT restarted. Reply data carries the saved config, restarted:false (kept
-// for backwards compatibility) and applied:"live".
+// as switchApp/setHaConfig). camera.conf orientation is folded into VI only at
+// startup (applyCameraConf runs before VI init); applying it mid-stream races
+// the frame path and hangs VPSS, so after the atomic conf write the active app
+// (if any) is restarted so the new orientation takes effect. Reply data carries
+// the saved config, restarted:bool and applied:"restart".
 api_status_t api_app::setCameraConfig(request_t req, response_t res)
 {
     auto&& body = parse_body(req);
@@ -1610,10 +1610,34 @@ api_status_t api_app::setCameraConfig(request_t req, response_t res)
     }
 
     json data = camera_conf_to_json(next);
-    data["restarted"] = false; // kept for backwards compatibility
-    data["applied"] = "live";  // hot-applied by the video conf watcher
-    response(res, 0, STR_OK, data);
-    return API_STATUS_OK;
+    data["applied"] = "restart"; // orientation only takes effect on app restart
+
+    // Node-RED mode: the conf is persisted, but the C++ app stack is parked —
+    // never restart it (that would start a camera app under Node-RED's feet).
+    // The saved orientation takes effect when the device returns to console mode.
+    if (in_nodered_mode()) {
+        data["restarted"] = false;
+        data["note"] = "nodered_mode";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+
+    // Restart the active app (if any) so the new orientation is folded into VI.
+    json state = read_state();
+    std::string active = jstr(state, "active_app");
+    if (active.empty()) {
+        data["restarted"] = false;
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    json manifests = load_manifests();
+    if (!manifests.contains(active)) {
+        data["restarted"] = false;
+        data["note"] = "active app manifest missing, not restarted";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    return restart_after_change(manifests[active], active, data, g, res);
 }
 
 // GET/POST /api/appMgr/getFocusValue

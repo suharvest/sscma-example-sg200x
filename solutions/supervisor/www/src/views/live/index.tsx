@@ -8,6 +8,7 @@ import {
   SyncOutlined,
   AimOutlined,
   WarningOutlined,
+  CheckOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -20,7 +21,6 @@ import {
 import {
   ICameraConfig,
   IGetFocusValueResult,
-  ISetCameraConfigParams,
 } from "@/api/camera/camera";
 import { IAppInfo, IConfigItem } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
@@ -294,15 +294,26 @@ const Live = () => {
   // Camera picture orientation (shared with the Device page; each page pulls
   // its own copy on mount). undefined=loading, null=endpoint unavailable
   // (older supervisor) — the overlay toolbar is hidden entirely in that case.
+  // camConf = the orientation persisted on-device (saved). pending = the local
+  // draft edited by the toolbar toggles; it diverges from camConf until Apply.
+  // undefined=loading, null=endpoint unavailable (older supervisor) — toolbar
+  // hidden entirely in that case.
   const [camConf, setCamConf] = useState<ICameraConfig | null | undefined>(
     undefined
   );
+  const [pending, setPending] = useState<ICameraConfig | null>(null);
   const [camBusy, setCamBusy] = useState(false);
   useEffect(() => {
     getCameraConfigApi()
       .then((res) => {
         if (isOk(res) && res.data && typeof res.data.mirror === "boolean") {
-          setCamConf(res.data);
+          const saved: ICameraConfig = {
+            mirror: !!res.data.mirror,
+            flip: !!res.data.flip,
+            rotation: res.data.rotation === 180 ? 180 : 0,
+          };
+          setCamConf(saved);
+          setPending(saved);
         } else {
           setCamConf(null);
         }
@@ -310,30 +321,57 @@ const Live = () => {
       .catch(() => setCamConf(null));
   }, []);
 
-  /** Toggle a single orientation field from the overlay toolbar. The change
-   *  is hot-applied by the video pipeline within ~1-2 s (applied:"live") — no
-   *  app restart, no confirmation. Only the toggled field is sent. */
-  const onToggleCamera = async (patch: ISetCameraConfigParams) => {
-    if (!camConf || camBusy) return;
+  // Orientation only takes effect on app restart (applyCameraConf runs before
+  // VI init; mid-stream re-apply hangs VPSS), so the toggles edit a local draft
+  // and a single Apply persists all three at once and restarts the active app.
+  const camDirty =
+    !!camConf &&
+    !!pending &&
+    (pending.mirror !== camConf.mirror ||
+      pending.flip !== camConf.flip ||
+      pending.rotation !== camConf.rotation);
+
+  /** Toggle an orientation field in the local draft only — no API call. */
+  const onTogglePending = (patch: Partial<ICameraConfig>) => {
+    if (!pending || camBusy) return;
+    setPending({ ...pending, ...patch });
+  };
+
+  /** Persist the whole draft in one shot. The backend restarts the active app
+   *  to fold the new orientation into VI, so the debug stream drops and then
+   *  reconnects on its own; keep the toolbar disabled through that window. */
+  const onApplyCamera = async () => {
+    if (!camConf || !pending || camBusy || !camDirty) return;
     setCamBusy(true);
     try {
-      const res = await setCameraConfigApi(patch);
+      const res = await setCameraConfigApi({
+        mirror: pending.mirror,
+        flip: pending.flip,
+        rotation: pending.rotation,
+      });
       if (isOk(res)) {
-        setCamConf({
+        const saved: ICameraConfig = {
           mirror: !!res.data?.mirror,
           flip: !!res.data?.flip,
           rotation: res.data?.rotation === 180 ? 180 : 0,
-        });
-      } else if (isBusy(res)) {
+        };
+        setCamConf(saved);
+        setPending(saved);
+        message.info(t("camera.applying"));
+        // App is restarting — keep the toolbar locked through the restart
+        // window; the debug stream reconnects automatically once it is back.
+        setTimeout(() => setCamBusy(false), 8000);
+        return;
+      }
+      if (isBusy(res)) {
         message.warning(t("camera.busy"));
       } else {
         message.error(res.msg || t("camera.saveFailed"));
       }
     } catch (e) {
       message.error(t("camera.saveFailed"));
-    } finally {
-      setCamBusy(false);
     }
+    setCamBusy(false);
   };
 
   // App configuration (manifest config_schema) — schema null hides the card.
@@ -768,34 +806,47 @@ const Live = () => {
                       )}
                       <CamToolButton
                         tip={t("camera.mirror")}
-                        active={camConf.mirror}
-                        loading={camBusy}
+                        active={pending?.mirror}
+                        disabled={camBusy}
                         onClick={() =>
-                          onToggleCamera({ mirror: !camConf.mirror })
+                          onTogglePending({ mirror: !pending?.mirror })
                         }
                       >
                         <SwapOutlined />
                       </CamToolButton>
                       <CamToolButton
                         tip={t("camera.flip")}
-                        active={camConf.flip}
-                        loading={camBusy}
-                        onClick={() => onToggleCamera({ flip: !camConf.flip })}
+                        active={pending?.flip}
+                        disabled={camBusy}
+                        onClick={() =>
+                          onTogglePending({ flip: !pending?.flip })
+                        }
                       >
                         <SwapOutlined rotate={90} />
                       </CamToolButton>
                       <CamToolButton
                         tip={t("camera.rotation")}
-                        active={camConf.rotation === 180}
-                        loading={camBusy}
+                        active={pending?.rotation === 180}
+                        disabled={camBusy}
                         onClick={() =>
-                          onToggleCamera({
-                            rotation: camConf.rotation === 180 ? 0 : 180,
+                          onTogglePending({
+                            rotation: pending?.rotation === 180 ? 0 : 180,
                           })
                         }
                       >
                         <SyncOutlined />
                       </CamToolButton>
+                      {camDirty && (
+                        <CamToolButton
+                          tip={t("camera.apply")}
+                          active
+                          loading={camBusy}
+                          disabled={camBusy}
+                          onClick={onApplyCamera}
+                        >
+                          <CheckOutlined />
+                        </CamToolButton>
+                      )}
                       <span
                         className="flex-none"
                         style={{

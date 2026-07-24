@@ -1,17 +1,11 @@
 #include "video.h"
 
 #include "app_ipcam_camera_conf.h"
-#include "app_ipcam_conf_watcher.h"
 #include "app_ipcam_fv_monitor.h"
 
 static bool is_started   = false;
 static bool video_mirror = false;
 static bool video_flip   = false;
-
-/* Effective camera.conf orientation folded into VI at startup; handed to the
- * conf watcher as its hot-apply baseline. */
-static bool conf_mirror_eff = false;
-static bool conf_flip_eff   = false;
 
 static int setVbPool(video_ch_index_t ch, const video_ch_param_t* param) {
     APP_PARAM_SYS_CFG_S* sys = app_ipcam_Sys_Param_Get();
@@ -119,15 +113,10 @@ static void applyCameraConf(void) {
     setVideoMirror((getVideoMirror() != 0) != mirror_eff); /* current XOR effective */
     setVideoFlip((getVideoFlip() != 0) != flip_eff);
 
-    /* remember what got folded in: baseline for the runtime conf watcher */
-    conf_mirror_eff = mirror_eff;
-    conf_flip_eff   = flip_eff;
-
     APP_PROF_LOG_PRINT(LEVEL_INFO, "camera.conf: mirror=%d flip=%d rotation=%d -> effective mirror=%d flip=%d\n", conf.mirror, conf.flip, conf.rotation, getVideoMirror(), getVideoFlip());
 }
 
 int deinitVideo(void) {
-    app_ipcam_ConfWatcher_Stop();
     app_ipcam_FvMonitor_Stop();
     if (is_started) {
         APP_CHK_RET(app_ipcam_Venc_Stop(APP_VENC_ALL), "Venc Stop");
@@ -195,13 +184,12 @@ int startVideo() {
 
     is_started = true;
 
-    /* ISP is running now: start background focus-value publisher and the
-     * camera.conf hot-apply watcher (same pipe/chn as the VI init path). */
+    /* ISP is running now: start the background focus-value publisher
+     * (read-only AF statistics, safe during streaming). */
     {
         APP_PARAM_VI_CTX_S* vi_ctx = app_ipcam_Vi_Param_Get();
         int vi_pipe                = (vi_ctx->u32WorkSnsCnt > 0) ? vi_ctx->astChnInfo[0].s32ChnId : 0;
         app_ipcam_FvMonitor_Start(vi_pipe);
-        app_ipcam_ConfWatcher_Start(vi_pipe, vi_pipe, conf_mirror_eff, conf_flip_eff);
     }
 
     return 0;

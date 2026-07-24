@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(yolo-detector VERSION 0.4.2 LANGUAGES C CXX)
+project(yolo-detector VERSION 0.4.3 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 
