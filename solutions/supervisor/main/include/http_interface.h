@@ -1,8 +1,13 @@
 #ifndef _HTTP_INTERFACE_H_
 #define _HTTP_INTERFACE_H_
 
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "http_request.h"
 #include "json.hpp"
-#include "mongoose.h"
+#include "logger.hpp"
 
 using json = nlohmann::json;
 
@@ -14,11 +19,11 @@ typedef enum {
     API_STATUS_AUTHORIZED,
     API_STATUS_UNAUTHORIZED,
     // #14: the handler enqueued a long operation on the worker pool and the
-    // reply will be sent later from MG_EV_WAKEUP. The dispatcher must keep the
-    // connection open and NOT reply now.
+    // reply will be sent later, once the worker finishes. The dispatcher must
+    // keep the connection open and NOT reply now.
     API_STATUS_ASYNC,
 } api_status_t;
-typedef const struct mg_http_message* request_t;
+typedef const struct http_request* request_t;
 typedef json& response_t;
 typedef api_status_t (*api_handler_t)(request_t req, response_t res);
 
@@ -61,7 +66,7 @@ protected:
 
     static std::string get_uri(request_t req)
     {
-        return std::string(req->uri.buf, req->uri.len);
+        return std::string(req->uri);
     }
 
     static std::string get_host(request_t req, bool ip_only = true)
@@ -96,7 +101,7 @@ protected:
 
     static std::string get_body_raw(request_t req)
     {
-        return std::string(req->body.buf, req->body.len);
+        return std::string(req->body);
     }
 
     static json parse_body(request_t req)
@@ -120,13 +125,14 @@ protected:
         auto&& type = _get_header_var(req, "Content-Type");
         if (type.find("multipart/form-data") != std::string::npos) {
             size_t pos = 0;
-            struct mg_http_part part;
-            while ((pos = mg_http_next_multipart(req->body, pos, &part)) > 0) {
+            http_multipart_part part;
+            while (req->next_multipart != nullptr
+                && (pos = req->next_multipart(req, pos, &part)) > 0) {
                 multipart_t mp;
-                mp.name = std::string(part.name.buf, part.name.len);
-                mp.filename = std::string(part.filename.buf, part.filename.len);
-                mp.data = part.body.buf;
-                mp.len = part.body.len;
+                mp.name = std::string(part.name);
+                mp.filename = std::string(part.filename);
+                mp.data = part.data;
+                mp.len = part.len;
                 parts.emplace_back(mp);
             }
         } else {
@@ -134,8 +140,10 @@ protected:
                 multipart_t mp;
                 mp.name = param;
                 mp.filename = get_param(req, param);
-                mp.data = req->body.buf;
-                mp.len = req->body.len;
+                // const_cast: multipart_t::data is non-const for historical
+                // reasons; nothing writes through it.
+                mp.data = const_cast<char*>(req->body.data());
+                mp.len = req->body.size();
                 parts.emplace_back(mp);
             }
         }
@@ -173,14 +181,18 @@ private:
 
     static std::string _get_http_var(request_t req, std::string param)
     {
-        struct mg_str v = mg_http_var(req->query, mg_str(param.c_str()));
-        return std::string(v.buf, v.len);
+        if (req == nullptr || req->query_var == nullptr) {
+            return "";
+        }
+        return std::string(req->query_var(req, param.c_str()));
     }
 
     static std::string _get_header_var(request_t req, const char* name)
     {
-        mg_str* hdr = mg_http_get_header((mg_http_message*)req, name);
-        return (hdr == nullptr) ? "" : std::string(hdr->buf, hdr->len);
+        if (req == nullptr || req->header == nullptr) {
+            return "";
+        }
+        return std::string(req->header(req, name));
     }
 };
 

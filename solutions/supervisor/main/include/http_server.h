@@ -19,6 +19,7 @@
 #include "api_wifi.h"
 #include "api_halow.h"
 #include "http_dispatch_mongoose.h"
+#include "http_request_mongoose.h"
 
 class http_server {
 public:
@@ -168,8 +169,13 @@ private:
             // LOGV(std::string(hm->message.buf, hm->message.len).c_str());
             LOGV("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n\n");
 
+            // Wrap the library's message in the neutral view the API layer
+            // speaks (http_request.h). Zero-copy: it points into hm, and lives
+            // exactly as long as this dispatch.
+            http_request req = http_request_from_mg(hm);
+
             json res;
-            api_status_t status = api_base::api_handler(hm, res);
+            api_status_t status = api_base::api_handler(&req, res);
             if (status == API_STATUS_ASYNC) {
                 // Long operation queued: keep the connection open, the reply
                 // is sent from MG_EV_WAKEUP when the worker finishes.
