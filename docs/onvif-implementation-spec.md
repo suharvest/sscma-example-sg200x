@@ -633,6 +633,39 @@ append 一项即可。**路由和侧边菜单都不用改**（`router/index.tsx:
 
 **实现方式见 §14.4：手写 XML 模板，禁止用 gSOAP（许可证否决项）。** 动手前先完成 §0.5-B 的 mongoose 决策。
 
+#### 组件拆分：发现是共用的，分析结果不是
+
+这两半的耦合度完全不同，**不要合成一个组件**：
+
+| | `components/onvif_service`（待做） | `components/onvif_meta`（已做） |
+|---|---|---|
+| 内容 | WS-Discovery / Device / Media2 / Events | 分析结果载荷 |
+| app 需要写代码吗 | **完全不需要，链上即可用** | 每个 app 约 5 行 |
+| 为什么 | 它回答的全是设备级问题：SN、RTSP 端口、快照地址、网卡、时钟。**跟当前跑的是 yolo 还是 weather 无关** | 「我这个框在 ONVIF 里叫什么类」没有通用答案：face 是 `HumanFace`，yolo 要把 COCO 名映射到 `Human`/`Vehicle`/`Animal`，weather 压根没有框 |
+
+`onvif_service` 要问的每个问题，本轮已经把 API 备齐了：
+
+| ONVIF 操作 | 数据来源 |
+|---|---|
+| `GetProfiles` / `GetStreamUri` | `rtsp_server_port()` / `_session_name()` / `_auth_enabled()` / `_url()` |
+| `GetSnapshotUri` | `debug_stream` 的 `/snapshot.jpg` |
+| `GetDeviceInformation` | `ha_mqtt::readDeviceIdentifier()` |
+| `GetSystemDateAndTime` | 系统时钟，见 §5.9 |
+
+#### 🚨 默认开启发现 ⇒ 必须同时决定 RTSP 鉴权
+
+**决定：自动发现默认开启**（ONVIF 相机的市场预期，默认关等于没人找得到）。保留 `ONVIF_DISCOVERY_ENABLED` 开关但**缺省为开**（配置文件不存在即视为开，与 `ONVIF_META_ENABLED` 相反），用于两种真实场景：企业网络禁止未批准的服务广播；现场已有别的 ONVIF 网关，重复广播会让 VMS 看到重复设备。
+
+**但这一条不能单独定。** 设备当前 **RTSP 8554 完全无鉴权**，WS 8001 亦然。发现服务不增加暴露面——端口本来就开着——但它把"局域网里有台相机、流在这个地址"**主动广播出去**（UDP 组播 239.255.255.250:3702），从"扫端口才能发现"变成"打开 VMS 自动跳出来"。
+
+| 选项 | 代价 |
+|---|---|
+| **A（推荐）** 发现默认开 + **RTSP 默认启用鉴权** | `rtsp_server` 已支持 user/pass。**破坏性变更**：所有现有 `rtsp://<ip>:8554/live0` 直连用法（文档、Node-RED flow、客户脚本）都要加凭据 |
+| B 发现默认开 + RTSP 维持无鉴权 | 需在 console 明确提示"视频流对局域网开放" |
+| C 发现默认开但只广播到 usb0 | 不往 eth0/wlan0 发，牺牲了大部分实用性 |
+
+**A 是破坏性变更，需产品拍板。** 在此之前 `onvif_service` 可以先做，但默认凭据策略留空。
+
 ### 5.7 `/snapshot.jpg` 实现要点
 
 **现状**：目前没有任何 app 维护"标注后的 cv::Mat"。视频流是**未标注的原始 H.264**，检测框由 debug_stream 的 JSON 通道发给前端、浏览器 overlay 绘制。帧生命周期极短——`retrieveFrame` 拿到后用完立刻 `returnFrame`，之后内存失效。
@@ -1024,6 +1057,7 @@ live555 官方 FAQ 明确的三条义务：
 **开工前必须由产品/法务决策的（阻塞项）：**
 
 1. **目标客户是 Milestone/Genetec 还是开源 NVR？** —— 决定阶段 2 是否启动
+1b. **RTSP 是否默认启用鉴权？**（见 §5.6 末）—— 与"发现默认开启"绑定的决定。选 A 是破坏性变更，会影响所有现有直连拉流的用法
 2. **mongoose GPL-2.0 如何处置？**（§0.5-B）—— 技术选型已收敛到 **libwebsockets**（civetweb 已因 master 编译不过 + 符号碰撞不可渐进 + 缺 wakeup/背压 而出局），待决的是：**迁移 vs 买 Cesanta 商业许可**。**不决策则 ONVIF 做完也无法商业发布**，且当前 Apache-2.0 与 GPL-2.0-only 的组合本身不合规
 3. **live555 升级是否单独排期？**（§0.5-A）—— 现网有 CVSS 8.2 的网络可达漏洞，独立于 ONVIF
 
