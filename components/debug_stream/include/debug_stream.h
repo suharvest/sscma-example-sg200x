@@ -12,9 +12,10 @@ extern "C" {
  * debug_stream: lazy H.264-over-WebSocket debug video + inference result
  * JSON fan-out, running inside the application process.
  *
- * - Own mg_mgr + single poll thread. Producer threads (VENC callback, the
- *   inference loop) never touch mongoose directly: they enqueue into a
- *   bounded queue and kick the poll thread via mg_wakeup().
+ * - Own listener + single event thread (see src/ws_transport.h; the HTTP/WS
+ *   library is confined to one backend file). Producer threads (VENC callback,
+ *   the inference loop) never touch the library: they enqueue into a bounded
+ *   queue and kick the event thread via ws_transport_wake().
  * - Video frame format on the wire (binary WS message):
  *       [Annex-B H.264 access unit bytes][uint64 unix-epoch milliseconds, LE]
  *   i.e. an 8-byte little-endian timestamp appended at the tail. The web

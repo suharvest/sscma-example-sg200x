@@ -8,10 +8,9 @@
 #include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
-#include "mongoose.h"
+#include "ws_transport.h"
 
 #include <video.h>            // requestVideoIDR, video_ch_index_t
 #include "app_ipcam_venc.h"   // VENC_STREAM_S / VENC_PACK_S
@@ -23,11 +22,12 @@
 #define DS_RESULT_QUEUE_MAX  16       // pending result JSON documents
 #define DS_CLIENT_BACKLOG_MAX (1024 * 1024)  // per-connection send buffer cap
 
-// Connection tags kept in mg_connection::data[0]
+// Connection kind, kept in ws_conn tag slot 0. Must be non-zero: the transport
+// treats tag slot 0 == 0 as "never completed an upgrade".
 #define DS_CONN_VIDEO   'V'
 #define DS_CONN_RESULT  'R'
 
-// Per-connection resync flag kept in mg_connection::data[1] (video conns only).
+// Per-connection resync flag kept in ws_conn tag slot 1 (video conns only).
 // Set when we had to drop frames for a slow client; while set, that client is
 // mid-GOP and must wait for the next keyframe (SPS/IDR) before it can decode
 // again. Relationship to the global awaiting_idr:
@@ -42,8 +42,9 @@
 namespace {
 
 struct DebugStreamState {
-    struct mg_mgr mgr;
-    std::thread poll_thread;
+    // Owns the listener and the event thread; see ws_transport.h for the
+    // threading contract (ws_transport_wake is the only cross-thread call).
+    struct ws_transport* transport = nullptr;
     std::atomic<bool> running{false};
 
     // Config (paths copied so caller-owned strings may go away)
@@ -54,9 +55,7 @@ struct DebugStreamState {
     int max_video_clients = 2;
     int max_results_clients = 2;
 
-    unsigned long listener_id = 0;
-
-    // Client accounting. Written on the poll thread, read by producers.
+    // Client accounting. Written on the event thread, read by producers.
     std::atomic<int> video_clients{0};
     std::atomic<int> results_clients{0};
 
@@ -69,7 +68,7 @@ struct DebugStreamState {
     std::vector<uint8_t> sps;  // includes Annex-B start code
     std::vector<uint8_t> pps;
 
-    // Producer -> poll thread queues (guarded by q_mutex)
+    // Producer -> event thread queues (guarded by q_mutex)
     std::mutex q_mutex;
     std::deque<std::vector<uint8_t>> video_q;
     std::deque<std::string> results_q;
@@ -109,10 +108,55 @@ static void append_ts_le(std::vector<uint8_t>& buf, uint64_t ms) {
 }
 
 // ---------------------------------------------------------------------------
-// Poll-thread side: mongoose event handling (poll thread owns mg_mgr)
+// Event-thread side. Everything below runs on the ws_transport event thread;
+// producers only ever call ws_transport_wake(). See ws_transport.h.
 // ---------------------------------------------------------------------------
 
-static void ds_broadcast(struct mg_mgr* mgr) {
+// What one drain pass hands to each connection.
+struct DrainBatch {
+    const std::deque<std::vector<uint8_t>>* video;
+    const std::deque<std::string>* results;
+};
+
+static void ds_feed_conn(struct ws_conn* c, void* ctx) {
+    const DrainBatch* batch = static_cast<const DrainBatch*>(ctx);
+    const uint8_t kind = ws_conn_tag(c, 0);
+
+    if (kind == DS_CONN_VIDEO) {
+        // Slow client: if its backlog is already large, skip frames instead of
+        // buffering without bound. Mark the connection so it re-syncs on the
+        // next keyframe rather than resuming mid-GOP (which decodes as garbage
+        // until the next natural IDR), and nudge the encoder for a keyframe
+        // (requestVideoIDR coalesces).
+        if (ws_conn_backlog(c) > DS_CLIENT_BACKLOG_MAX) {
+            if (ws_conn_tag(c, 1) != DS_NEEDS_IDR) {
+                ws_conn_set_tag(c, 1, DS_NEEDS_IDR);
+                requestVideoIDR((video_ch_index_t)g_ds.video_ch);
+            }
+            return;
+        }
+        for (const auto& frame : *batch->video) {
+            // A connection recovering from a drop must wait for the next
+            // keyframe (SPS/IDR) before it can decode; skip P/B frames until
+            // then. Keyframe AUs start with SPS (7) or IDR (5).
+            if (ws_conn_tag(c, 1) == DS_NEEDS_IDR) {
+                int nt = nal_type_of(frame.data(), frame.size());
+                if (nt != 7 && nt != 5) continue;
+                ws_conn_set_tag(c, 1, DS_SYNCED);  // keyframe reached, resume
+            }
+            ws_conn_send(c, frame.data(), frame.size(), WS_OP_BINARY);
+        }
+    } else if (kind == DS_CONN_RESULT) {
+        if (ws_conn_backlog(c) > DS_CLIENT_BACKLOG_MAX) return;
+        for (const auto& doc : *batch->results) {
+            ws_conn_send(c, doc.data(), doc.size(), WS_OP_TEXT);
+        }
+    }
+}
+
+// ws_transport_callbacks_t::on_drain
+static void ds_on_drain(void* user) {
+    (void)user;
     std::deque<std::vector<uint8_t>> vq;
     std::deque<std::string> rq;
     {
@@ -120,84 +164,59 @@ static void ds_broadcast(struct mg_mgr* mgr) {
         vq.swap(g_ds.video_q);
         rq.swap(g_ds.results_q);
     }
-    if (vq.empty() && rq.empty()) return;
+    if (vq.empty() && rq.empty()) return;  // coalesced/spurious wake
 
-    for (struct mg_connection* t = mgr->conns; t != NULL; t = t->next) {
-        if (!t->is_websocket) continue;
-        if (t->data[0] == DS_CONN_VIDEO) {
-            // Slow client: if its send buffer is already large, skip frames
-            // instead of buffering without bound. Mark the connection so it
-            // re-syncs on the next keyframe rather than resuming mid-GOP (which
-            // decodes as garbage until the next natural IDR), and nudge the
-            // encoder for a keyframe (requestVideoIDR coalesces).
-            if (t->send.len > DS_CLIENT_BACKLOG_MAX) {
-                if (t->data[1] != DS_NEEDS_IDR) {
-                    t->data[1] = DS_NEEDS_IDR;
-                    requestVideoIDR((video_ch_index_t)g_ds.video_ch);
-                }
-                continue;
-            }
-            for (const auto& frame : vq) {
-                // A connection recovering from a drop must wait for the next
-                // keyframe (SPS/IDR) before it can decode; skip P/B frames
-                // until then. Keyframe AUs start with SPS (7) or IDR (5).
-                if (t->data[1] == DS_NEEDS_IDR) {
-                    int nt = nal_type_of(frame.data(), frame.size());
-                    if (nt != 7 && nt != 5) continue;
-                    t->data[1] = DS_SYNCED;  // keyframe reached, resume delivery
-                }
-                mg_ws_send(t, frame.data(), frame.size(), WEBSOCKET_OP_BINARY);
-            }
-        } else if (t->data[0] == DS_CONN_RESULT) {
-            if (t->send.len > DS_CLIENT_BACKLOG_MAX) continue;
-            for (const auto& doc : rq) {
-                mg_ws_send(t, doc.data(), doc.size(), WEBSOCKET_OP_TEXT);
-            }
+    DrainBatch batch{&vq, &rq};
+    ws_transport_for_each(g_ds.transport, ds_feed_conn, &batch);
+}
+
+// ws_transport_callbacks_t::on_upgrade
+static bool ds_on_upgrade(void* user, const char* path, uint8_t* tag0,
+                          int* status, const char** body) {
+    (void)user;
+    if (g_ds.video_path == path) {
+        if (g_ds.video_clients.load(std::memory_order_relaxed) >= g_ds.max_video_clients) {
+            *status = 503;
+            *body = "debug video client limit reached\n";
+            return false;
         }
+        *tag0 = DS_CONN_VIDEO;
+        return true;
+    }
+    if (g_ds.results_path == path) {
+        if (g_ds.results_clients.load(std::memory_order_relaxed) >= g_ds.max_results_clients) {
+            *status = 503;
+            *body = "debug results client limit reached\n";
+            return false;
+        }
+        *tag0 = DS_CONN_RESULT;
+        return true;
+    }
+    return false;  // transport replies with the 404 default
+}
+
+// ws_transport_callbacks_t::on_open
+static void ds_on_open(void* user, struct ws_conn* c, uint8_t tag0) {
+    (void)user;
+    if (tag0 == DS_CONN_VIDEO) {
+        ws_conn_set_tag(c, 1, DS_SYNCED);  // per-conn resync flag starts clear
+        g_ds.video_clients.fetch_add(1, std::memory_order_release);
+        // New decoder needs SPS/PPS + IDR before any P/B frame.
+        g_ds.awaiting_idr.store(true, std::memory_order_release);
+        requestVideoIDR((video_ch_index_t)g_ds.video_ch);
+    } else if (tag0 == DS_CONN_RESULT) {
+        g_ds.results_clients.fetch_add(1, std::memory_order_release);
     }
 }
 
-static void ds_ev_handler(struct mg_connection* c, int ev, void* ev_data) {
-    if (ev == MG_EV_HTTP_MSG) {
-        struct mg_http_message* hm = (struct mg_http_message*)ev_data;
-        if (mg_strcmp(hm->uri, mg_str(g_ds.video_path.c_str())) == 0) {
-            if (g_ds.video_clients.load(std::memory_order_relaxed) >= g_ds.max_video_clients) {
-                mg_http_reply(c, 503, "", "debug video client limit reached\n");
-                return;
-            }
-            mg_ws_upgrade(c, hm, NULL);
-            c->data[0] = DS_CONN_VIDEO;
-            c->data[1] = DS_SYNCED;  // per-conn resync flag starts clear
-            g_ds.video_clients.fetch_add(1, std::memory_order_release);
-            // New decoder needs SPS/PPS + IDR before any P/B frame.
-            g_ds.awaiting_idr.store(true, std::memory_order_release);
-            requestVideoIDR((video_ch_index_t)g_ds.video_ch);
-        } else if (mg_strcmp(hm->uri, mg_str(g_ds.results_path.c_str())) == 0) {
-            if (g_ds.results_clients.load(std::memory_order_relaxed) >= g_ds.max_results_clients) {
-                mg_http_reply(c, 503, "", "debug results client limit reached\n");
-                return;
-            }
-            mg_ws_upgrade(c, hm, NULL);
-            c->data[0] = DS_CONN_RESULT;
-            g_ds.results_clients.fetch_add(1, std::memory_order_release);
-        } else {
-            mg_http_reply(c, 404, "", "not found\n");
-        }
-    } else if (ev == MG_EV_CLOSE) {
-        if (c->data[0] == DS_CONN_VIDEO) {
-            g_ds.video_clients.fetch_sub(1, std::memory_order_release);
-        } else if (c->data[0] == DS_CONN_RESULT) {
-            g_ds.results_clients.fetch_sub(1, std::memory_order_release);
-        }
-    } else if (ev == MG_EV_WAKEUP) {
-        // Producers queued data and kicked us; fan it out.
-        ds_broadcast(c->mgr);
-    }
-}
-
-static void ds_poll_loop(void) {
-    while (g_ds.running.load(std::memory_order_acquire)) {
-        mg_mgr_poll(&g_ds.mgr, 100);
+// ws_transport_callbacks_t::on_close
+static void ds_on_close(void* user, struct ws_conn* c, uint8_t tag0) {
+    (void)user;
+    (void)c;
+    if (tag0 == DS_CONN_VIDEO) {
+        g_ds.video_clients.fetch_sub(1, std::memory_order_release);
+    } else if (tag0 == DS_CONN_RESULT) {
+        g_ds.results_clients.fetch_sub(1, std::memory_order_release);
     }
 }
 
@@ -249,28 +268,27 @@ int debug_stream_create(const debug_stream_config_t* cfg) {
         g_ds.results_q.clear();
     }
 
-    mg_mgr_init(&g_ds.mgr);
-    if (!mg_wakeup_init(&g_ds.mgr)) {
-        fprintf(stderr, "[%s] mg_wakeup_init failed\n", DS_TAG);
-        mg_mgr_free(&g_ds.mgr);
-        return -1;
-    }
+    ws_transport_config_t tcfg;
+    tcfg.port = g_ds.port;
 
-    char url[64];
-    snprintf(url, sizeof(url), "http://0.0.0.0:%d", g_ds.port);
-    struct mg_connection* lc = mg_http_listen(&g_ds.mgr, url, ds_ev_handler, NULL);
-    if (lc == NULL) {
-        fprintf(stderr, "[%s] failed to listen on %s\n", DS_TAG, url);
-        mg_mgr_free(&g_ds.mgr);
-        return -1;
-    }
-    g_ds.listener_id = lc->id;
+    ws_transport_callbacks_t tcb;
+    tcb.user = nullptr;
+    tcb.on_upgrade = ds_on_upgrade;
+    tcb.on_open = ds_on_open;
+    tcb.on_close = ds_on_close;
+    tcb.on_drain = ds_on_drain;
 
+    // running must be visible before the event thread can call back into us.
     g_ds.running.store(true, std::memory_order_release);
-    g_ds.poll_thread = std::thread(ds_poll_loop);
+    g_ds.transport = ws_transport_create(&tcfg, &tcb);
+    if (g_ds.transport == nullptr) {
+        g_ds.running.store(false, std::memory_order_release);
+        fprintf(stderr, "[%s] failed to start transport on port %d\n", DS_TAG, g_ds.port);
+        return -1;
+    }
 
-    fprintf(stderr, "[%s] listening on %s (video: %s, results: %s)\n",
-            DS_TAG, url, g_ds.video_path.c_str(), g_ds.results_path.c_str());
+    fprintf(stderr, "[%s] listening on http://0.0.0.0:%d (video: %s, results: %s)\n",
+            DS_TAG, g_ds.port, g_ds.video_path.c_str(), g_ds.results_path.c_str());
     return 0;
 }
 
@@ -278,11 +296,11 @@ void debug_stream_destroy(void) {
     if (!g_ds.running.load()) {
         return;
     }
+    // Clear running first: producers stop enqueueing/waking, then tearing the
+    // transport down joins the event thread and closes every connection.
     g_ds.running.store(false, std::memory_order_release);
-    if (g_ds.poll_thread.joinable()) {
-        g_ds.poll_thread.join();
-    }
-    mg_mgr_free(&g_ds.mgr);
+    ws_transport_destroy(g_ds.transport);
+    g_ds.transport = nullptr;
 
     g_ds.video_clients.store(0);
     g_ds.results_clients.store(0);
@@ -376,7 +394,7 @@ int debug_stream_video_handler(void* pData, void* pCtx, void* pUserData) {
         }
         g_ds.video_q.push_back(std::move(buf));
     }
-    mg_wakeup(&g_ds.mgr, g_ds.listener_id, "v", 1);
+    ws_transport_wake(g_ds.transport);
     return 0;
 }
 
@@ -393,7 +411,7 @@ int debug_stream_publish_result(const char* json, size_t len) {
         }
         g_ds.results_q.emplace_back(json, len);
     }
-    mg_wakeup(&g_ds.mgr, g_ds.listener_id, "r", 1);
+    ws_transport_wake(g_ds.transport);
     return 0;
 }
 
