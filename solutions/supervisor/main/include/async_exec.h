@@ -13,10 +13,10 @@
 #include <thread>
 #include <vector>
 
+#include "http_dispatch.h" // http_dispatch (HTTP library seam)
 #include "http_interface.h" // api_status_t
 #include "json.hpp"
 #include "logger.hpp"
-#include "mongoose.h"
 
 using json = nlohmann::json;
 
@@ -32,27 +32,23 @@ using json = nlohmann::json;
 //   - worker pool  : ONLY script_timeout()/popen()/sleep(). Never touches the
 //                    token map or process-internal state.
 //   - handoff      : a finished worker pushes its job id onto a completion
-//                    queue, then pokes the poll thread with mg_wakeup(). The
-//                    poll thread drains the queue in MG_EV_WAKEUP, runs the
-//                    job's commit() (state mutation + response), replies on the
-//                    original client connection, then releases the endpoint's
-//                    busy gate via finalize().
+//                    queue, then pokes the poll thread via http_dispatch::wake().
+//                    The poll thread drains the queue, runs the job's commit()
+//                    (state mutation + response), replies on the original
+//                    client connection, then releases the endpoint's busy gate
+//                    via finalize().
 //
-// Why wakeups are routed to the LISTENER connection (always alive) instead of
-// the client connection, and why the payload is ignored: mgr->pipe is a UDP
-// socketpair (SOCK_DGRAM, see mg_socketpair), so datagrams never coalesce or
-// tear, but mongoose's wufn() delivers MG_EV_WAKEUP only to the connection
-// whose id matches the first 8 bytes. Routing to the listener guarantees the
-// event always fires even if the client disconnected mid-operation; the
-// handler then drains the whole completion queue and looks each client up by
-// its monotonic (never-reused) id, dropping the reply cleanly if it is gone.
-// This makes a closed client connection unable to strand a job or its gate.
+// The HTTP library is reached only through http_dispatch (see http_dispatch.h);
+// this class contains no mongoose. Connections are addressed by their
+// monotonic, never-reused id, and a reply to a vanished client simply returns
+// false -- commit() and finalize() still run, so a closed client connection can
+// never strand a job or wedge its gate.
 class async_exec {
 public:
     struct job {
         uint64_t id = 0;
         unsigned long conn_id = 0;
-        bool cancelled = false;    // set on MG_EV_CLOSE (poll thread only)
+        bool cancelled = false;    // set by on_conn_close() (poll thread only)
         bool worker_threw = false; // work() threw -> poll replies 500
 
         std::function<void()> work;                     // worker thread (blocking)
@@ -73,16 +69,16 @@ public:
         return inst;
     }
 
-    // Poll thread, once, before the mgr loop starts.
-    void init(struct mg_mgr* mgr, unsigned long listener_id, int workers = 4)
+    // Poll thread, once, before the event loop starts. `dispatch` is owned by
+    // the caller (http_server) and must outlive the worker pool.
+    void init(http_dispatch* dispatch, int workers = 4)
     {
-        _mgr = mgr;
-        _listener_id = listener_id;
+        _dispatch = dispatch;
         _running = true;
         for (int i = 0; i < workers; ++i) {
             _pool.emplace_back([this] { worker_loop(); });
         }
-        LOGI("async_exec: %d workers, listener id=%lu", workers, listener_id);
+        LOGI("async_exec: %d workers", workers);
     }
 
     void shutdown()
@@ -138,7 +134,8 @@ public:
         return API_STATUS_ASYNC;
     }
 
-    // Poll thread (MG_EV_WAKEUP): commit + reply + finalize every finished job.
+    // Poll thread, after a wake or on the per-cycle backstop drain:
+    // commit + reply + finalize every finished job.
     void drain_completions()
     {
         std::vector<uint64_t> done;
@@ -161,7 +158,7 @@ public:
         }
     }
 
-    // Poll thread (MG_EV_CLOSE): the client for this connection went away.
+    // Poll thread: the client for this connection went away.
     void on_conn_close(unsigned long conn_id)
     {
         std::lock_guard<std::mutex> lk(_q_mutex);
@@ -195,10 +192,10 @@ private:
             }
         }
 
-        struct mg_connection* c = find_conn(j->conn_id);
-        if (c != nullptr && !j->cancelled) {
-            reply(c, j, status);
-        } else {
+        if (j->cancelled) {
+            LOGW("async job %llu: client disconnected, reply dropped",
+                (unsigned long long)j->id);
+        } else if (!reply(j, status)) {
             LOGW("async job %llu: client connection gone, reply dropped",
                 (unsigned long long)j->id);
         }
@@ -210,47 +207,23 @@ private:
         }
     }
 
-    struct mg_connection* find_conn(unsigned long id)
+    // Returns false when the client connection is gone (reply dropped).
+    bool reply(std::shared_ptr<job> j, api_status_t status)
     {
-        if (_mgr == nullptr || id == 0) {
-            return nullptr;
+        if (_dispatch == nullptr) {
+            return false;
         }
-        for (struct mg_connection* c = _mgr->conns; c != nullptr; c = c->next) {
-            if (c->id == id) {
-                return c;
-            }
-        }
-        return nullptr;
-    }
-
-    void reply(struct mg_connection* c, std::shared_ptr<job> j, api_status_t status)
-    {
         if (status == API_STATUS_OK && j->reply_bytes) {
-            // Binary reply (audioRecord WAV). Mirror mg_http_reply's framing
-            // but binary-safe (mg_send instead of a printf format).
-            mg_printf(c,
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: %s\r\n"
-                "Access-Control-Allow-Origin: *\r\n"
-                "Content-Length: %lu\r\n\r\n",
-                j->bytes_content_type.c_str(),
-                (unsigned long)j->bytes_body.size());
-            mg_send(c, j->bytes_body.data(), j->bytes_body.size());
-            c->is_resp = 0;
-            return;
+            // Binary reply (audioRecord WAV).
+            return _dispatch->reply_bytes(j->conn_id, j->bytes_content_type, j->bytes_body);
         }
         if (status == API_STATUS_OK) {
-            mg_http_reply(c, 200,
-                "Content-Type: application/json\r\n"
-                "Access-Control-Allow-Origin: *\r\n"
-                "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                "Access-Control-Allow-Headers: Authorization, Content-Type\r\n",
-                "%s", j->res.dump().c_str());
-        } else if (status == API_STATUS_UNAUTHORIZED) {
-            mg_http_reply(c, 401, "Content-Type: text/plain\r\n", "Unauthorized");
-        } else {
-            mg_http_reply(c, 500, "Content-Type: text/plain\r\n", "Internal Server Error");
+            return _dispatch->reply_json(j->conn_id, j->res.dump());
         }
+        if (status == API_STATUS_UNAUTHORIZED) {
+            return _dispatch->reply_status(j->conn_id, 401, "text/plain", "Unauthorized");
+        }
+        return _dispatch->reply_status(j->conn_id, 500, "text/plain", "Internal Server Error");
     }
 
     void worker_loop()
@@ -289,27 +262,23 @@ private:
                 std::lock_guard<std::mutex> lk(_done_mutex);
                 _done.push_back(id);
             }
-            // Poke the poll thread. The socket carries ONLY an edge
-            // notification ("some job finished"); the real completion is
-            // already parked in _done and drain_completions() always scans it
-            // in full, so the payload is irrelevant — a single dummy byte
-            // suffices (the routing conn_id is prepended by mg_wakeup itself).
-            // This is a best-effort poke: a dropped datagram is covered by the
-            // unconditional per-cycle drain in http_server's poll loop.
-            // Serialize sends so datagrams from multiple workers never
-            // interleave at the syscall boundary.
-            {
-                std::lock_guard<std::mutex> lk(_wake_mutex);
-                if (_mgr != nullptr) {
-                    static const uint8_t poke = 1;
-                    mg_wakeup(_mgr, _listener_id, &poke, sizeof(poke));
-                }
+            // Poke the poll thread. This carries ONLY an edge notification
+            // ("some job finished"); the real completion is already parked in
+            // _done and drain_completions() always scans it in full.
+            //
+            // Best-effort by contract (see http_dispatch::wake): a dropped
+            // notification is covered by the unconditional per-cycle drain in
+            // http_server's poll loop.
+            //
+            // This is the ONLY call into http_dispatch made off the poll
+            // thread; everything else in this class runs on it.
+            if (_dispatch != nullptr) {
+                _dispatch->wake();
             }
         }
     }
 
-    struct mg_mgr* _mgr = nullptr;
-    unsigned long _listener_id = 0;
+    http_dispatch* _dispatch = nullptr;
     std::atomic<bool> _running { false };
     std::atomic<uint64_t> _next_id { 0 };
 
@@ -321,8 +290,6 @@ private:
 
     std::mutex _done_mutex;
     std::vector<uint64_t> _done; // finished job ids awaiting drain
-
-    std::mutex _wake_mutex; // serialize mg_wakeup() datagram sends
 };
 
 #endif // ASYNC_EXEC_H

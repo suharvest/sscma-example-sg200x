@@ -18,6 +18,7 @@
 #include "api_user.h"
 #include "api_wifi.h"
 #include "api_halow.h"
+#include "http_dispatch_mongoose.h"
 
 class http_server {
 public:
@@ -74,7 +75,11 @@ public:
             return false;
         }
         unsigned long listener_id = http_conn ? http_conn->id : https_conn->id;
-        async_exec::instance().init(&mgr, listener_id);
+        // The async path reaches mongoose only through this adapter; see
+        // http_dispatch.h. Constructed here so it outlives the worker pool
+        // (shutdown() joins the pool before this object dies).
+        _dispatch = std::make_unique<http_dispatch_mongoose>(&mgr, listener_id);
+        async_exec::instance().init(_dispatch.get());
 
         worker = std::thread([this]() {
             running = true;
@@ -124,6 +129,7 @@ private:
     mg_mgr mgr;
     mg_connection* http_conn = nullptr;
     mg_connection* https_conn = nullptr;
+    std::unique_ptr<http_dispatch_mongoose> _dispatch;
 
     std::atomic<bool> running { false };
     std::thread worker;
