@@ -1,7 +1,7 @@
 #ifndef API_HALOW_H
 #define API_HALOW_H
 
-#include "../../components/mongoose/json.hpp"
+#include "json.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <map>

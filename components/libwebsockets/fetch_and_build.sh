@@ -65,6 +65,12 @@ cd "$WORK/build"
 #         the user's flags. It must stay ON.
 # Logs are kept (no LWS_WITH_NO_LOGS): 8 KB for the ability to diagnose a
 # device in the field is a trade worth making.
+#
+# LWS_WITH_CUSTOM_HEADERS stays ON although it was trimmed at first. The
+# supervisor's get_param() falls back to looking up an arbitrary name as a
+# header, so without lws_hdr_custom_length/copy every such lookup would
+# silently return empty -- Authorization among them. Correctness over the few
+# kilobytes.
 cmake "$WORK/libwebsockets" \
     -DCMAKE_TOOLCHAIN_FILE="$WORK/tc-riscv64-musl.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -92,7 +98,8 @@ cmake "$WORK/libwebsockets" \
     -DLWS_WITH_STRUCT_JSON=OFF -DLWS_WITH_CBOR=OFF -DLWS_WITH_COSE=OFF \
     -DLWS_WITH_JOSE=OFF -DLWS_WITH_GENCRYPTO=OFF \
     -DLWS_WITH_CACHE_NSCOOKIEJAR=OFF \
-    -DLWS_WITH_HTTP_UNCOMMON_HEADERS=OFF -DLWS_WITH_CUSTOM_HEADERS=OFF \
+    -DLWS_WITH_HTTP_UNCOMMON_HEADERS=OFF \
+    -DLWS_WITH_CUSTOM_HEADERS=ON \
     -DLWS_WITH_ACCESS_LOG=OFF -DLWS_WITH_RANGES=OFF \
     -DLWS_WITH_CGI=OFF -DLWS_WITH_SPAWN=OFF -DLWS_WITH_PEER_LIMITS=OFF \
     -DLWS_WITH_SYS_FAULT_INJECTION=OFF -DLWS_WITHOUT_EXTENSIONS=ON \

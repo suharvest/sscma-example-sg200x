@@ -1,0 +1,140 @@
+- generic [ref=e55]:
+  - generic [ref=e56]:
+    - generic [ref=e57]:
+      - generic [ref=e58]: reCamera
+      - generic "Language / 语言" [ref=e60]:
+        - generic [ref=e61] [cursor=pointer]: EN
+        - generic [ref=e62]: /
+        - generic [ref=e63] [cursor=pointer]: 中
+    - generic [ref=e64]: 192.168.42.1
+  - generic [ref=e65]:
+    - generic [ref=e66]:
+      - generic [ref=e67]:
+        - generic [ref=e68]: Console
+        - generic [ref=e69] [cursor=pointer]:
+          - img "appstore" [ref=e70]:
+            - img [ref=e71]
+          - generic [ref=e73]: Applications
+        - generic [ref=e74] [cursor=pointer]:
+          - img "play-square" [ref=e75]:
+            - img [ref=e76]
+          - generic [ref=e79]: Debug
+        - generic [ref=e80] [cursor=pointer]:
+          - img "control" [ref=e81]:
+            - img [ref=e82]
+          - generic [ref=e84]: Device
+      - generic [ref=e85]:
+        - generic [ref=e86]: Configuration
+        - generic [ref=e88] [cursor=pointer]: Files
+        - generic [ref=e90] [cursor=pointer]: Security
+        - generic [ref=e92] [cursor=pointer]: Network
+        - generic [ref=e93] [cursor=pointer]:
+          - img "api" [ref=e94]:
+            - img [ref=e95]
+          - generic [ref=e97]: Integrations
+      - generic [ref=e98]:
+        - generic [ref=e99]: System
+        - generic [ref=e101] [cursor=pointer]: Terminal
+        - generic [ref=e103] [cursor=pointer]: System
+    - generic [ref=e106]:
+      - generic [ref=e107]:
+        - generic [ref=e108]:
+          - generic [ref=e109]: Solution Console
+          - heading "Applications" [level=1] [ref=e110]
+          - paragraph [ref=e111]: Each application is a complete scene solution. Only one application can hold the camera at a time.
+        - generic [ref=e112]:
+          - button "download Install App" [ref=e113] [cursor=pointer]:
+            - img "download" [ref=e115]:
+              - img [ref=e116]
+            - generic [ref=e118]: Install App
+          - button "reload Refresh" [ref=e119] [cursor=pointer]:
+            - img "reload" [ref=e121]:
+              - img [ref=e122]
+            - generic [ref=e124]: Refresh
+      - generic [ref=e127]:
+        - generic [ref=e128]:
+          - generic [ref=e130]:
+            - generic [ref=e132]: Safety
+            - generic [ref=e133]: Active
+          - generic [ref=e135]:
+            - generic [ref=e136]: Drowsiness Detection
+            - generic [ref=e137]: Long-haul driving · Duty posts · Heavy machinery
+          - paragraph [ref=e138]: "A safety co-pilot for cabs and monitoring posts: catches eye closure, blink patterns and yawns as fatigue sets in — and the moment drowsiness appears, an alert with a live snapshot lands on your phone, stopping incidents before they happen."
+          - generic [ref=e139]: 2-model pipeline · v0.1.1
+          - generic [ref=e140]:
+            - button "Debug" [ref=e141] [cursor=pointer]:
+              - generic [ref=e142]: Debug
+            - button "Stop" [ref=e143] [cursor=pointer]:
+              - generic [ref=e144]: Stop
+            - button "Details" [ref=e145] [cursor=pointer]:
+              - generic [ref=e146]: Details
+        - generic [ref=e147]:
+          - generic [ref=e149]:
+            - generic [ref=e151]: Retail Insights
+            - generic [ref=e152]: stopped
+          - generic [ref=e154]:
+            - generic [ref=e155]: Face Analysis
+            - generic [ref=e156]: Store audience profiling · Showroom analytics · Campaign feedback
+          - paragraph [ref=e157]: "A round-the-clock audience analyst for your store: builds hourly visitor profiles by gender and age group and reads emotional feedback, informing product selection, displays and campaigns. Analysis stays on the device — no face images leave the camera."
+          - generic [ref=e158]: 3-model pipeline · v1.0.0
+          - generic [ref=e159]:
+            - button "Activate" [ref=e160] [cursor=pointer]:
+              - generic [ref=e161]: Activate
+            - button "Details" [ref=e162] [cursor=pointer]:
+              - generic [ref=e163]: Details
+        - generic [ref=e164]:
+          - generic [ref=e166]:
+            - generic [ref=e168]: Security & Monitoring
+            - generic [ref=e169]: stopped
+          - generic [ref=e171]:
+            - generic [ref=e172]: Object Detection
+            - generic [ref=e173]: Perimeter security · Parking · Deliveries · Asset checks
+          - paragraph [ref=e174]: "Keep an eye on what matters: people entering, vehicles arriving, objects appearing — 80 everyday object classes out of the box. Ideal for unattended entrances, warehouses and parking spots, with events pushed live to Home Assistant for alerts and automations."
+          - generic [ref=e175]: 3 models · v1.1.0
+          - generic [ref=e176]:
+            - button "Activate" [ref=e177] [cursor=pointer]:
+              - generic [ref=e178]: Activate
+            - button "Details" [ref=e179] [cursor=pointer]:
+              - generic [ref=e180]: Details
+        - generic [ref=e181]:
+          - generic [ref=e183]:
+            - generic [ref=e185]: Data Capture
+            - generic [ref=e186]: stopped
+          - generic [ref=e188]:
+            - generic [ref=e189]: PP-OCR Text Reader
+            - generic [ref=e190]: Meter reading · Logistics labels · Station tags
+          - paragraph [ref=e191]: "Turn the camera into a tireless data-entry clerk: meter readings, container codes, shipping labels, station tags — point and read, in Chinese and English, with results flowing straight into your system. No more manual transcription."
+          - generic [ref=e192]: 2-model pipeline · v0.4.0
+          - generic [ref=e193]:
+            - button "Activate" [ref=e194] [cursor=pointer]:
+              - generic [ref=e195]: Activate
+            - button "Details" [ref=e196] [cursor=pointer]:
+              - generic [ref=e197]: Details
+        - generic [ref=e198]:
+          - generic [ref=e200]:
+            - generic [ref=e202]: Retail
+            - generic [ref=e203]: stopped
+          - generic [ref=e205]:
+            - generic [ref=e206]: Retail People Counting
+            - generic [ref=e207]: Footfall counting · Dwell hotspots · Staff dispatch
+          - paragraph [ref=e208]: "Answers the three questions every store manager asks: how many customers came in, where do they linger, and who needs help right now? Automatic entry/exit counting plus browsing / engaged / assistance states put numbers behind staffing, displays and layout decisions."
+          - generic [ref=e209]: 1 model · v1.3.0
+          - generic [ref=e210]:
+            - button "Activate" [ref=e211] [cursor=pointer]:
+              - generic [ref=e212]: Activate
+            - button "Details" [ref=e213] [cursor=pointer]:
+              - generic [ref=e214]: Details
+        - generic [ref=e215]:
+          - generic [ref=e217]:
+            - generic [ref=e219]: Smart Outdoor
+            - generic [ref=e220]: stopped
+          - generic [ref=e222]:
+            - generic [ref=e223]: Weather Classification
+            - generic [ref=e224]: Greenhouse control · Yard automation · Outdoor protection
+          - paragraph [ref=e225]: "Let your setup act on the weather it sees: clear, cloudy, foggy, rainy or snowy conditions drive greenhouse vents, awnings, irrigation and outdoor gear automatically — weather-aware automation without a weather station."
+          - generic [ref=e226]: 1-model pipeline · v0.2.0
+          - generic [ref=e227]:
+            - button "Activate" [ref=e228] [cursor=pointer]:
+              - generic [ref=e229]: Activate
+            - button "Details" [ref=e230] [cursor=pointer]:
+              - generic [ref=e231]: Details

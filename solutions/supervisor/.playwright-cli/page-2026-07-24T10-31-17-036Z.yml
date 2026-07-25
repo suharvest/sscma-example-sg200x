@@ -1,0 +1,32 @@
+- generic [ref=e5]:
+  - generic "Language / 语言" [ref=e7]:
+    - generic [ref=e8] [cursor=pointer]: EN
+    - generic [ref=e9]: /
+    - generic [ref=e10] [cursor=pointer]: 中
+  - img
+  - generic [ref=e11]: Welcome! Your exciting journey into the realm of Vision AI Platform starts right here. Let reCamera redefine your vision of possibilities.
+  - generic [ref=e12]:
+    - generic [ref=e14]:
+      - generic "Username" [ref=e16]: "* Username :"
+      - generic [ref=e20]:
+        - img "user" [ref=e22]:
+          - img [ref=e23]
+        - textbox "* Username :" [ref=e25]:
+          - /placeholder: Username
+          - text: recamera
+    - generic [ref=e27]:
+      - generic "Password" [ref=e29]: "* Password :"
+      - generic [ref=e30]:
+        - generic [ref=e33]:
+          - img "lock" [ref=e35]:
+            - img [ref=e36]
+          - textbox "* Password :" [ref=e38]:
+            - /placeholder: Password
+          - img "eye-invisible" [ref=e40] [cursor=pointer]:
+            - img [ref=e41]
+        - generic [ref=e45]: "* First time login password is \"recamera\""
+    - button "Login" [disabled] [ref=e46]:
+      - generic: Login
+  - generic [ref=e47]:
+    - checkbox [ref=e50] [cursor=pointer]
+    - generic [ref=e52]: Please view reCamera Connection Agreement. By checking the box, users understand reCamera operates solely on local networks and commit to maintaining enterprise-grade network security for all vision AI operations.

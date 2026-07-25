@@ -13,9 +13,9 @@
 | 0 | 三层抽象（前置） | ✅ 真机验证 | — | `8c87c40` `cd53813` `4828fc3` |
 | 1 | 固化 lws 交叉编译 | ✅ 验证 | 0.5 | `bb1e591` |
 | 2 | `ws_transport_lws`（debug_stream 后端） | ✅ **真机 16/16** | 1.5 | 见下 |
-| 3 | `http_request_lws`（请求侧） | ⬜ | — | — |
-| 4 | `http_dispatch_lws`（回复侧） | ⬜ | — | — |
-| 5 | `http_server_lws`（事件循环宿主） | ⬜ | — | — |
+| 3 | `http_request_lws`（请求侧） | ✅ 真机 | 0.5 | 见下 |
+| 4 | `http_dispatch_lws`（回复侧） | ✅ 真机 | 0.3 | 见下 |
+| 5 | `http_server_lws`（事件循环宿主） | ✅ 真机 | 1.2 | 见下 |
 | 6 | 移除 mongoose + 全量回归 | ⬜ | — | — |
 
 **可分两批独立上线**（lws 用 `lws_` 前缀，能与 mongoose 共存）：
@@ -125,3 +125,43 @@ cvitek_tpu_sdk/lib/libwebsockets.a  4.1.7
 - **Docker 挂载缓存**：编辑过的文件在容器里可能是陈旧/截断的，报假的 CMake 语法错误。改动多时先做 md5 对照，必要时 `docker restart ubuntu_dev_x86`
 - **禁止并发跑两个构建**：都会 `rm -rf build` 互删，报 `can't create ....o`
 - **VPSS**：切换 app 前后确认 `dmesg` 无 `vpss_sbm_err` / `Oops`，open/release 应配对
+
+
+---
+
+## 步骤 3-5：supervisor（已完成，真机验证）
+
+`main.cpp` 未改动；`http_server.h` 按 `SUPERVISOR_HTTP_BACKEND` 选后端，两者可共存。
+
+### 真机验证结果（与 mongoose 版同一组用例）
+
+| 项 | 结果 |
+|---|---|
+| 登录（POST + JSON body） | ✅ |
+| GET + Authorization header | ✅ |
+| query 取参 + **异步二进制回复** | ✅ 32044B = 44 头 + 1s×16000×2，与 mongoose 逐字节一致 |
+| 异步 JSON | ✅ |
+| **multipart 上传**（自写解析器） | ✅ `size:27` 与本地文件字节数一致 |
+| 静态资源（lws file mount） | ✅ |
+| **断连后闸门释放**（关键不变量） | ✅ 日志 `async job 3: client disconnected, reply dropped`，重试立即 200 |
+| console 全流程 + 视频解码 | ✅ 1280×720，`currentTime` 持续推进，浏览器 console 零 error |
+
+### multipart 的决定
+
+**没有用 `lws_spa`，而是累积 body 后自写解析器（约 70 行）。** 看起来是错的选择，直到注意到 mongoose 在做什么：`mg_http_next_multipart()` 遍历的是**已经完整在内存里**的 body——几十 MB 的固件/模型上传早就在被整体缓冲。`lws_spa` 确实是流式的、更好，但它会改变 `get_multiparts()` 的形状，而且分段要落地到某处，在这台 180MB、无临时空间的机器上那个"某处"还是同一块 buffer。
+
+所以**内存画像刻意与 mongoose 保持一致**，调用方语义不变。改成真正的流式值得做，但应该是独立的一次改动配独立的测试，而不是夹带在换库里。
+
+### 又踩的四个坑
+
+**1. `json.hpp` vendored 在 `components/mongoose/` 里。** 切掉 mongoose 就编不过。已拆成 `components/json/`。这不只是构建问题——把 MIT 的头放在 GPL 组件目录里，本身就模糊了这里最要紧的那条许可证边界。
+
+**2. 纯头文件组件用 `component_register` 不建 target。** 没有 `SRCS` 时宏不调 `add_library`，于是 `PRIVATE_REQUIREDS` 里的名字被原样丢给链接器 → `cannot find -ljson` / `-llibwebsockets`。要显式 `add_library(x INTERFACE)`。
+
+**3. 裁掉 `LWS_WITH_CUSTOM_HEADERS` 会让 header 查找静默失效。** `get_param()` 会用任意名字回退查 header，没有 `lws_hdr_custom_length/copy` 就全部返回空。已重开该选项——正确性优先于那几 KB。
+
+**4. `Authorization` 必须走已知 token，不能靠 custom-header 回退。** lws 把所有它有 token 的 header 解析进 token 表，**只有未知的才进 custom 存储**，所以 `lws_hdr_custom_length("authorization:")` 恒返回 0。加上 `WSI_TOKEN_HTTP_AUTHORIZATION` 之前，**所有带认证的请求都 401**。
+
+### 一个自己造的 bug
+
+`write_reply()` 用 `r.sent == 0` 判断"要不要发 HTTP 头"。发完头后 `sent` 仍是 0，于是下一次 WRITEABLE **又发一遍头**，第二遍落进 body 流——现象是响应体以 `HTTP/1.1 200 OK` 开头。加了显式的 `headers_sent` 标志。"还没发任何东西"和"还没发头"是两个问题，合并成一个判断就会这样。

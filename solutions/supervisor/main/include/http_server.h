@@ -1,6 +1,19 @@
 #ifndef HTTP_SERVER_H
 #define HTTP_SERVER_H
 
+/*
+ * Backend selection. mongoose is GPL-2.0-only against this Apache-2.0
+ * repository (docs/onvif-implementation-spec.md 0.5-B), so it is being
+ * replaced by libwebsockets. Both implementations coexist during the
+ * transition -- lws uses an lws_ prefix, so nothing collides -- and
+ * SUPERVISOR_HTTP_BACKEND_LWS picks the new one. main.cpp is unaffected: it
+ * constructs `http_server` and calls start(), which both provide.
+ */
+#ifdef SUPERVISOR_HTTP_BACKEND_LWS
+#include "http_server_lws.h"
+using http_server = http_server_lws;
+#else
+
 #include "logger.hpp"
 #include <atomic>
 #include <memory>
@@ -262,4 +275,6 @@ private:
         }
     }
 };
+#endif // SUPERVISOR_HTTP_BACKEND_LWS
+
 #endif // HTTP_SERVER_H
