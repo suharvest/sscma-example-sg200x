@@ -1236,6 +1236,50 @@ ONVIF 允许自由复制分发（保留 copyright / license / disclaimer）。
 3. **最小 demo 验证三 track**（video H.264 + audio + `application/vnd.onvif.metadata`）能被 ONVIF Device Manager / VLC 正确 SETUP（**1 天**）
 4. **再动 SOAP 层**——但在此之前**必须先完成 §0.5-B 的 mongoose 许可证决策**，否则 ONVIF 做完仍然无法商业发布
 
+### 14.9 ONVIF SOAP 端点的 HTTP 层 —— 待决策
+
+WS-Discovery 已实现且零依赖（纯 UDP）。但 Device / Media2 服务需要一个 HTTP 监听端，而这正好撞上 §0.5-B 的许可证问题。
+
+| 方案 | 评估 |
+|---|---|
+| **A. 自写极小 HTTP 处理**（倾向） | ONVIF 端点只需 **POST + 固定路径 + `Content-Length` body + 返回 XML**：不需要 chunked、keep-alive、静态文件、TLS、multipart。约 150~200 行。**让 `onvif_service` 保持零第三方依赖**，比依赖 mongoose（GPL）或 lws（要等迁移）都干净，攻击面小且可审计 |
+| B. 等 lws 迁移完成后复用 | 把 ONVIF 卡在一个与它无关的商务决策上 |
+| C. 用现有 mongoose | ❌ **排除**：加深 GPL 依赖，与整个迁移方向相反 |
+
+> "自己写 HTTP 服务器"通常是坏主意，此处成立的前提是**场景窄到不像话**——一个路径、一个方法、固定形状的响应。若将来 ONVIF 端点需要 TLS（Profile T §7.1 的 HTTPS 是 Conditional，可免）或静态资源，该前提失效，应改走 lws。
+
+**未决**：A 还是 B。选 A 可立即开工；选 B 需先完成 lws 迁移。
+
+---
+
+### 14.10 lws 迁移工作量（基于本轮抽象完成后的实测口径）
+
+前置抽象已完成，mongoose 耦合面收敛到 **3 个后端适配器 + 1 个事件循环宿主**，业务代码（约 7700 行）零改动。
+
+| 步骤 | 人日 | 风险 |
+|---|---|---|
+| 固化 lws v4.5.8 交叉编译到 `components/libwebsockets/` | 1 | 🟢 配方已实测（§14.8） |
+| `ws_transport_lws.cpp`（debug_stream 后端） | 3~4 | 🟡 **重点**：lws 不替应用缓冲，每连接发送队列 + `LWS_CALLBACK_SERVER_WRITEABLE` 驱动的背压要重新实现 |
+| `http_request_lws.h`（请求侧） | 2~3 | 🔴 **最大风险**：`lws_spa` 是流式回调解析器，没有 mongoose 那种"就地遍历 multipart"的等价物，必须在 body 接收阶段记录分段边界再回放。固件/模型上传是几十 MB，不能落地成拷贝 |
+| `http_dispatch_lws.h`（回复侧） | 1~2 | 🟡 lws 不能同步写，要暂存 body 并请求 WRITEABLE |
+| `http_server_lws.cpp`（事件循环宿主） | 2~3 | 🟡 静态文件（console 是 React SPA，需要 fallback 路由）、多端口监听、重定向逻辑 |
+| 回归 + 真机验证 | 2 | 🟡 8 个 solution + supervisor |
+| **合计** | **11~15 人日** | |
+
+**可分两步独立上线**（lws 用 `lws_` 前缀，可与 mongoose 共存）：
+
+1. **先迁 `debug_stream`**（4~5 人日）——影响面窄，只碰 7 个 app 的 Live 预览，可独立验证、独立回滚
+2. **再迁 `supervisor`**（7~10 人日）——影响面大，含 console 静态资源和文件上传
+
+> 与抽象前的估算（同为 10~15 人日）相比，总量相近但**风险结构完全不同**：原先风险集中在"重新设计 async_exec 的异步/取消/闸门三态语义"，现在那部分已固化成接口契约，剩下的是"实现一个已定义的接口"。且业务代码不再进入变更范围。
+
+**三个可能超出估算的未知**：
+1. lws 服务 React SPA 的静态资源与 fallback 路由（console 的路由是 hash 模式，风险中等）
+2. 大文件 multipart 上传的流式解析（**最高风险**，几十 MB 不能缓冲）
+3. 新背压实现的真机行为（本轮已建立可复用的压测脚本，见 commit 8c87c40 的验证记录）
+
+---
+
 ### 14.8 libwebsockets v4.5.8 交叉编译配方（已实测，可直接复现）
 
 **环境**：容器 `ubuntu_dev_x86`，`/workspace` → `/Users/harvest/project/recamera`
