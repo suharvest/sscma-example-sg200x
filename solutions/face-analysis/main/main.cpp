@@ -296,7 +296,12 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
                          f.h * g_config.inference_height,
                          f.score, "face"});
         const auto& attr = af.attributes;
-        labels.push_back(attr.gender + " " + attr.age_label + " " + getEmotionName(attr.emotion));
+        // gender · age · race · emotion. race_label is empty for InsightFace
+        // (no race head) — skip it there so that path's label is unchanged.
+        std::string label = attr.gender + " " + attr.age_label;
+        if (!attr.race_label.empty()) label += " " + attr.race_label;
+        label += std::string(" ") + getEmotionName(attr.emotion);
+        labels.push_back(label);
     }
     // The inference channel is letterboxed vs the 16:9 debug video (stream);
     // remap boxes into the stream frame so the overlay aligns with the video.
