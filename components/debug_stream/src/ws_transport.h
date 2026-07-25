@@ -97,6 +97,12 @@ typedef struct {
      * upgrade, storing the connection kind in *tag0 (it lands in tag slot 0).
      * Return false to refuse, setting *status and *body for the HTTP error
      * reply (both have sane defaults, 404 / "not found\n").
+     *
+     * The status code is part of the contract; the exact framing of the body
+     * is not. mongoose writes it verbatim, while libwebsockets wraps it in a
+     * generated HTML page -- both convey the message, and no client depends on
+     * the bytes. Assert on the message being present, not on the body being
+     * byte-for-byte equal.
      */
     bool (*on_upgrade)(void* user, const char* path, uint8_t* tag0,
                        int* status, const char** body);
