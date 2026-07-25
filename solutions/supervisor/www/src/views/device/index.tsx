@@ -58,6 +58,43 @@ function formatStorage(value?: number): string {
   return `${(bytes / 1024).toFixed(0)} KB`;
 }
 
+const WAVE_BARS = 56;
+
+/** Decode a recorded WAV blob and reduce channel 0 to WAVE_BARS peak bars
+ *  (normalized to the loudest bar so quiet speech stays visible). `silent` is
+ *  true when the loudest sample sits at the noise floor — a dead/absent mic. */
+async function analyzeWaveform(
+  blob: Blob
+): Promise<{ peaks: number[]; silent: boolean }> {
+  const AC =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  const arrayBuf = await blob.arrayBuffer();
+  const ctx = new AC();
+  try {
+    const audio = await ctx.decodeAudioData(arrayBuf);
+    const ch = audio.getChannelData(0);
+    const block = Math.floor(ch.length / WAVE_BARS) || 1;
+    const peaks: number[] = [];
+    let globalMax = 0;
+    for (let i = 0; i < WAVE_BARS; i++) {
+      let max = 0;
+      const start = i * block;
+      for (let j = 0; j < block && start + j < ch.length; j++) {
+        const v = Math.abs(ch[start + j]);
+        if (v > max) max = v;
+      }
+      peaks.push(max);
+      if (max > globalMax) globalMax = max;
+    }
+    const norm = globalMax > 0 ? peaks.map((p) => p / globalMax) : peaks;
+    return { peaks: norm, silent: globalMax < 0.01 };
+  } finally {
+    ctx.close();
+  }
+}
+
 const DeviceTools = () => {
   const { t } = useTranslation();
   // P5 capability-driven rendering. undefined = probe not answered (older
@@ -90,6 +127,9 @@ const DeviceTools = () => {
   // Audio card (P3-E). recordUrl: object URL of the last mic capture.
   const [recording, setRecording] = useState(false);
   const [recordUrl, setRecordUrl] = useState<string | null>(null);
+  // Waveform of the last capture: normalized peak bars + silent flag.
+  const [wavePeaks, setWavePeaks] = useState<number[] | null>(null);
+  const [waveSilent, setWaveSilent] = useState(false);
   const [playTesting, setPlayTesting] = useState(false);
   const [playingRecording, setPlayingRecording] = useState(false);
   // undefined=loading, null=unsupported/unavailable
@@ -191,12 +231,20 @@ const DeviceTools = () => {
    *  (code -2 = busy). */
   const onRecord = async () => {
     setRecording(true);
+    setWavePeaks(null);
     try {
       const blob = await audioRecordApi(3);
       if (recordUrlRef.current) URL.revokeObjectURL(recordUrlRef.current);
       const url = URL.createObjectURL(blob);
       recordUrlRef.current = url;
       setRecordUrl(url);
+      try {
+        const { peaks, silent } = await analyzeWaveform(blob);
+        setWavePeaks(peaks);
+        setWaveSilent(silent);
+      } catch {
+        setWavePeaks(null); // undecodable clip -> just skip the waveform
+      }
     } catch (e) {
       if (isBusy((e as { code?: number | string }) ?? {})) {
         message.warning(t("audio.busy"));
@@ -681,6 +729,41 @@ const DeviceTools = () => {
                     </Button>
                   )}
                 </div>
+                {wavePeaks && (
+                  <div className="mt-10">
+                    <svg
+                      viewBox={`0 0 ${wavePeaks.length * 4} 40`}
+                      preserveAspectRatio="none"
+                      className="w-full"
+                      style={{ height: 40 }}
+                      role="img"
+                      aria-label={
+                        waveSilent ? t("audio.silent") : t("audio.captured")
+                      }
+                    >
+                      {wavePeaks.map((p, i) => {
+                        const h = Math.max(2, p * 38);
+                        return (
+                          <rect
+                            key={i}
+                            x={i * 4}
+                            y={(40 - h) / 2}
+                            width={2.4}
+                            height={h}
+                            rx={1}
+                            fill={waveSilent ? "#d48806" : "#52c41a"}
+                          />
+                        );
+                      })}
+                    </svg>
+                    <div
+                      className="text-11 mt-4 text-muted"
+                      style={waveSilent ? { color: "#d48806" } : undefined}
+                    >
+                      {waveSilent ? t("audio.silent") : t("audio.captured")}
+                    </div>
+                  </div>
+                )}
                 {recordUrl && (
                   <audio
                     controls

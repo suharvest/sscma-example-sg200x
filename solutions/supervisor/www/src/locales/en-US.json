@@ -253,6 +253,8 @@
     "microphone": "Microphone",
     "recordBtn": "Record 3s & play back",
     "recording": "Recording…",
+    "captured": "Audio captured",
+    "silent": "No sound detected (mic may be disconnected or too quiet)",
     "recordFailed": "Recording failed — check the microphone",
     "download": "Download",
     "speaker": "Speaker",

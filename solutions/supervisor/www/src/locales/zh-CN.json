@@ -252,6 +252,8 @@
     "microphone": "麦克风",
     "recordBtn": "录 3 秒并回放",
     "recording": "录音中…",
+    "captured": "已采集到声音",
+    "silent": "未检测到声音（麦克风可能未接入或过于安静）",
     "recordFailed": "录音失败——请检查麦克风",
     "download": "下载",
     "speaker": "扬声器",
