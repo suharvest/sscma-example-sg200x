@@ -10,6 +10,8 @@
 #include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
 #include "rtsp_server.h"
 
 #include "face_detector.h"
@@ -281,6 +283,10 @@ static bool init_video_streaming() {
 // FaceInfo x/y are normalized top-left; convert to center-based pixels.
 // box[5] is "face" (aligned with the other apps' class-name labels); the
 // parallel labels[] carries the per-face attributes.
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
+
 static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
                                             const std::vector<AnalyzedFace>& faces,
                                             float inference_time_ms) {
@@ -342,6 +348,14 @@ static bool init_mqtt() {
     if (!g_mqtt_publisher->init(opts)) {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
+    }
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
     }
 
     return true;
@@ -455,6 +469,29 @@ static void process_frame() {
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         std::string payload = buildResultJson(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
         g_mqtt_publisher->publishResultsJson(payload);
+
+        // Additionally publish the same detections in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/<app>/results contract above is consumed by SenseCraft and
+        // does not change. Only boxes and a class for now; face attributes map
+        // onto tt:HumanFace and can follow once this path has proven itself.
+        if (g_onvif_meta.take(timestamp_ms)) {
+            std::vector<onvif_box_t> ob;
+            ob.reserve(analyzed_faces.size());
+            for (const auto& af : analyzed_faces) {
+                const auto& f = af.face;
+                ob.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
+                              (f.y + f.h * 0.5f) * g_config.inference_height,
+                              f.w * g_config.inference_width,
+                              f.h * g_config.inference_height,
+                              f.score, "HumanFace"});
+            }
+            g_mqtt_publisher->publishText(
+                g_onvif_meta.topic(),
+                onvif_meta_to_json(onvif_meta_from_boxes(
+                    timestamp_ms, "FaceAnalysis",
+                    g_config.inference_width, g_config.inference_height, ob)));
+        }
     }
 
     // Step 4.5: Push the same inference result to debug WS clients (sscma-node

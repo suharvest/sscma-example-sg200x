@@ -126,4 +126,53 @@ std::string onvif_meta_topic(const std::string& topic_prefix,
  * That is a device configuration issue, not a bug here. */
 std::string onvif_meta_utc(uint64_t unix_ms);
 
+/*
+ * Append one object carrying a single class hypothesis -- the simple case,
+ * which is what every detector produces. Coordinates follow onvif_object_t:
+ * centre-based pixels, y DOWN.
+ *
+ * This exists so wiring an application up is a three-line loop over the boxes
+ * it already builds for the console overlay. Applications with richer output
+ * (face attributes, barcode payloads, parent/child containment) fill
+ * onvif_object_t directly instead; that can come later, per application,
+ * without disturbing the ones using this.
+ */
+void onvif_meta_add_box(onvif_frame_t& frame, int id,
+                        float cx, float cy, float w, float h,
+                        const std::string& type, float likelihood);
+
+/*
+ * A detection in the form every application already has one: centre-based
+ * pixels plus a score and a label. Field order matches debug_stream_box_t on
+ * purpose -- that is the codebase's existing common currency for "a box", and
+ * applications build a vector of them for the console overlay anyway.
+ *
+ * Deliberately a separate type rather than including debug_stream.h: this
+ * component must stay free of the video path so it can be linked by anything,
+ * including a future ONVIF service that has no debug stream at all.
+ */
+struct onvif_box_t {
+    float x = 0.f;  /* centre */
+    float y = 0.f;  /* centre, y DOWN */
+    float w = 0.f;
+    float h = 0.f;
+    float score = 0.f;
+    std::string label;
+};
+
+/*
+ * Build a frame from those boxes, mapping each label through `classify`.
+ *
+ * `classify` is where the only genuinely application-specific decision lives:
+ * what a detection is called in ONVIF's vocabulary. There is no generic answer
+ * -- a face detector says "HumanFace", an object detector maps COCO names onto
+ * Human/Vehicle/Animal, a classifier has no boxes at all -- so the caller
+ * supplies it, usually as a one-line lambda. Passing nullptr uses the label
+ * verbatim, which is valid: tt:ClassDescriptor/Type is a free string.
+ */
+onvif_frame_t onvif_meta_from_boxes(uint64_t utc_ms, const std::string& source,
+                                    int frame_w, int frame_h,
+                                    const std::vector<onvif_box_t>& boxes,
+                                    std::string (*classify)(const std::string&) = nullptr);
+
 #endif /* _ONVIF_META_H_ */
