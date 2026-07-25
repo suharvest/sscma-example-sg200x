@@ -10,7 +10,7 @@
 #include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
-#include "rtsp_demo.h"
+#include "rtsp_server.h"
 
 #include "face_detector.h"
 #include "attribute_analyzer.h"

@@ -2,9 +2,7 @@ link_directories("${CMAKE_CURRENT_LIST_DIR}")
 
 component_register(
     COMPONENT_NAME main
-    SRCS ${CMAKE_CURRENT_LIST_DIR}/main.cpp
-    PRIVATE_REQUIREDS cvi_rtsp sophgo
-
+    SRCS "${CMAKE_CURRENT_LIST_DIR}/main.cpp"
     INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/"
-    SRCS "${CMAKE_CURRENT_LIST_DIR}/rtsp_demo.c"
+    PRIVATE_REQUIREDS rtsp_server sophgo
 )

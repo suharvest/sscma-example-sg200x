@@ -10,7 +10,7 @@
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
-#include "rtsp_demo.h"
+#include "rtsp_server.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>

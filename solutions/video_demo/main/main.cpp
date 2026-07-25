@@ -3,7 +3,7 @@
 #include <syslog.h>
 #include <unistd.h>
 
-#include "rtsp_demo.h"
+#include "rtsp_server.h"
 #include "video.h"
 
 static CVI_VOID app_ipcam_ExitSig_handle(CVI_S32 signo) {

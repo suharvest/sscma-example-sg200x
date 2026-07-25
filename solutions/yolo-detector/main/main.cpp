@@ -11,7 +11,7 @@
 #include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
-#include "rtsp_demo.h"
+#include "rtsp_server.h"
 
 #include "detector.h"
 #include "person_tracker.h"

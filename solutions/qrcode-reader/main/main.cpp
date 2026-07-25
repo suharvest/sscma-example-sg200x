@@ -24,7 +24,7 @@
 #include <ha_mqtt.h>
 
 #include "mqtt_payload.h"
-#include "rtsp_demo.h"
+#include "rtsp_server.h"
 
 using namespace ma;
 
