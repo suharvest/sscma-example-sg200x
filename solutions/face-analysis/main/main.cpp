@@ -439,6 +439,12 @@ static void process_frame() {
     auto analyze_end = std::chrono::high_resolution_clock::now();
     auto analyze_time = std::chrono::duration_cast<std::chrono::milliseconds>(analyze_end - analyze_start).count();
 
+    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
+    // unless a snapshot client asked recently; must precede returnFrame(),
+    // after which frame.data is invalid. Raw, not annotated: the video path
+    // is unannotated too and overlays are drawn client-side.
+    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
+
     // Return frame to camera
     g_camera->returnFrame(frame);
 

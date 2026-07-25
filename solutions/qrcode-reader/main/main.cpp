@@ -416,6 +416,11 @@ static void process_frame() {
         return;
     }
     processQRCode(frame);
+    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
+    // unless a snapshot client asked recently; must precede returnFrame(),
+    // after which frame.data is invalid. Raw, not annotated: the video path
+    // is unannotated too and overlays are drawn client-side.
+    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
     g_camera->returnFrame(frame);
 }
 

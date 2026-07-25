@@ -100,6 +100,34 @@ static void wst_ev_handler(struct mg_connection* c, int ev, void* ev_data) {
         memcpy(path, hm->uri.buf, n);
         path[n] = '\0';
 
+        // Plain HTTP first: a route that serves content rather than upgrading.
+        if (t->cb.on_http != NULL) {
+            int hstatus = 200;
+            const char* ctype = "application/octet-stream";
+            const void* hbody = NULL;
+            size_t hlen = 0;
+            if (t->cb.on_http(t->cb.user, path, &hstatus, &ctype, &hbody, &hlen)) {
+                // Binary-safe framing: mg_http_reply's printf would stop at the
+                // first NUL, so write the head and the body separately. Both
+                // are copied into the connection's send buffer here, which is
+                // what lets on_http hand us a pointer it only owns briefly.
+                mg_printf(c,
+                    "HTTP/1.1 %d %s\r\n"
+                    "Content-Type: %s\r\n"
+                    "Access-Control-Allow-Origin: *\r\n"
+                    "Cache-Control: no-store\r\n"
+                    "Content-Length: %lu\r\n\r\n",
+                    hstatus, hstatus == 200 ? "OK" : "Error",
+                    ctype != NULL ? ctype : "application/octet-stream",
+                    (unsigned long)hlen);
+                if (hbody != NULL && hlen > 0) {
+                    mg_send(c, hbody, hlen);
+                }
+                c->is_resp = 0;
+                return;
+            }
+        }
+
         uint8_t tag0 = 0;
         int status = 404;
         const char* body = "not found\n";

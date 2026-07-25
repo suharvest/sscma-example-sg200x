@@ -1,6 +1,7 @@
 #ifndef _DEBUG_STREAM_H_
 #define _DEBUG_STREAM_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -31,6 +32,7 @@ typedef struct {
     int port;                  /* WS server port (default 8001) */
     const char* video_path;    /* WS path for H.264 video (default "/") */
     const char* results_path;  /* WS path for result JSON (default "/results") */
+    const char* snapshot_path; /* HTTP path for JPEG snapshot (default "/snapshot.jpg") */
     int video_ch;              /* VENC channel for IDR requests (default VIDEO_CH2 = 2) */
     int max_video_clients;     /* default 2 */
     int max_results_clients;   /* default 2 */
@@ -68,6 +70,41 @@ int debug_stream_publish_result(const char* json, size_t len);
 /* Number of connected video / results WS clients. */
 int debug_stream_video_client_count(void);
 int debug_stream_results_client_count(void);
+
+/*
+ * JPEG snapshot of the live scene, served as GET <snapshot_path>
+ * (default "/snapshot.jpg"). Needed by ONVIF GetSnapshotUri, and useful on its
+ * own for console thumbnails and post-deploy verification.
+ *
+ * Lazy in the same spirit as the video path, because encoding is not free on
+ * this SoC: nothing is copied or encoded until a client actually asks. A GET
+ * "arms" the snapshot for DEBUG_STREAM_SNAPSHOT_ARM_MS; while armed, the
+ * producer's offer calls encode at most one frame per
+ * DEBUG_STREAM_SNAPSHOT_MIN_INTERVAL_MS. Once nobody has asked for a while it
+ * goes back to costing a single atomic load per frame.
+ *
+ * Consequence worth knowing: the first GET after an idle period has nothing to
+ * serve yet and gets 503 with Retry-After: 1. Steady-state polling (which is
+ * how both ONVIF clients and the console use it) always sees 200.
+ */
+#define DEBUG_STREAM_SNAPSHOT_ARM_MS 10000
+#define DEBUG_STREAM_SNAPSHOT_MIN_INTERVAL_MS 500
+
+/*
+ * Offer the current frame for snapshotting. Call once per processed frame from
+ * the inference thread, with the same RGB888 buffer that was just inferred on.
+ * Returns immediately (one atomic load) unless a snapshot is due.
+ *
+ * Encoding happens inline on the calling thread -- deliberately, so the
+ * transport's event thread never runs cv::imencode. Do not call this from the
+ * VENC callback: that runs at real-time priority and starving it is what broke
+ * RTSP once already.
+ */
+int debug_stream_offer_snapshot(const void* rgb888, int width, int height);
+
+/* Whether a snapshot client has asked recently, i.e. whether the next
+ * debug_stream_offer_snapshot() may do real work. */
+bool debug_stream_snapshot_armed(void);
 
 #ifdef __cplusplus
 }

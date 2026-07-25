@@ -79,6 +79,20 @@ typedef struct {
     void* user;
 
     /*
+     * Optional; tried before on_upgrade. A plain HTTP request arrived at
+     * `path`. Return true to serve it, filling *status, *content_type and the
+     * body pointer/length. Return false to fall through to on_upgrade.
+     *
+     * The body only has to stay valid for the duration of this call: the
+     * backend copies it before returning. (mongoose copies into the connection
+     * send buffer synchronously; a libwebsockets backend has to stage it and
+     * request LWS_CALLBACK_HTTP_WRITEABLE, which is why the contract is
+     * "valid during the call" and not "valid until sent".)
+     */
+    bool (*on_http)(void* user, const char* path, int* status,
+                    const char** content_type, const void** body, size_t* len);
+
+    /*
      * An HTTP upgrade request arrived at `path`. Return true to accept the
      * upgrade, storing the connection kind in *tag0 (it lands in tag slot 0).
      * Return false to refuse, setting *status and *body for the HTTP error
