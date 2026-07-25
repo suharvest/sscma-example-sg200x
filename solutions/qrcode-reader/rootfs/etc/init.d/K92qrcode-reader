@@ -61,8 +61,11 @@ start() {
     if [ -f $PIDFILE ]; then
         PID=$(cat $PIDFILE 2>/dev/null)
         if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            # Already running -> idempotent success (LSB convention). Returning
+            # failure here made the supervisor's switchApp report "start failed"
+            # whenever the app was already up (e.g. started out of band).
             echo "$NAME is already running (PID: $PID)"
-            return 1
+            return 0
         fi
         rm -f $PIDFILE
     fi

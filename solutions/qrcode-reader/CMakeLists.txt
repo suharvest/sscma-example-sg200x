@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(qrcode-reader VERSION 0.1.4 LANGUAGES C CXX)
+project(qrcode-reader VERSION 0.1.6 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 
