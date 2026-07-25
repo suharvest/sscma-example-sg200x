@@ -38,8 +38,8 @@ using Clock = std::chrono::steady_clock;
 
 static struct {
     // Inference (CH0) frame — QR detection runs on this RGB888 buffer.
-    int camera_w   = 640;
-    int camera_h   = 640;
+    int camera_w   = 1280;
+    int camera_h   = 720;
     int camera_fps = 10;
 
     std::string mqtt_host  = "localhost";
@@ -213,11 +213,31 @@ static void processQRCode(const ma_img_t& frame) {
 
     const auto t1              = Clock::now();
     const double detect_ms     = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    // Hold the last decode for a short window so the overlay/results stay
+    // visible. Decoding is intermittent — a fixed-focus camera only nails a
+    // sharp frame every so often — so clearing on the very next empty frame
+    // made the box flash for a single frame and vanish. While a code keeps
+    // re-decoding within the window the overlay stays solid; it clears
+    // HOLD_MS after the code actually leaves the view.
+    static std::vector<qrcode_reader::QrCode> s_last_codes;
+    static Clock::time_point                  s_last_decode{};
+    constexpr double HOLD_MS = 2000.0;
+    if (!codes.empty()) {
+        s_last_codes  = codes;
+        s_last_decode = t1;
+    } else if (!s_last_codes.empty() &&
+               std::chrono::duration<double, std::milli>(t1 - s_last_decode).count() < HOLD_MS) {
+        codes = s_last_codes;  // re-show the last decode until the hold expires
+    } else {
+        s_last_codes.clear();
+    }
+
     const bool qr_found        = !codes.empty();
     const uint64_t frame_id    = g_frame_id.fetch_add(1) + 1;
 
-    // Publish every frame (empty codes too: clears the Console overlay and the
-    // HA qr_count on the frame after a code leaves the view).
+    // Publish every frame; within the hold window `codes` still carries the
+    // last decode so the Console overlay and HA qr_count stay stable.
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         const std::string payload =
             qrcode_reader::buildResultJson(frame_id, qr_found, detect_ms, codes);
