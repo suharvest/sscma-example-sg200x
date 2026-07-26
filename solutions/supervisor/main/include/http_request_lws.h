@@ -129,52 +129,85 @@ inline std::string_view query_var_impl(const http_request* r, const char* name)
     return c->scratch;
 }
 
-/*
- * multipart/form-data walk with the same contract as mongoose's: pass 0 to
- * start, returns the position to pass next, 0 when done.
- */
-inline size_t next_multipart_impl(const http_request* r, size_t pos,
-    http_multipart_part* out)
+/* ------------------------------------------------------------------------
+ * multipart/form-data
+ *
+ * The parsing is split out from the lws plumbing so it can be tested on the
+ * host without a device or a libwebsockets context. That matters more here
+ * than elsewhere: this is the only new code in the migration that reads
+ * attacker-controlled bytes directly, and every early-return below exists
+ * because a fuzzer found the input that needed it.
+ * ------------------------------------------------------------------------ */
+
+/* One parsed part, as offsets into the body rather than pointers, so the
+ * pure function stays free of lifetime questions. */
+struct MultipartSpan {
+    std::string name;
+    std::string filename;
+    size_t data_off = 0;
+    size_t data_len = 0;
+};
+
+/* Extract the boundary from a Content-Type header. Empty when absent or
+ * malformed -- callers must treat that as "no parts", not as "parse anyway". */
+inline std::string multipart_boundary(const std::string& content_type)
 {
-    const RequestCtx* c = static_cast<const RequestCtx*>(r->impl);
-    if (c == nullptr || c->conn == nullptr || out == nullptr) return 0;
-
-    const std::string& body = c->conn->body;
-    if (pos >= body.size()) return 0;
-
-    /* Boundary comes from Content-Type: multipart/form-data; boundary=XXX */
-    const std::string ctype = hdr_value(c->wsi, WSI_TOKEN_HTTP_CONTENT_TYPE);
-    const size_t bpos = ctype.find("boundary=");
-    if (bpos == std::string::npos) return 0;
-    std::string boundary = ctype.substr(bpos + 9);
-    if (!boundary.empty() && boundary.front() == '"') {
-        const size_t e = boundary.find('"', 1);
-        boundary = (e == std::string::npos) ? boundary.substr(1) : boundary.substr(1, e - 1);
+    const size_t b = content_type.find("boundary=");
+    if (b == std::string::npos) return "";
+    std::string v = content_type.substr(b + 9);
+    if (!v.empty() && v.front() == '"') {
+        const size_t e = v.find('"', 1);
+        v = (e == std::string::npos) ? std::string() : v.substr(1, e - 1);
+    } else {
+        const size_t e = v.find_first_of(";,");
+        if (e != std::string::npos) v = v.substr(0, e);
     }
-    const std::string delim = "--" + boundary;
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\r' || v.back() == '\n')) v.pop_back();
+    return v;
+}
 
-    /* Find the delimiter at or after pos, then the headers/body of that part. */
-    size_t d = body.find(delim, pos);
+/*
+ * Advance one part. Returns the position to pass next, or 0 when there are no
+ * more (which is also what every malformed case returns -- refusing to parse
+ * beats guessing at a truncated or hostile body).
+ *
+ * The contract deliberately mirrors mg_http_next_multipart so callers did not
+ * have to change when the library did.
+ */
+inline size_t multipart_next(const std::string& body, const std::string& boundary,
+    size_t pos, MultipartSpan* out)
+{
+    if (boundary.empty() || out == nullptr || pos >= body.size()) return 0;
+
+    const std::string delim = "--" + boundary;
+    const size_t d = body.find(delim, pos);
     if (d == std::string::npos) return 0;
+
     size_t p = d + delim.size();
-    if (body.compare(p, 2, "--") == 0) return 0;  /* closing delimiter */
+    /* Closing delimiter "--boundary--" ends the document. */
+    if (body.compare(p, 2, "--") == 0) return 0;
     if (body.compare(p, 2, "\r\n") == 0) p += 2;
+    if (p >= body.size()) return 0;
 
     const size_t hdr_end = body.find("\r\n\r\n", p);
     if (hdr_end == std::string::npos) return 0;
     const std::string headers = body.substr(p, hdr_end - p);
     const size_t data_begin = hdr_end + 4;
+    if (data_begin > body.size()) return 0;
 
+    /* A part with no following delimiter is a truncated body. Dropping it is
+     * the safe reading: the alternative is handing the caller a length that
+     * runs to the end of whatever happened to be received. */
     const size_t next_d = body.find(delim, data_begin);
     if (next_d == std::string::npos) return 0;
-    /* Strip the CRLF that precedes the next delimiter. */
-    size_t data_end = next_d;
-    if (data_end >= 2 && body.compare(data_end - 2, 2, "\r\n") == 0) data_end -= 2;
 
-    /* name="x"; filename="y" out of Content-Disposition. */
-    c->part_name.clear();
-    c->part_filename.clear();
-    auto extract = [&headers](const char* key) -> std::string {
+    size_t data_end = next_d;
+    if (data_end >= data_begin + 2 && body.compare(data_end - 2, 2, "\r\n") == 0) {
+        data_end -= 2;
+    }
+    if (data_end < data_begin) data_end = data_begin;
+
+    auto quoted = [&headers](const char* key) -> std::string {
         const size_t k = headers.find(key);
         if (k == std::string::npos) return "";
         const size_t q1 = headers.find('"', k);
@@ -183,15 +216,35 @@ inline size_t next_multipart_impl(const http_request* r, size_t pos,
         if (q2 == std::string::npos) return "";
         return headers.substr(q1 + 1, q2 - q1 - 1);
     };
-    c->part_name = extract("name=");
-    c->part_filename = extract("filename=");
+    out->name = quoted("name=");
+    out->filename = quoted("filename=");
+    out->data_off = data_begin;
+    out->data_len = data_end - data_begin;
+    return next_d;
+}
 
+inline size_t next_multipart_impl(const http_request* r, size_t pos,
+    http_multipart_part* out)
+{
+    const RequestCtx* c = static_cast<const RequestCtx*>(r->impl);
+    if (c == nullptr || c->conn == nullptr || out == nullptr) return 0;
+
+    const std::string& body = c->conn->body;
+    const std::string boundary =
+        multipart_boundary(hdr_value(c->wsi, WSI_TOKEN_HTTP_CONTENT_TYPE));
+
+    MultipartSpan span;
+    const size_t next = multipart_next(body, boundary, pos, &span);
+    if (next == 0) return 0;
+
+    c->part_name = span.name;
+    c->part_filename = span.filename;
     out->name = c->part_name;
     out->filename = c->part_filename;
     /* Non-const because multipart_t::data is; nothing writes through it. */
-    out->data = const_cast<char*>(body.data()) + data_begin;
-    out->len = data_end - data_begin;
-    return next_d;
+    out->data = const_cast<char*>(body.data()) + span.data_off;
+    out->len = span.data_len;
+    return next;
 }
 
 /* Caller owns both; the view must not outlive the RequestCtx. */
