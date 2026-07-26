@@ -11,6 +11,9 @@
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
 #include "rtsp_server.h"
 #include <opencv2/opencv.hpp>
 
@@ -68,6 +71,10 @@ static OcrPipeline* g_pipeline = nullptr;
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
+
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -330,6 +337,15 @@ static bool init_mqtt() {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+    }
+
     return true;
 }
 
@@ -341,6 +357,8 @@ static void cleanup() {
     if (g_config.enable_debug) {
         debug_stream_destroy();
     }
+
+    onvif_service_stop();
 
     if (g_config.enable_rtsp) {
         deinitRtsp();
@@ -426,6 +444,49 @@ static void process_frame() {
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         std::string payload = buildResultJson(timestamp_ms, g_frame_id, results, timings, frame_w, frame_h);
         g_mqtt_publisher->publishResultsJson(payload);
+
+        // Additionally publish the same regions in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/<app>/results contract above is consumed by SenseCraft and
+        // does not change.
+        //
+        // Filled object by object rather than through onvif_meta_from_boxes
+        // because the recognised string has to go somewhere: ONVIF has no
+        // vocabulary for OCR, so the class is "Text" and the string rides as a
+        // vendor extension under the same key.
+        if (g_onvif_meta.take(timestamp_ms)) {
+            onvif_frame_t f;
+            f.utc_ms = timestamp_ms;
+            f.source = "PpocrReader";
+            f.frame_w = frame_w;
+            f.frame_h = frame_h;
+            f.objects.reserve(results.size());
+            int next_id = 1;
+            for (const auto& r : results) {
+                // TextBox is a quadrilateral in source pixels; ONVIF objects
+                // carry an axis-aligned box, so take its bounding rectangle.
+                float min_x = r.box.points[0][0], max_x = min_x;
+                float min_y = r.box.points[0][1], max_y = min_y;
+                for (int p = 1; p < 4; ++p) {
+                    min_x = std::min(min_x, r.box.points[p][0]);
+                    max_x = std::max(max_x, r.box.points[p][0]);
+                    min_y = std::min(min_y, r.box.points[p][1]);
+                    max_y = std::max(max_y, r.box.points[p][1]);
+                }
+                onvif_object_t o;
+                o.id = next_id++;
+                o.cx = (min_x + max_x) * 0.5f;
+                o.cy = (min_y + max_y) * 0.5f;
+                o.w  = max_x - min_x;
+                o.h  = max_y - min_y;
+                o.classes.push_back({"Text", r.det_confidence});
+                if (!r.text.empty()) {
+                    o.extensions.push_back({"Text", r.text});
+                }
+                f.objects.push_back(std::move(o));
+            }
+            g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
+        }
     }
 
     // Log results
@@ -509,6 +570,16 @@ int main(int argc, char** argv) {
     if (!init_mqtt()) { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
+
+    // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
+    // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
+    // server's session list, so bringing this up earlier advertises zero
+    // profiles and a VMS shows a camera with no video.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
+        onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    }
 
     MA_LOGI(TAG, "PP-OCRv3 reader running...");
     MA_LOGI(TAG, "RTSP stream: rtsp://<device_ip>:8554/live0");

@@ -13,6 +13,9 @@
 #include <sstream>
 
 #include <ha_mqtt.h>
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
 
 #include "detector.h"
 #include "person_tracker.h"
@@ -90,6 +93,10 @@ static std::chrono::steady_clock::time_point g_start_time;
 static float g_fps = 0.0f;
 static int g_fps_frame_count = 0;
 static std::chrono::steady_clock::time_point g_fps_last_time;
+
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -447,6 +454,15 @@ static bool init_mqtt() {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+    }
+
     return true;
 }
 
@@ -458,6 +474,8 @@ static void cleanup() {
     if (g_config.enable_debug) {
         debug_stream_destroy();
     }
+
+    onvif_service_stop();
 
     if (g_rtsp_transport) {
         g_rtsp_transport->deInit();
@@ -556,6 +574,35 @@ static void process_frame() {
             g_config.stream_width, g_config.stream_height,
             g_detector->getInputWidth(), g_detector->getInputHeight());
         g_mqtt_publisher->publishResultsJson(payload);
+
+        // Additionally publish the same people in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/retail-vision/vision contract above is consumed by
+        // SenseCraft and does not change.
+        //
+        // Filled object by object rather than through onvif_meta_from_boxes so
+        // the tracker's stable track id becomes tt:Object/@ObjectId: that is
+        // what lets a VMS follow one shopper across frames instead of seeing a
+        // new object every time.
+        if (g_onvif_meta.take(timestamp_ms)) {
+            onvif_frame_t f;
+            f.utc_ms = timestamp_ms;
+            f.source = "RetailVision";
+            f.frame_w = g_config.inference_width;
+            f.frame_h = g_config.inference_height;
+            f.objects.reserve(tracked_persons.size());
+            for (const auto& p : tracked_persons) {
+                onvif_object_t o;
+                o.id = p.track_id;
+                o.cx = p.detection.x * g_config.inference_width;
+                o.cy = p.detection.y * g_config.inference_height;
+                o.w  = p.detection.w * g_config.inference_width;
+                o.h  = p.detection.h * g_config.inference_height;
+                o.classes.push_back({"Human", p.detection.score});
+                f.objects.push_back(std::move(o));
+            }
+            g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
+        }
     }
 
     // Log
@@ -603,6 +650,19 @@ int main(int argc, char** argv) {
     if (!init_mqtt())     { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
+
+    // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
+    // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
+    // server, so bringing this up earlier advertises zero profiles and a VMS
+    // shows a camera with no video. This application streams through
+    // sscma-micro's TransportRTSP instead of rtsp_server, which onvif_service
+    // cannot introspect, so the session name and port are passed explicitly.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? g_config.debug_port : 0,
+            g_config.rtsp_session, g_config.rtsp_port) == 0 &&
+        onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    }
 
     MA_LOGI(TAG, "Retail Vision running...");
     if (g_config.enable_rtsp) MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:%d/%s", g_config.rtsp_port, g_config.rtsp_session.c_str());

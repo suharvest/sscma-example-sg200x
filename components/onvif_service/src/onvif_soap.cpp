@@ -268,20 +268,34 @@ std::string soap_fault(const char* code, const char* subcode, const char* reason
  * a second copy of those values in this file -- is precisely how the ":554"
  * string stayed wrong in eight applications for as long as it did.
  */
+bool using_override()
+{
+    return !g_ss.cfg.rtsp_session_override.empty();
+}
+
 int profile_count()
 {
+    if (using_override()) return 1;
     const int n = rtsp_server_session_count();
     return n > 0 ? n : 0;
 }
 
 std::string profile_token(int idx)
 {
+    if (using_override()) return g_ss.cfg.rtsp_session_override;
     const char* s = rtsp_server_session_name(idx);
     return s != nullptr ? std::string(s) : ("profile" + std::to_string(idx));
 }
 
 std::string stream_uri(const std::string& ip, int idx)
 {
+    if (using_override()) {
+        char b[256];
+        snprintf(b, sizeof(b), "rtsp://%s:%d/%s", ip.c_str(),
+            g_ss.cfg.rtsp_port_override > 0 ? g_ss.cfg.rtsp_port_override : 8554,
+            g_ss.cfg.rtsp_session_override.c_str());
+        return b;
+    }
     char b[256];
     if (rtsp_server_url(b, sizeof(b), ip.c_str(), idx) < 0) return "";
     return b;

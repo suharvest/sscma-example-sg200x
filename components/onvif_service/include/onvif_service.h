@@ -63,6 +63,22 @@ struct onvif_service_config {
     std::string snapshot_path = "/snapshot.jpg";
 
     /*
+     * RTSP facts, when they cannot be asked of rtsp_server.
+     *
+     * Normally left empty: GetProfiles and GetStreamUri query the running
+     * rtsp_server, which is the point of giving it self-description. But
+     * retail-vision publishes through sscma-micro's TransportRTSP instead, so
+     * rtsp_server reports no sessions and the device would advertise itself as
+     * a camera with no video.
+     *
+     * Setting these is not a licence to duplicate values that could have been
+     * queried -- an application that uses rtsp_server and fills these anyway
+     * has just recreated the ":554" bug in a new place.
+     */
+    std::string rtsp_session_override;
+    int rtsp_port_override = 0;
+
+    /*
      * HTTP Digest credentials for the SOAP services. Both empty -> anonymous,
      * which is the default and matches the RTSP server's default.
      *
