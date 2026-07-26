@@ -1236,19 +1236,39 @@ ONVIF 允许自由复制分发（保留 copyright / license / disclaimer）。
 3. **最小 demo 验证三 track**（video H.264 + audio + `application/vnd.onvif.metadata`）能被 ONVIF Device Manager / VLC 正确 SETUP（**1 天**）
 4. **再动 SOAP 层**——但在此之前**必须先完成 §0.5-B 的 mongoose 许可证决策**，否则 ONVIF 做完仍然无法商业发布
 
-### 14.9 ONVIF SOAP 端点的 HTTP 层 —— 待决策
+### 14.9 ONVIF SOAP 端点的 HTTP 层 —— 已决策：**B（复用 libwebsockets）**
 
-WS-Discovery 已实现且零依赖（纯 UDP）。但 Device / Media2 服务需要一个 HTTP 监听端，而这正好撞上 §0.5-B 的许可证问题。
+WS-Discovery 已实现且零依赖（纯 UDP）。但 Device / Media2 服务需要一个 HTTP 监听端，而这在写本节时正好撞上 §0.5-B 的许可证问题。
 
-| 方案 | 评估 |
+| 方案 | 当时评估 | 现在 |
+|---|---|---|
+| A. 自写极小 HTTP 处理 | 当时倾向。ONVIF 端点只需 POST + 固定路径 + `Content-Length` body + 返回 XML，不需要 chunked / keep-alive / 静态文件 / TLS / multipart，约 150~200 行，让 `onvif_service` 保持零第三方依赖 | ❌ |
+| **B. 复用 lws** | 当时的唯一问题是"要等迁移" | ✅ **选中** |
+| C. 用现有 mongoose | ❌ 加深 GPL 依赖，与迁移方向相反 | ❌ mongoose 已删除 |
+
+**为什么翻案**：A 的唯一优势是"零第三方依赖"，而 lws 迁移完成后（commit `10c59b9`）这个优势失效了 —— lws 反正已经静态链进每个二进制，`onvif_service` 复用它**不新增任何依赖**；反倒是自写那 200 行才是新增的、没人审过的、要自己维护的攻击面。同时 A 的前提本来就脆：本节原文自己写了"若将来需要 TLS 或静态资源，该前提失效，应改走 lws"，那等于把返工写进了计划。Digest 认证、多端口监听在 lws 侧也已有现成骨架。
+
+#### 14.9.1 落地设计
+
+**D1 — 独立 lws context，独立线程，不复用 `debug_stream` 的。**
+理由不是洁癖：`onvif_service` 必须能被**没有** `debug_stream` 的 app 链接（这正是把它与 `onvif_meta` 拆开的理由）；两者端口不同（8000 vs 8001）；`debug_stream` 的端口用户可配、且 Live 预览可以整个关掉 —— 把 ONVIF 的可用性绑在预览开关上是错的耦合。
+
+**D2 — 数据来源：能问就问，不能问才配。**
+
+| ONVIF 操作 | 来源 |
 |---|---|
-| **A. 自写极小 HTTP 处理**（倾向） | ONVIF 端点只需 **POST + 固定路径 + `Content-Length` body + 返回 XML**：不需要 chunked、keep-alive、静态文件、TLS、multipart。约 150~200 行。**让 `onvif_service` 保持零第三方依赖**，比依赖 mongoose（GPL）或 lws（要等迁移）都干净，攻击面小且可审计 |
-| B. 等 lws 迁移完成后复用 | 把 ONVIF 卡在一个与它无关的商务决策上 |
-| C. 用现有 mongoose | ❌ **排除**：加深 GPL 依赖，与整个迁移方向相反 |
+| `GetProfiles` / `GetStreamUri` | `rtsp_server_port/_session_count/_session_name/_url/_auth_enabled()` —— 所以 `onvif_service` **PRIVATE_REQUIREDS `rtsp_server`**。7 个 app 全都用 RTSP，这个依赖不多余 |
+| `GetSnapshotUri` | **配置字段** `snapshot_port` / `snapshot_path`（0 = 不广告快照）。不能反向依赖 `debug_stream`，否则 D1 白拆；app 同时拥有两者，由 app 告知 |
+| `GetDeviceInformation` | `cfg.serial`（空则 `readDeviceIdentifier()`）、`cfg.firmware`（空则读 OS） |
+| `GetNetworkInterfaces` | `getifaddrs()` |
 
-> "自己写 HTTP 服务器"通常是坏主意，此处成立的前提是**场景窄到不像话**——一个路径、一个方法、固定形状的响应。若将来 ONVIF 端点需要 TLS（Profile T §7.1 的 HTTPS 是 Conditional，可免）或静态资源，该前提失效，应改走 lws。
+**D3 — 认证：Digest 可选，默认关。** 与 §5.9 及既定产品决策一致（ONVIF 开着但 RTSP 默认无密码）。**`GetSystemDateAndTime` 与 `GetCapabilities` 永远允许匿名** —— 前者是规范强制（客户端要先对时才能算 Digest），后者是因为多数 VMS 拿它做能力探测，401 会直接判定设备不可用。
 
-**未决**：A 还是 B。选 A 可立即开工；选 B 需先完成 lws 迁移。
+**D4 — Events 本阶段不做，且明写出来而不是默默跳过。** PullPoint 订阅是独立的一大块，而分析结果今天走 MQTT（§5.6 / `onvif_meta`）。阶段 1 的目标是"被主流 VMS 发现并拉到流"，这条路径不经过 Events。Profile T 真要认证时它是必需项 —— 记在 §14.11 缺口表里。
+
+**D5 — 必须实现 Device 的 `GetCapabilities`（Media1 时代的接口）。** §5.6 只列了 Media2，但绝大多数客户端（含 ONVIF Device Manager）第一个调的是 `GetCapabilities`，不实现就止步于发现。返回 Device + Media 的 XAddrs 即可。
+
+**实现方式仍照 §14.4：手写 XML 模板，禁止 gSOAP（许可证否决项）。** 请求侧只做"从 Body 里认出操作名"，其余当不透明 —— 与 `onvif_discovery.cpp` 解析 Probe 只取 `MessageID` 是同一个策略，也是不引 XML 库还能安全的前提。
 
 ---
 
