@@ -76,6 +76,11 @@ struct HttpReply {
 struct PerSession {
     LwsConn* conn = nullptr;   /* websocket connections only */
     HttpReply* http = nullptr; /* plain HTTP requests only */
+    /* WS_HTTP_RETRY answers given for the request in flight. Lives here rather
+     * than in the application because the application sees one call at a time
+     * and has nowhere to hang per-request state; the transport already has a
+     * per-connection slot. */
+    int http_attempt = 0;
 };
 
 } // namespace
@@ -203,6 +208,7 @@ static int wst_callback(struct lws* wsi, enum lws_callback_reasons reason,
     switch (reason) {
 
     // ---- plain HTTP -------------------------------------------------------
+    case LWS_CALLBACK_TIMER:
     case LWS_CALLBACK_HTTP: {
         const std::string path = uri_of(wsi);
 
@@ -210,13 +216,27 @@ static int wst_callback(struct lws* wsi, enum lws_callback_reasons reason,
         const char* ctype = "text/plain";
         const void* body = nullptr;
         size_t blen = 0;
-        bool handled = false;
+        int retry_ms = 0;
+        ws_http_result_t r = WS_HTTP_PASS;
 
         if (t->cb.on_http != nullptr) {
-            handled = t->cb.on_http(t->cb.user, path.c_str(), &status, &ctype,
-                &body, &blen);
+            r = t->cb.on_http(t->cb.user, path.c_str(),
+                ps != nullptr ? ps->http_attempt : 0,
+                &status, &ctype, &body, &blen, &retry_ms);
         }
-        if (!handled) {
+
+        /* Ask again later without answering now. lws's own timer is used
+         * rather than a thread: this must not block the event loop, which is
+         * also servicing every WebSocket video client. */
+        if (r == WS_HTTP_RETRY) {
+            if (ps != nullptr) ps->http_attempt++;
+            if (retry_ms < 10) retry_ms = 10;
+            lws_set_timer_usecs(wsi, static_cast<lws_usec_t>(retry_ms) * 1000);
+            return 0;
+        }
+        if (ps != nullptr) ps->http_attempt = 0;
+
+        if (r == WS_HTTP_PASS) {
             static const char kNotFound[] = "not found\n";
             status = 404;
             ctype = "text/plain";

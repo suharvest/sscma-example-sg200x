@@ -183,13 +183,23 @@ static void ds_on_drain(void* user) {
 
 // ws_transport_callbacks_t::on_http — plain GET, tried before on_upgrade.
 // Serves the JPEG snapshot; everything else falls through.
-static bool ds_on_http(void* user, const char* path, int* status,
-                       const char** content_type, const void** body, size_t* len) {
-    (void)user;
-    if (g_ds.snapshot_path != path) return false;
+// How long a cold-start snapshot request waits for the first encoded frame,
+// and how often it re-checks. The producer encodes on the very next frame after
+// arming, so at 10fps the image is usually there by the second or third poll;
+// the deadline is generous enough to cover a slow first frame and short enough
+// that a client with no picture is told so rather than left hanging.
+#define DS_SNAPSHOT_POLL_MS 80
+#define DS_SNAPSHOT_MAX_ATTEMPTS 25  /* ~2s */
 
-    // Arm first: even when this request cannot be served, it is what causes
-    // the producer to start encoding so the next one can be.
+static ws_http_result_t ds_on_http(void* user, const char* path, int attempt,
+                                   int* status, const char** content_type,
+                                   const void** body, size_t* len,
+                                   int* retry_ms) {
+    (void)user;
+    if (g_ds.snapshot_path != path) return WS_HTTP_PASS;
+
+    // Arm first: even when this request cannot be served yet, it is what causes
+    // the producer to start encoding.
     g_ds.snap_asked_ms.store(unix_ms_now(), std::memory_order_release);
 
     // Copy under the lock into a buffer only this thread touches, and hand out
@@ -205,20 +215,30 @@ static bool ds_on_http(void* user, const char* path, int* status,
     }
 
     if (snap_serve.empty()) {
-        // Cold start: nothing encoded yet. Send the client away rather than
-        // block the event thread waiting for the producer.
-        static const char kWarming[] = "snapshot warming up\n";
+        // Cold start: this request armed the encoder and the first JPEG is
+        // milliseconds away, so ask the transport to come back rather than
+        // answering with an error. The 503 used to be returned immediately,
+        // which made the snapshot URL that ONVIF advertises fail for any client
+        // that fetches once and gives up -- adding a camera to a VMS is exactly
+        // that shape of request.
+        if (attempt < DS_SNAPSHOT_MAX_ATTEMPTS) {
+            *retry_ms = DS_SNAPSHOT_POLL_MS;
+            return WS_HTTP_RETRY;
+        }
+        // Waited and still nothing: the video pipeline is not producing. That
+        // is a real failure and 503 is the honest answer.
+        static const char kWarming[] = "snapshot unavailable\n";
         *status = 503;
         *content_type = "text/plain";
         *body = kWarming;
         *len = sizeof(kWarming) - 1;
-        return true;
+        return WS_HTTP_DONE;
     }
     *status = 200;
     *content_type = "image/jpeg";
     *body = snap_serve.data();
     *len = snap_serve.size();
-    return true;
+    return WS_HTTP_DONE;
 }
 
 // ws_transport_callbacks_t::on_upgrade

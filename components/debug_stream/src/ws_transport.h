@@ -49,6 +49,13 @@ typedef enum {
     WS_OP_BINARY,
 } ws_op_t;
 
+/* Outcome of ws_transport_callbacks_t::on_http. */
+typedef enum {
+    WS_HTTP_PASS = 0,  /* not handled; fall through to on_upgrade */
+    WS_HTTP_DONE = 1,  /* reply is filled in and should be sent */
+    WS_HTTP_RETRY = 2, /* ask again after *retry_ms */
+} ws_http_result_t;
+
 /* Number of per-connection tag slots (see ws_conn_tag). */
 #define WS_CONN_TAG_SLOTS 2
 
@@ -80,17 +87,34 @@ typedef struct {
 
     /*
      * Optional; tried before on_upgrade. A plain HTTP request arrived at
-     * `path`. Return true to serve it, filling *status, *content_type and the
-     * body pointer/length. Return false to fall through to on_upgrade.
+     * `path`.
+     *
+     *   WS_HTTP_PASS  -- not ours, fall through to on_upgrade
+     *   WS_HTTP_DONE  -- serve it; *status, *content_type, body and len are set
+     *   WS_HTTP_RETRY -- ask again in *retry_ms; nothing is sent meanwhile
+     *
+     * `attempt` counts previous WS_HTTP_RETRY answers for this same request,
+     * starting at 0. It exists so the retry policy -- how long to keep waiting,
+     * and what to answer when patience runs out -- stays with the application,
+     * which is the only side that knows what it is waiting for. The transport
+     * only promises to ask again.
+     *
+     * WS_HTTP_RETRY is what lets a resource that becomes available shortly
+     * after it is first asked for behave like one that was merely slow instead
+     * of one that failed. The snapshot is exactly that: the first GET is what
+     * wakes the encoder, so a client that asks once and gives up on the error
+     * would never see an image that was ready 100ms later. Blocking here
+     * instead is not an option -- this runs on the event thread that is also
+     * feeding every WebSocket video client.
      *
      * The body only has to stay valid for the duration of this call: the
-     * backend copies it before returning. (mongoose copies into the connection
-     * send buffer synchronously; a libwebsockets backend has to stage it and
-     * request LWS_CALLBACK_HTTP_WRITEABLE, which is why the contract is
+     * backend copies it before returning. (A libwebsockets backend has to stage
+     * it and request LWS_CALLBACK_HTTP_WRITEABLE, which is why the contract is
      * "valid during the call" and not "valid until sent".)
      */
-    bool (*on_http)(void* user, const char* path, int* status,
-                    const char** content_type, const void** body, size_t* len);
+    ws_http_result_t (*on_http)(void* user, const char* path, int attempt,
+                                int* status, const char** content_type,
+                                const void** body, size_t* len, int* retry_ms);
 
     /*
      * An HTTP upgrade request arrived at `path`. Return true to accept the
