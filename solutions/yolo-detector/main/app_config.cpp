@@ -2,7 +2,7 @@
 
 #include <fstream>
 
-// nlohmann/json single header, provided by the mongoose component this
+// nlohmann/json single header, provided by the json component this
 // solution already links (same header the supervisor uses).
 #include "json.hpp"
 
