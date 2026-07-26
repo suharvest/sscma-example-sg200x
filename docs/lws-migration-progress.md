@@ -16,7 +16,18 @@
 | 3 | `http_request_lws`（请求侧） | ✅ 真机 | 0.5 | 见下 |
 | 4 | `http_dispatch_lws`（回复侧） | ✅ 真机 | 0.3 | 见下 |
 | 5 | `http_server_lws`（事件循环宿主） | ✅ 真机 | 1.2 | 见下 |
-| 6 | 移除 mongoose + 全量回归 | ⬜ | — | — |
+| 6 | 移除 mongoose + 全量回归 | ✅ **真机 16/16** | 0.5 | `10c59b9` |
+
+**步骤 6 完成后仓库不再含 GPL 代码**，Apache-2.0 的承诺才真正成立 —— 这是整件事的目的，不是收尾。
+全量回归：10/10 solution 编译通过（supervisor 1340272 / retail-vision 692048 / yolo-detector 676656 /
+face-analysis 643736 / facemesh-reader 573360 / qrcode-reader 493208 / ppocr-reader 492360 /
+weather-classifier 450152 / detection-blur 318880 / video_demo 83088，FAIL=0）。
+真机验证 supervisor + face-analysis：WS 套件 16/16（含背压），登录 / getDeviceInfo /
+audioRecord / multipart upload / 静态页 / snapshot（未开流 503 → 开流 200）全部正确，dmesg 无错误。
+
+顺带修掉的：`json.hpp` 原先寄居在 `components/mongoose/`，删库会波及从没用过 mongoose 的
+solution，故先抽到 `components/json/`；三层抽象接口保留 —— 正是它让这次迁移是「加文件」而不是
+「重写业务代码」，留着不花钱。
 
 **可分两批独立上线**（lws 用 `lws_` 前缀，能与 mongoose 共存）：
 - 批次 A = 步骤 2 → 只影响 7 个 app 的 Live 预览，可独立验证与回滚
