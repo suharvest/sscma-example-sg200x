@@ -32,9 +32,7 @@
  */
 inline int onvif_service_bringup(const OnvifMetaConfig& cfg,
     const std::string& serial, const std::string& device_name,
-    int snapshot_port,
-    const std::string& rtsp_session_override = std::string(),
-    int rtsp_port_override = 0)
+    int snapshot_port)
 {
     if (!cfg.service_enabled) return 0;
 
@@ -52,10 +50,6 @@ inline int onvif_service_bringup(const OnvifMetaConfig& cfg,
      * GetSnapshotUri answer ActionNotSupported rather than hand out a URL that
      * refuses connections. */
     sc.snapshot_port = snapshot_port;
-    /* Only for applications that do not publish through rtsp_server; see the
-     * warning on these fields in onvif_service.h. */
-    sc.rtsp_session_override = rtsp_session_override;
-    sc.rtsp_port_override = rtsp_port_override;
 
     return onvif_service_start(&sc);
 }
