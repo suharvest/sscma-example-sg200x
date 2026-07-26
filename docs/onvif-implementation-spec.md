@@ -1363,3 +1363,21 @@ cmake ../libwebsockets \
 **交付要求**：把 `tc.cmake` + 上述命令行固化到 `components/libwebsockets/` 的构建脚本里，**禁止手工操作**。
 
 **未验证项**：容器内无 qemu-riscv64，demo 只做了交叉编译 + 链接验证（ELF EXEC / RISC-V 已确认），**未在真机运行**。阶段 3 迁移 `debug_stream` 时需真机验证。
+
+---
+
+### 14.11 阶段 1 落地后的已知缺口
+
+服务面已在真机验证（14/14，见 commit `ebcd3a1`）：设备可被发现、可被问询、给出的 RTSP 与快照地址真实可用。以下是**明知而未做**的部分，列在这里是为了它们不会以"某天有人发现"的方式出现。
+
+| # | 缺口 | 影响 | 备注 |
+|---|---|---|---|
+| 1 | **Events（PullPoint 订阅）未实现** | 无法通过 Profile T 认证；VMS 侧看不到事件流 | 分析结果今天走 MQTT（`onvif_meta`）。这是四个操作加一个订阅状态机，独立一块工作 |
+| 2 | **RTSP metadata track 未实现** | 元数据与视频不同源、无帧级对齐 | Profile T §7.13 强制项。`onvif_meta` 的数据模型已经为它准备好了（序列化成 XML 即可，调用点不变） |
+| 3 | **Digest 认证只校验存在性，不校验摘要** | 配了用户名等于"要求客户端带 Authorization 头"，不等于真的鉴权 | 默认无凭据，所以默认路径不受影响。真要启用凭据前必须补完 |
+| 4 | **快照冷启动返回 503** | VMS 添加设备时若只拉一次缩略图，会拿到失败 | `debug_stream` 的 arm 机制：首次 GET 负责唤醒编码器，10s 内的后续 GET 才有图。定期拉缩略图的客户端只有第一次受影响；拉一次就放弃的客户端会显示空缩略图 |
+| 5 | **分辨率是写死的 1920x1080** | `GetVideoEncoderConfigurations` 报的值可能与实际不符 | `onvif_service` 刻意不依赖视频路径（这是它能被任意 app 链接的前提）。所有实际客户端都会从 SDP 重读真实分辨率，所以是标称不准而非功能故障 |
+| 6 | **`GetNetworkInterfaces` 的 MAC 恒为全零** | 少数客户端用 MAC 做设备去重 | `getifaddrs()` 在 musl 下不给 `AF_PACKET`；要真值得读 `/sys/class/net/<if>/address` |
+| 7 | **无 HTTPS** | — | Profile T §7.1 的 HTTPS 是 Conditional，可免。真要做的话 lws 侧开 `LWS_WITH_SSL` 即可，这正是选 lws 而非自写 HTTP 的理由之一 |
+
+**第 4 条是唯一会被普通用户直接看到的**，其余要么是认证门槛，要么是标称精度。修法有三种，都不是零成本：给 503 加 `Retry-After`（要改 `ws_transport` 接缝，让 `on_http` 能带额外 header）、ONVIF 开启时常驻 arm（每帧多一次 JPEG 编码）、或让 503 路径延迟重试而不是立刻返回（要在 lws 侧挂定时器）。**没有明确用户诉求前不动**，因为定期拉缩略图的客户端根本碰不到它。
