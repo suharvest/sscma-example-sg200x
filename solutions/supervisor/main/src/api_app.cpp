@@ -4,6 +4,7 @@
 #include "camera_config.h"
 #include "config_schema.hpp"
 #include "ha_config.h"
+#include "onvif_config.h"
 
 #include <arpa/inet.h>
 #include <cctype>
@@ -121,6 +122,8 @@ api_app::api_app()
     REG_API(getHaConfig);
     REG_API(setHaConfig);
     REG_API(testHaConnection);
+    REG_API(getOnvifConfig);
+    REG_API(setOnvifConfig);
     REG_API(getCameraConfig);
     REG_API(setCameraConfig);
     REG_API(getFocusValue);
@@ -1596,6 +1599,195 @@ api_status_t api_app::testHaConnection(request_t req, response_t res)
         },
         []() { _ha_test_busy.clear(std::memory_order_release); },
         res);
+}
+
+// --- ONVIF integration ---
+
+namespace {
+
+// Public (non-secret) view of the config for API replies.
+json onvif_conf_to_json(const onvif_config::conf& c)
+{
+    json data = json::object();
+    data["meta_enabled"] = c.meta_enabled;
+    data["meta_interval_ms"] = c.meta_interval_ms;
+    data["meta_profile"] = c.meta_profile;
+    data["meta_prefix"] = c.meta_prefix;
+    data["service_enabled"] = c.service_enabled;
+    data["service_port"] = c.service_port;
+    data["username"] = c.username;
+    data["password_set"] = !c.password.empty();
+    data["location"] = c.location;
+    return data;
+}
+
+} // namespace
+
+// GET/POST /api/appMgr/getOnvifConfig
+// Returns every field except the password itself, plus password_set.
+api_status_t api_app::getOnvifConfig(request_t req, response_t res)
+{
+    response(res, 0, STR_OK, onvif_conf_to_json(onvif_config::load()));
+    return API_STATUS_OK;
+}
+
+// POST /api/appMgr/setOnvifConfig
+// body: any subset of {meta_enabled, meta_interval_ms, meta_profile,
+//                      meta_prefix, service_enabled, service_port,
+//                      username, location} plus an optional plaintext password.
+// Every omitted field keeps its stored value. Shares the app op busy gate (same
+// level as switchApp); after the atomic conf write the active app (if any) is
+// restarted so the new config takes effect. Reply data carries restarted + note.
+api_status_t api_app::setOnvifConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    if (!body.is_object()) {
+        response(res, -1, "Invalid body (JSON object required)");
+        return API_STATUS_OK;
+    }
+
+    onvif_config::conf cur = onvif_config::load();
+    onvif_config::conf next = cur; // password retained unless provided
+
+    if (body.contains("meta_enabled")) {
+        if (!body["meta_enabled"].is_boolean()) {
+            response(res, -1, "Invalid meta_enabled (boolean required)");
+            return API_STATUS_OK;
+        }
+        next.meta_enabled = body["meta_enabled"].get<bool>();
+    }
+    if (body.contains("service_enabled")) {
+        if (!body["service_enabled"].is_boolean()) {
+            response(res, -1, "Invalid service_enabled (boolean required)");
+            return API_STATUS_OK;
+        }
+        next.service_enabled = body["service_enabled"].get<bool>();
+    }
+
+    if (body.contains("meta_interval_ms")) {
+        if (!body["meta_interval_ms"].is_number_integer()) {
+            response(res, -1, "Invalid meta_interval_ms (integer 20-60000 required)");
+            return API_STATUS_OK;
+        }
+        next.meta_interval_ms = body["meta_interval_ms"].get<int>();
+    }
+    // Rejected rather than clamped: the reader clamps silently, and a console
+    // that echoed back a value the device did not actually use would be lying
+    // to the user about the publish rate they configured.
+    if (next.meta_interval_ms < onvif_config::META_INTERVAL_MIN_MS
+        || next.meta_interval_ms > onvif_config::META_INTERVAL_MAX_MS) {
+        response(res, -1, "Invalid meta_interval_ms (integer 20-60000 required)");
+        return API_STATUS_OK;
+    }
+
+    if (body.contains("service_port")) {
+        if (!body["service_port"].is_number_integer()) {
+            response(res, -1, "Invalid service_port (integer 1025-65535 required)");
+            return API_STATUS_OK;
+        }
+        next.service_port = body["service_port"].get<int>();
+    }
+    // Same reasoning as the interval, with a sharper failure mode: applications
+    // do not run as root, so a privileged port would present to the user as
+    // "ONVIF is on but nothing answers".
+    if (next.service_port <= onvif_config::SERVICE_PORT_MIN_EXCLUSIVE
+        || next.service_port >= onvif_config::SERVICE_PORT_MAX_EXCLUSIVE) {
+        response(res, -1, "Invalid service_port (integer 1025-65535 required)");
+        return API_STATUS_OK;
+    }
+
+    if (body.contains("meta_profile")) {
+        if (!body["meta_profile"].is_string() || !onvif_config::valid_value(body["meta_profile"].get<std::string>())) {
+            response(res, -1, "Invalid meta_profile");
+            return API_STATUS_OK;
+        }
+        next.meta_profile = body["meta_profile"].get<std::string>();
+    }
+    // The profile name becomes part of the metadata topic, so an empty one
+    // would produce a malformed topic; fall back to the documented default.
+    if (next.meta_profile.empty()) {
+        next.meta_profile = "live0";
+    }
+
+    if (body.contains("meta_prefix")) {
+        if (!body["meta_prefix"].is_string() || !onvif_config::valid_value(body["meta_prefix"].get<std::string>())) {
+            response(res, -1, "Invalid meta_prefix");
+            return API_STATUS_OK;
+        }
+        // Empty is meaningful here, unlike the profile: it tells the reader to
+        // substitute the device identifier.
+        next.meta_prefix = body["meta_prefix"].get<std::string>();
+    }
+
+    if (body.contains("username")) {
+        if (!body["username"].is_string() || !onvif_config::valid_value(body["username"].get<std::string>())) {
+            response(res, -1, "Invalid username");
+            return API_STATUS_OK;
+        }
+        next.username = body["username"].get<std::string>();
+    }
+    if (body.contains("location")) {
+        if (!body["location"].is_string() || !onvif_config::valid_value(body["location"].get<std::string>())) {
+            response(res, -1, "Invalid location");
+            return API_STATUS_OK;
+        }
+        next.location = body["location"].get<std::string>();
+    }
+
+    // Absent password and empty password mean different things, and the console
+    // depends on the difference: the form never receives the stored password
+    // back (only password_set), so it omits the key to leave it alone, and
+    // sends "" when the user explicitly clears the credential.
+    if (body.contains("password")) {
+        if (!body["password"].is_string() || !onvif_config::valid_value(body["password"].get<std::string>())) {
+            response(res, -1, "Invalid password");
+            return API_STATUS_OK;
+        }
+        next.password = body["password"].get<std::string>();
+    }
+
+    // Same busy level as switchApp: writing the conf and restarting the active
+    // app must not race a concurrent app operation.
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
+        return API_STATUS_OK;
+    }
+
+    if (!onvif_config::save(next)) {
+        response(res, -1, "Failed to persist ONVIF config");
+        return API_STATUS_OK;
+    }
+
+    json data = json::object();
+    data["restarted"] = true;
+    data["note"] = "";
+
+    // Node-RED mode: the conf is persisted, but the C++ app stack is parked --
+    // never restart it (that would start a camera app under Node-RED's feet).
+    // The saved config takes effect when the device returns to console mode.
+    if (in_nodered_mode()) {
+        data["restarted"] = false;
+        data["note"] = "nodered_mode";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+
+    // Restart the active app (if any) so the new config takes effect.
+    json state = read_state();
+    std::string active = jstr(state, "active_app");
+    if (active.empty()) {
+        data["restarted"] = false;
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    json manifests = load_manifests();
+    if (!manifests.contains(active)) {
+        data["restarted"] = false;
+        data["note"] = "active app manifest missing, not restarted";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    return restart_after_change(manifests[active], active, data, g, res);
 }
 
 // --- Camera picture orientation + focus assist ---

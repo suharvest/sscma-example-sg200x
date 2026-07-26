@@ -13,6 +13,8 @@ import { CopyOutlined, CheckOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { getHaConfigApi, setHaConfigApi, testHaConnectionApi } from "@/api/ha";
 import { ISetHaConfigParams } from "@/api/ha/ha";
+import { getOnvifConfigApi, setOnvifConfigApi } from "@/api/onvif";
+import { ISetOnvifConfigParams } from "@/api/onvif/onvif";
 import { getDeviceHost } from "@/utils/appStream";
 import useConfigStore from "@/store/config";
 
@@ -371,12 +373,394 @@ const HomeAssistantCard = () => {
   );
 };
 
+interface IOnvifFormValues {
+  service_enabled: boolean;
+  service_port: number;
+  username?: string;
+  password?: string;
+  location?: string;
+  meta_enabled: boolean;
+  meta_interval_ms: number;
+  meta_profile?: string;
+  meta_prefix?: string;
+}
+
+const ONVIF_DEFAULT_PORT = 8000;
+const ONVIF_DEFAULT_INTERVAL = 200;
+const ONVIF_DEFAULT_PROFILE = "live0";
+
+/**
+ * ONVIF integration card.
+ *
+ * Two switches that are deliberately independent: the device service (so a VMS
+ * can discover the camera and pull the stream) and the analytics metadata
+ * stream (inference results shaped like ONVIF, on their own MQTT topic).
+ * Users routinely want one without the other, so they are rendered as two
+ * separate blocks rather than one master toggle with sub-options.
+ */
+const OnvifCard = () => {
+  const { t } = useTranslation();
+  const { message } = App.useApp();
+  const [form] = Form.useForm<IOnvifFormValues>();
+
+  // Same caveat as HA: the ONVIF service lives in the Console application, so
+  // it is parked while Node-RED owns the camera.
+  const { galleryMode, deviceInfo } = useConfigStore();
+  const modeKnown = Boolean(deviceInfo?.appName);
+  const noderedMode = modeKnown && !galleryMode;
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [passwordSet, setPasswordSet] = useState(false);
+  const serviceEnabled = Form.useWatch("service_enabled", form);
+  const servicePort = Form.useWatch("service_port", form);
+
+  const host = getDeviceHost();
+  // The VMS needs the device service endpoint; keep it in sync with whatever
+  // port is currently in the form so the user can copy it before saving.
+  const deviceServiceUrl = `http://${host}:${
+    servicePort || ONVIF_DEFAULT_PORT
+  }/onvif/device_service`;
+
+  const fetchConfig = async () => {
+    setLoading(true);
+    try {
+      const res = await getOnvifConfigApi();
+      if (res.code === 0 || res.code === "0") {
+        const d = res.data;
+        setPasswordSet(Boolean(d.password_set));
+        form.setFieldsValue({
+          service_enabled: Boolean(d.service_enabled),
+          service_port: d.service_port || ONVIF_DEFAULT_PORT,
+          username: d.username || "",
+          password: "",
+          location: d.location || "",
+          meta_enabled: Boolean(d.meta_enabled),
+          meta_interval_ms: d.meta_interval_ms || ONVIF_DEFAULT_INTERVAL,
+          meta_profile: d.meta_profile || ONVIF_DEFAULT_PROFILE,
+          meta_prefix: d.meta_prefix || "",
+        });
+      }
+    } catch (e) {
+      // request layer already surfaced the error
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const buildParams = (values: IOnvifFormValues): ISetOnvifConfigParams => {
+    const params: ISetOnvifConfigParams = {
+      service_enabled: Boolean(values.service_enabled),
+      service_port: Number(values.service_port) || ONVIF_DEFAULT_PORT,
+      username: (values.username || "").trim(),
+      location: (values.location || "").trim(),
+      meta_enabled: Boolean(values.meta_enabled),
+      meta_interval_ms:
+        Number(values.meta_interval_ms) || ONVIF_DEFAULT_INTERVAL,
+      meta_profile: (values.meta_profile || "").trim() || ONVIF_DEFAULT_PROFILE,
+      meta_prefix: (values.meta_prefix || "").trim(),
+    };
+    // Empty password box = keep the stored one (omit the field entirely).
+    // Clearing a stored password is done from the "clear" link below.
+    if (values.password) {
+      params.password = values.password;
+    }
+    return params;
+  };
+
+  const submit = async (params: ISetOnvifConfigParams) => {
+    setSaving(true);
+    try {
+      const res = await setOnvifConfigApi(params);
+      if (res.code === 0 || res.code === "0") {
+        form.setFieldValue("password", "");
+        message.success(
+          res.data?.restarted
+            ? `${t("onvif.saved")} ${t("onvif.restarted")}`
+            : t("onvif.saved")
+        );
+        // Re-read so password_set / server-side clamping is reflected.
+        fetchConfig();
+      } else if (res.code === -2 || res.code === "-2") {
+        message.warning(t("onvif.busy"));
+      } else {
+        message.error(res.msg || t("onvif.saveFailed"));
+      }
+    } catch (e) {
+      message.error(t("onvif.saveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onSave = async () => {
+    let values: IOnvifFormValues;
+    try {
+      values = await form.validateFields();
+    } catch (e) {
+      return;
+    }
+    submit(buildParams(values));
+  };
+
+  // Explicit password removal: the API distinguishes "omitted" (keep) from
+  // "" (clear), which an empty text box alone cannot express.
+  const onClearPassword = async () => {
+    let values: IOnvifFormValues;
+    try {
+      values = await form.validateFields();
+    } catch (e) {
+      return;
+    }
+    submit({ ...buildParams(values), password: "" });
+  };
+
+  return (
+    <div className="rounded-16 bg-white p-30 mt-12 mb-24">
+      <div className="font-bold text-18">{t("onvif.title")}</div>
+      <div className="text-black opacity-60 mt-4 mb-16 text-13">
+        {t("onvif.subtitle")}
+      </div>
+
+      {noderedMode && (
+        <Alert
+          className="mb-16"
+          type="info"
+          showIcon
+          message={t("onvif.noderedNotice")}
+        />
+      )}
+
+      <Form
+        form={form}
+        layout="vertical"
+        disabled={loading}
+        initialValues={{
+          service_enabled: false,
+          service_port: ONVIF_DEFAULT_PORT,
+          meta_enabled: false,
+          meta_interval_ms: ONVIF_DEFAULT_INTERVAL,
+          meta_profile: ONVIF_DEFAULT_PROFILE,
+        }}
+      >
+        {/* ---- 1. ONVIF device service ---- */}
+        <div className="flex justify-between items-center">
+          <span className="font-bold text-16">{t("onvif.serviceEnabled")}</span>
+          <Form.Item name="service_enabled" valuePropName="checked" noStyle>
+            <Switch />
+          </Form.Item>
+        </div>
+        <div className="text-black opacity-60 mt-4 mb-8 text-13">
+          {t("onvif.serviceHint")}
+        </div>
+
+        {serviceEnabled && (
+          <div className="mb-8">
+            <div className="text-black opacity-60 mb-8 text-13">
+              {t("onvif.deviceServiceHint")}
+            </div>
+            <div className="flex items-center justify-between bg-black bg-opacity-5 rounded-8 p-12">
+              <code className="text-13 break-all mr-12">
+                {deviceServiceUrl}
+              </code>
+              <CopyButton text={deviceServiceUrl} />
+            </div>
+          </div>
+        )}
+
+        <Collapse
+          ghost
+          items={[
+            {
+              key: "service",
+              label: t("onvif.serviceAdvanced"),
+              children: (
+                <>
+                  <Form.Item
+                    name="service_port"
+                    label={t("onvif.servicePort")}
+                    rules={[
+                      {
+                        required: true,
+                        type: "number",
+                        min: 1025,
+                        max: 65535,
+                        message: t("onvif.invalidPort"),
+                      },
+                    ]}
+                  >
+                    <InputNumber
+                      min={1025}
+                      max={65535}
+                      precision={0}
+                      className="w-full"
+                      placeholder={String(ONVIF_DEFAULT_PORT)}
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="username"
+                    label={t("onvif.username")}
+                    extra={t("onvif.credentialsHint")}
+                  >
+                    <Input
+                      placeholder=""
+                      allowClear
+                      maxLength={128}
+                      autoComplete="off"
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="password"
+                    label={t("onvif.password")}
+                    extra={
+                      passwordSet ? t("onvif.passwordUnchanged") : undefined
+                    }
+                  >
+                    <Input.Password
+                      placeholder={
+                        passwordSet ? t("onvif.passwordUnchanged") : ""
+                      }
+                      allowClear
+                      maxLength={128}
+                      autoComplete="new-password"
+                    />
+                  </Form.Item>
+
+                  {passwordSet && (
+                    <div className="mb-16" style={{ marginTop: -16 }}>
+                      <Button
+                        type="link"
+                        size="small"
+                        className="p-0"
+                        onClick={onClearPassword}
+                        disabled={loading || saving}
+                      >
+                        {t("onvif.clearPassword")}
+                      </Button>
+                    </div>
+                  )}
+
+                  <Form.Item
+                    name="location"
+                    label={t("onvif.location")}
+                    extra={t("onvif.locationHint")}
+                  >
+                    <Input
+                      placeholder="city/Shenzhen"
+                      allowClear
+                      maxLength={128}
+                    />
+                  </Form.Item>
+                </>
+              ),
+            },
+          ]}
+        />
+
+        {/* ---- 2. ONVIF analytics metadata (independent of the service) ---- */}
+        <div className="flex justify-between items-center mt-16">
+          <span className="font-bold text-16">{t("onvif.metaEnabled")}</span>
+          <Form.Item name="meta_enabled" valuePropName="checked" noStyle>
+            <Switch />
+          </Form.Item>
+        </div>
+        <div className="text-black opacity-60 mt-4 mb-8 text-13">
+          {t("onvif.metaHint")}
+        </div>
+        <div className="text-black opacity-60 mb-8 text-13">
+          {t("onvif.metaExtraTopicHint")}
+        </div>
+
+        <Collapse
+          ghost
+          items={[
+            {
+              key: "meta",
+              label: t("onvif.metaAdvanced"),
+              children: (
+                <>
+                  <Form.Item
+                    name="meta_interval_ms"
+                    label={t("onvif.metaInterval")}
+                    extra={t("onvif.metaIntervalHint")}
+                    rules={[
+                      {
+                        required: true,
+                        type: "number",
+                        min: 20,
+                        max: 60000,
+                        message: t("onvif.invalidInterval"),
+                      },
+                    ]}
+                  >
+                    <InputNumber
+                      min={20}
+                      max={60000}
+                      precision={0}
+                      className="w-full"
+                      placeholder={String(ONVIF_DEFAULT_INTERVAL)}
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="meta_profile"
+                    label={t("onvif.metaProfile")}
+                    extra={t("onvif.metaProfileHint")}
+                  >
+                    <Input
+                      placeholder={ONVIF_DEFAULT_PROFILE}
+                      allowClear
+                      maxLength={64}
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="meta_prefix"
+                    label={t("onvif.metaPrefix")}
+                    extra={t("onvif.metaPrefixHint")}
+                  >
+                    <Input placeholder="" allowClear maxLength={128} />
+                  </Form.Item>
+                </>
+              ),
+            },
+          ]}
+        />
+
+        <div className="flex justify-center mt-16">
+          <Button
+            type="primary"
+            onClick={onSave}
+            loading={saving}
+            disabled={loading}
+          >
+            {t("onvif.save")}
+          </Button>
+        </div>
+      </Form>
+
+      <div className="mt-24">
+        {/* "ONVIF-compatible", never "conformant": we ship no certification. */}
+        <Alert type="info" showIcon message={t("onvif.complianceNote")} />
+      </div>
+    </div>
+  );
+};
+
 /**
  * Integration cards shown on the page, in order.
  * Add a new integration by appending a { key, Card } entry here.
  */
 const integrationCards: { key: string; Card: () => JSX.Element }[] = [
   { key: "home-assistant", Card: HomeAssistantCard },
+  { key: "onvif", Card: OnvifCard },
 ];
 
 const Integrations = () => {
