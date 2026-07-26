@@ -39,6 +39,41 @@ struct onvif_service_config {
     int service_port = 8000;
     std::string service_path = "/onvif/device_service";
 
+    /*
+     * The SOAP listener itself. Separate from discovery_enabled because the two
+     * fail independently and for different reasons: discovery can be forbidden
+     * by network policy while the services stay reachable at a known address,
+     * and the listener can lose its port to another process while discovery
+     * keeps answering (and would then advertise an address that refuses
+     * connections -- which is why start() logs loudly if this happens).
+     */
+    bool soap_enabled = true;
+
+    /*
+     * Snapshot endpoint, answered by GetSnapshotUri. Port 0 means the device
+     * advertises no snapshot capability, which is honest for an application
+     * that runs without debug_stream.
+     *
+     * Passed in rather than queried because onvif_service deliberately does not
+     * depend on debug_stream -- see docs/onvif-implementation-spec.md 14.9.1 D1
+     * and D2. The application owns both components and is the only place that
+     * knows whether the stream is running and on which port.
+     */
+    int snapshot_port = 0;
+    std::string snapshot_path = "/snapshot.jpg";
+
+    /*
+     * HTTP Digest credentials for the SOAP services. Both empty -> anonymous,
+     * which is the default and matches the RTSP server's default.
+     *
+     * GetSystemDateAndTime and GetCapabilities stay anonymous even when these
+     * are set: the first because a client cannot compute a Digest response
+     * before it knows the device clock, the second because most VMS probe with
+     * it and read a 401 as "device unusable" rather than "needs credentials".
+     */
+    std::string username;
+    std::string password;
+
     /* Shown by clients in device lists. */
     std::string device_name = "reCamera";
     std::string manufacturer = "Seeed Studio";
@@ -81,5 +116,25 @@ bool onvif_service_discovery_running(void);
 /* Number of Probe messages answered since start; for diagnostics, since the
  * usual failure mode is "the VMS cannot see it" with nothing else to look at. */
 unsigned long onvif_service_probe_count(void);
+
+/* Whether the SOAP listener is up. False with discovery running is the
+ * interesting state: the device is discoverable but advertises an address that
+ * refuses connections. */
+bool onvif_service_soap_running(void);
+
+/* SOAP requests served, and requests rejected as unknown operations. The second
+ * is what to look at when a VMS finds the device and then shows it as offline:
+ * it is asking for something not implemented. */
+unsigned long onvif_service_soap_count(void);
+unsigned long onvif_service_soap_unknown_count(void);
+
+/* ---------------------------------------------------------------------------
+ * Internal, shared between onvif_discovery.cpp and onvif_soap.cpp.
+ * Not part of the component's contract; do not call from applications.
+ * --------------------------------------------------------------------------- */
+
+/* Start/stop the SOAP listener. Called by onvif_service_start/stop. */
+int onvif_soap_start(const onvif_service_config* cfg, const std::string& uuid);
+void onvif_soap_stop(void);
 
 #endif /* _ONVIF_SERVICE_H_ */

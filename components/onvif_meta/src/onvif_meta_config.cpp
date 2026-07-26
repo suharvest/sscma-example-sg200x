@@ -75,10 +75,22 @@ bool loadOnvifMetaConfig(const std::string& path, OnvifMetaConfig& out,
             if (!val.empty()) out.profile = val;
         } else if (key == "ONVIF_META_PREFIX") {
             out.topic_prefix = val;
+        } else if (key == "ONVIF_SERVICE_ENABLED") {
+            out.service_enabled = (val == "1" || val == "true" || val == "yes");
+        } else if (key == "ONVIF_SERVICE_PORT") {
+            const long v = strtol(val.c_str(), nullptr, 10);
+            // Above 1024 because the applications do not run as root, and a
+            // port they cannot bind would present as "ONVIF silently absent".
+            if (v > 1024 && v < 65536) out.service_port = static_cast<int>(v);
+        } else if (key == "ONVIF_USERNAME") {
+            out.username = val;
+        } else if (key == "ONVIF_PASSWORD") {
+            out.password = val;
+        } else if (key == "ONVIF_LOCATION") {
+            out.location = val;
         }
-        // Unknown keys are ignored on purpose: the ONVIF service settings will
-        // land in this same file later, and an older application binary must
-        // not choke on them.
+        // Unknown keys are still ignored on purpose: this file gains keys over
+        // time and an older application binary must not choke on newer ones.
     }
 
     if (error) error->clear();

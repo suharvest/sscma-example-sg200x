@@ -12,6 +12,7 @@
 #include <ha_mqtt.h>
 #include "onvif_meta.h"
 #include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
 #include "rtsp_server.h"
 
 #include "face_detector.h"
@@ -400,6 +401,8 @@ static void cleanup() {
         debug_stream_destroy();
     }
 
+    onvif_service_stop();
+
     if (g_config.enable_rtsp) {
         deinitRtsp();
         deinitVideo();
@@ -590,6 +593,16 @@ int main(int argc, char** argv) {
     if (!init_blur()) {
         MA_LOGW(TAG, "Face blur initialization failed, continuing without blur");
         g_config.enable_blur = false;
+    }
+
+    // ONVIF discovery + Device/Media2 services. After startVideo() on purpose:
+    // GetProfiles and GetStreamUri are answered from the running RTSP server's
+    // session list, so bringing this up earlier advertises zero profiles and a
+    // VMS shows a camera with no video.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
+        onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
     }
 
     MA_LOGI(TAG, "Face analysis running...");

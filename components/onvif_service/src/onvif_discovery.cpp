@@ -26,6 +26,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>   /* struct timeval for SO_RCVTIMEO */
 #include <unistd.h>
 
 #include <atomic>
@@ -287,15 +288,30 @@ int onvif_service_start(const onvif_service_config* cfg)
     onvif_service_config_init(&def);
     g_ds.cfg = cfg ? *cfg : def;
 
+    /* A stable identity across restarts: clients key their device list on it,
+     * and a UUID that changed every boot would show up as a new camera each
+     * time. Derived from the serial number for that reason. Computed before the
+     * discovery_enabled check because the SOAP service uses it too. */
+    g_ds.uuid = g_ds.cfg.serial.empty() ? "recamera-unknown" : g_ds.cfg.serial;
+
+    /*
+     * SOAP first. Starting it before announcing Hello means the endpoint is
+     * accepting connections by the time anything is told about it -- the
+     * reverse order leaves a window where an eager client connects to a port
+     * that is not open yet and gives up.
+     *
+     * A SOAP failure is not fatal to discovery: a device that is discoverable
+     * but whose service port is taken is a diagnosable state, and the log line
+     * in onvif_soap_start says so explicitly.
+     */
+    if (g_ds.cfg.soap_enabled) {
+        onvif_soap_start(&g_ds.cfg, g_ds.uuid);
+    }
+
     if (!g_ds.cfg.discovery_enabled) {
         fprintf(stderr, "[%s] discovery disabled by configuration\n", OS_TAG);
         return 0;
     }
-
-    /* A stable identity across restarts: clients key their device list on it,
-     * and a UUID that changed every boot would show up as a new camera each
-     * time. Derived from the serial number for that reason. */
-    g_ds.uuid = g_ds.cfg.serial.empty() ? "recamera-unknown" : g_ds.cfg.serial;
 
     g_ds.sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_ds.sock < 0) {
@@ -344,6 +360,12 @@ int onvif_service_start(const onvif_service_config* cfg)
 
 void onvif_service_stop(void)
 {
+    /* Unconditional, and before the discovery check: with discovery disabled
+     * the discovery thread never ran, so an early return keyed on it would
+     * leave the SOAP listener holding its port after stop() claimed to have
+     * released everything. */
+    onvif_soap_stop();
+
     if (!g_ds.running.load()) return;
     send_multicast(build_announce("Bye"));
     g_ds.running.store(false, std::memory_order_release);
