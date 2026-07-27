@@ -92,6 +92,15 @@ private:
     // independent of Node-RED health. Used to recover a wedged device.
     static api_status_t forceConsole(request_t req, response_t res);
 
+    // Hardware masking driver: the patched cv181x_rgn/cv181x_vpss modules that
+    // let the privacy blur be composited by the hardware instead of the CPU.
+    // These live in deviceMgr rather than appMgr because they replace kernel
+    // modules on the root filesystem -- a device-level operation that is
+    // independent of which application happens to be running.
+    static api_status_t getBlurDriverStatus(request_t req, response_t res);
+    static api_status_t installBlurDriver(request_t req, response_t res);
+    static api_status_t restoreBlurDriver(request_t req, response_t res);
+
     // Battery collector thread function
     static void battery_collector_thread();
     static BatteryVoltageData read_battery_voltage();
@@ -193,6 +202,10 @@ public:
         REG_API(setRunMode); // security: token required (starts/stops services)
         REG_API(forceConsole); // security: token required (hard mode reset)
 
+        REG_API_NO_AUTH(getBlurDriverStatus); // read-only file inspection, same trust level as getCapabilities
+        REG_API(installBlurDriver); // security: token required (writes kernel modules)
+        REG_API(restoreBlurDriver); // security: token required (writes kernel modules)
+
         // Check ADC availability before starting battery collector
         _adc_available = check_adc_available();
         if (_adc_available) {
@@ -239,6 +252,16 @@ private:
     static inline std::atomic_flag _mode_busy = ATOMIC_FLAG_INIT;
     static bool mode_try_acquire() { return !_mode_busy.test_and_set(std::memory_order_acquire); }
     static void mode_release() { _mode_busy.clear(std::memory_order_release); }
+
+    // Separate gate for the blur-driver install/restore pair. They remount the
+    // root filesystem read-write, so two of them overlapping could see one
+    // handler remount read-only while the other is still copying -- the copy
+    // would then fail halfway with a module already replaced. It is deliberately
+    // not the mode gate: the two operations are unrelated and neither should
+    // report the other as busy.
+    static inline std::atomic_flag _ko_busy = ATOMIC_FLAG_INIT;
+    static bool ko_try_acquire() { return !_ko_busy.test_and_set(std::memory_order_acquire); }
+    static void ko_release() { _ko_busy.clear(std::memory_order_release); }
 };
 
 #endif // API_DEVICE_H

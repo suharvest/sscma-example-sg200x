@@ -10,8 +10,11 @@ import {
   SoundOutlined,
   DownloadOutlined,
   VideoCameraOutlined,
+  ThunderboltOutlined,
+  RollbackOutlined,
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import PrivacyBlurCard from "./PrivacyBlurCard";
 import {
   queryBatteryInfoApi,
   getSensorStatusApi,
@@ -26,8 +29,15 @@ import {
   audioPlayRecordingApi,
   getAudioVolumeApi,
   setAudioVolumeApi,
+  getBlurDriverStatusApi,
+  installBlurDriverApi,
+  restoreBlurDriverApi,
 } from "@/api/device/index";
-import { ISensorStatus, IAudioVolume } from "@/api/device/device";
+import {
+  ISensorStatus,
+  IAudioVolume,
+  IBlurDriverStatus,
+} from "@/api/device/device";
 import { getCameraConfigApi, setCameraConfigApi } from "@/api/camera";
 import { ICameraConfig } from "@/api/camera/camera";
 import { isOk, isBusy } from "@/utils/api";
@@ -145,6 +155,14 @@ const DeviceTools = () => {
   >(undefined);
   const [cameraSaved, setCameraSaved] = useState<ICameraConfig | null>(null);
   const [cameraSaving, setCameraSaving] = useState(false);
+  // Hardware masking driver (patched kernel modules). undefined=loading,
+  // null=endpoint unavailable (older firmware, card hidden).
+  const [blurDriver, setBlurDriver] = useState<
+    IBlurDriverStatus | null | undefined
+  >(undefined);
+  const [driverBusy, setDriverBusy] = useState<"install" | "restore" | null>(
+    null
+  );
   const cameraDirty =
     !!cameraConf &&
     !!cameraSaved &&
@@ -216,6 +234,64 @@ const DeviceTools = () => {
         }
       })
       .catch(() => setAudioVolume(null));
+    // Hardware masking driver (older firmware returns 404)
+    setBlurDriver(undefined);
+    fetchBlurDriver();
+  };
+
+  const fetchBlurDriver = () =>
+    getBlurDriverStatusApi()
+      .then((res) => {
+        if (isOk(res) && res.data && typeof res.data.available === "boolean") {
+          setBlurDriver(res.data);
+        } else {
+          setBlurDriver(null);
+        }
+      })
+      .catch(() => setBlurDriver(null));
+
+  /** Deploy the patched modules, or put the stock ones back. Both replace
+   *  kernel modules on the root filesystem and only take effect after a
+   *  reboot, so both go through an explicit confirmation. The device is never
+   *  rebooted for the user — the running application would go down with it. */
+  const onDriverAction = (action: "install" | "restore") => {
+    const isInstall = action === "install";
+    Modal.confirm({
+      title: isInstall
+        ? t("blurDriver.installTitle")
+        : t("blurDriver.restoreTitle"),
+      icon: <ExclamationCircleOutlined />,
+      content: isInstall
+        ? t("blurDriver.installConfirm")
+        : t("blurDriver.restoreConfirm"),
+      okText: isInstall ? t("blurDriver.install") : t("blurDriver.restore"),
+      okButtonProps: { danger: !isInstall },
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        setDriverBusy(action);
+        try {
+          const res = isInstall
+            ? await installBlurDriverApi()
+            : await restoreBlurDriverApi();
+          if (isOk(res)) {
+            if (res.data) setBlurDriver(res.data);
+            message.success(t("blurDriver.doneReboot"));
+          } else if (isBusy(res)) {
+            message.warning(t("blurDriver.busy"));
+          } else {
+            // The backend refuses on vermagic mismatch, a missing backup or a
+            // failed verification, and its message names the actual cause —
+            // far more useful here than a generic failure string.
+            message.error(res.msg || t("blurDriver.failed"));
+          }
+        } catch (e) {
+          message.error(t("blurDriver.failed"));
+        } finally {
+          setDriverBusy(null);
+          fetchBlurDriver();
+        }
+      },
+    });
   };
 
   useEffect(() => {
@@ -913,6 +989,91 @@ const DeviceTools = () => {
             )}
           </div>
         )}
+
+
+        {/* Hardware masking acceleration — hidden when the endpoint is missing
+            (older firmware). Deploying replaces two kernel modules and needs a
+            reboot; without it the masking still works, in software. */}
+        {blurDriver !== null && (
+          <div className="rc-card p-20">
+            <div className="rc-section-label mb-12">
+              {t("blurDriver.card")}
+            </div>
+            {blurDriver === undefined ? (
+              <div className="text-13 text-muted">{t("common.reading")}</div>
+            ) : (
+              <>
+                <div className="rc-kpi-label">{t("blurDriver.state")}</div>
+                <div className="flex items-center gap-8 mt-4 flex-wrap">
+                  <span className="text-14 font-medium">
+                    {blurDriver.installed
+                      ? t("blurDriver.stateInstalled")
+                      : t("blurDriver.stateStock")}
+                  </span>
+                  {blurDriver.reboot_required && (
+                    <span className="rc-badge accent">
+                      <span className="dot" />
+                      {t("blurDriver.rebootPending")}
+                    </span>
+                  )}
+                </div>
+
+                <div className="text-12 text-muted mt-10">
+                  {t("blurDriver.explain")}
+                </div>
+
+                {!blurDriver.available && (
+                  <div className="text-12 mt-8" style={{ color: "#d48806" }}>
+                    {blurDriver.reason === "vermagic_mismatch"
+                      ? t("blurDriver.unavailableVermagic", {
+                          kernel: blurDriver.kernel_release || "-",
+                          vermagic: blurDriver.packaged_vermagic || "-",
+                        })
+                      : t("blurDriver.unavailableNotPackaged")}
+                  </div>
+                )}
+
+                <div className="flex gap-8 mt-14 flex-wrap">
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<ThunderboltOutlined />}
+                    loading={driverBusy === "install"}
+                    disabled={!blurDriver.available || driverBusy !== null}
+                    onClick={() => onDriverAction("install")}
+                  >
+                    {t("blurDriver.install")}
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    icon={<RollbackOutlined />}
+                    loading={driverBusy === "restore"}
+                    disabled={!blurDriver.backup_present || driverBusy !== null}
+                    onClick={() => onDriverAction("restore")}
+                  >
+                    {t("blurDriver.restore")}
+                  </Button>
+                </div>
+                {!blurDriver.backup_present && (
+                  <div className="text-11 text-muted mt-6">
+                    {t("blurDriver.noBackup")}
+                  </div>
+                )}
+                {blurDriver.reboot_required && (
+                  <div className="text-12 mt-10" style={{ color: "#d48806" }}>
+                    {t("blurDriver.rebootHint")}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Masking policy sits next to the driver that accelerates it: having
+            just deployed the driver, the next thing an operator wants is the
+            switch that turns masking on. */}
+        <PrivacyBlurCard />
 
       </div>
     </div>

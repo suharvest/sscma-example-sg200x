@@ -116,3 +116,61 @@ Hello, ReCamera!
 ```  
 
 For more information, go to the specific solution's README.
+---
+
+## Privacy Masking and the Patched Kernel Modules
+
+Several solutions here (`face-analysis`, `facemesh-reader`, `retail-vision`,
+`detection-blur`) can conceal the people they detect before the frame is
+encoded, so the RTSP stream, the console's debug video and the ONVIF snapshot
+all carry the mask. It is a device-wide setting, configured in the supervisor
+console and stored in `/userdata/local/blur.conf`.
+
+**This works on stock firmware.** Nothing below is required to build or run
+anything in this repository.
+
+### Why a patched kernel is offered at all
+
+The CV181x region engine can composite a mask in hardware, but its MOSAIC mode
+fills the mask with values from `get_random_u32()` — it renders noise over the
+subject, not a pixelated version of them. The colour table that would make it
+pixelate is not exposed to userspace.
+
+The patch adds one ioctl so the application can supply that table, and one
+module parameter (`mask_force_alpha`) that controls whether the gaps between
+mask cells are painted black. With it, masking is composited by the camera
+hardware; without it, the same masking is done on the CPU at roughly 38 ms per
+frame.
+
+The application detects this at runtime. On a stock kernel you will see:
+
+```
+kernel has no mosaic colour table; using software compositing
+```
+
+and everything keeps working, more slowly.
+
+### Building the modules
+
+The modules are build artefacts and are **not tracked in git**, so a fresh
+clone packages a supervisor `.deb` whose "deploy driver" button is greyed out
+and reports `not_packaged`. That is expected.
+
+To build them you need the forked kernel tree — not the stock SDK tree, and not
+this repository:
+
+- `github.com/suharvest/reCamera-OS` (branch `sg200x-reCamera`)
+- `github.com/suharvest/osdrv` (branch `feat/mosaic-colour-lut`), a submodule of
+  the above
+
+See [`docs/kernel-build.md`](docs/kernel-build.md) for the build procedure and
+its two traps: the modules must be built from the fork rather than from the
+prebuilt SDK, and `vermagic` must match the running kernel exactly or the camera
+will fail to come up after the next reboot. The console refuses to install
+modules whose `vermagic` disagrees with the device, so a mismatch is reported
+rather than bricking the camera — but check it anyway.
+
+Installing or restoring the modules is done from the console's Device page, and
+takes effect after a reboot. The stock modules are backed up to
+`/userdata/ko-backup/` before the first install and can be put back from the
+same page.

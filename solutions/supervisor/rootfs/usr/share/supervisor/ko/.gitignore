@@ -1,0 +1,3 @@
+# Kernel modules copied in at package time from the osdrv build (see
+# docs/kernel-build.md). Build artefacts: rebuilt, not edited, and not tracked.
+*.ko

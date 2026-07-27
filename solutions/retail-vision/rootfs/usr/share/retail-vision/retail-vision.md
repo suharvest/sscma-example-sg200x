@@ -28,6 +28,7 @@ Outputs:
 - **URL**: `rtsp://<device-ip>:8554/live0`
 - **Codec**: H.264, 1280x720 @ 15 fps (defaults; configurable at launch)
 - Optional RTSP auth via `--rtsp-user` / `--rtsp-pass` launch flags.
+- **Privacy**: when device-wide masking is on, every detected person is concealed before the frame is encoded, so the RTSP stream, the console preview and `/snapshot.jpg` all carry the mask. Off by default; the switch and its opacity live on the console's **Device** page (there is a shortcut on the debug page). Applies immediately without restarting the application.
 
 ## MQTT Output
 

@@ -164,6 +164,22 @@ std::string debug_stream_build_results(uint64_t timestamp_ms, uint32_t frame_id,
 void debug_stream_letterbox_to_display(std::vector<debug_stream_box_t>& boxes,
                                        int inference_w, int inference_h,
                                        int display_w, int display_h);
+
+/*
+ * The inverse: display-frame pixels back into the letterboxed inference frame.
+ *
+ * Needed by anything that has to draw on the inference frame using coordinates
+ * expressed against the video stream -- masking the JPEG snapshot, for one,
+ * since the snapshot is encoded from the inference frame while the privacy
+ * mask's boxes are normalised against the stream.
+ *
+ * Kept next to its forward counterpart, and sharing its arithmetic, so the two
+ * cannot drift apart. Two hand-written copies of this mapping is how the mask
+ * and the overlay ended up disagreeing about where a face was.
+ */
+void debug_stream_display_to_letterbox(std::vector<debug_stream_box_t>& boxes,
+                                       int inference_w, int inference_h,
+                                       int display_w, int display_h);
 #endif
 
 #endif /* _DEBUG_STREAM_H_ */

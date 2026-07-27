@@ -12,6 +12,7 @@ import {
   ISensorStatus,
   IAudioVolume,
   ICapabilities,
+  IBlurDriverStatus,
 } from "./device";
 
 // 获取设备信息
@@ -437,6 +438,51 @@ export const getCapabilitiesApi = async (refresh = false) =>
       url: `api/deviceMgr/getCapabilities${refresh ? "?refresh=1" : ""}`,
       method: "get",
       timeout: 10000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 硬件遮挡加速驱动状态（打过补丁的 cv181x_rgn / cv181x_vpss 内核模块）。
+// 只读探测：算几个文件的 md5、读 vermagic，不挂载也不写盘。老固件返回 404，
+// 调用方按「不可用」处理即可。
+export const getBlurDriverStatusApi = async () =>
+  supervisorRequest<IBlurDriverStatus>(
+    {
+      url: "api/deviceMgr/getBlurDriverStatus",
+      method: "get",
+      timeout: 10000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 部署补丁驱动：先校验 vermagic（不匹配直接拒绝，装上去下次开机摄像头起不来），
+// 备份原版到 /userdata/ko-backup（已有备份不覆盖），再 remount rw → 拷贝 →
+// md5 校验 → remount ro。设备不会被自动重启，返回 reboot_required 由用户决定。
+// 后端要把几 MB 数据写进 remount 后的根文件系统，超时给足。
+export const installBlurDriverApi = async () =>
+  supervisorRequest<IBlurDriverStatus>(
+    {
+      url: "api/deviceMgr/installBlurDriver",
+      method: "post",
+      timeout: 60000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
+// 还原出厂驱动：从 /userdata/ko-backup 拷回，同样的 remount + md5 校验流程。
+// 没有备份时后端明确报错而不是静默成功。同样需要重启才生效。
+export const restoreBlurDriverApi = async () =>
+  supervisorRequest<IBlurDriverStatus>(
+    {
+      url: "api/deviceMgr/restoreBlurDriver",
+      method: "post",
+      timeout: 60000,
     },
     {
       catchs: true,

@@ -50,6 +50,9 @@ private:
     // ONVIF integration (/userdata/local/onvif.conf, see onvif_config.h)
     static api_status_t getOnvifConfig(request_t req, response_t res);
     static api_status_t setOnvifConfig(request_t req, response_t res);
+    // Privacy blur (/userdata/local/blur.conf, see blur_config.h)
+    static api_status_t getBlurConfig(request_t req, response_t res);
+    static api_status_t setBlurConfig(request_t req, response_t res);
     // Camera picture orientation (/userdata/local/camera.conf, see
     // camera_config.h) + read-only focus assist (/tmp/camera_fv.json).
     static api_status_t getCameraConfig(request_t req, response_t res);

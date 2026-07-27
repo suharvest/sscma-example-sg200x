@@ -200,7 +200,10 @@
     "switchModelFailed": "Failed to switch model",
     "gimbalTitle": "Gimbal Control",
     "gimbalSoon": "Coming soon",
-    "gimbalPlaceholder": "A gimbal (CAN motor bus) was detected on this device. Pan/tilt control from this page arrives in Phase 6."
+    "gimbalPlaceholder": "A gimbal (CAN motor bus) was detected on this device. Pan/tilt control from this page arrives in Phase 6.",
+    "privacyBlur": "Privacy masking",
+    "privacyBlurHint": "Conceals the people the camera detects. Device-wide, applied immediately, without interrupting the view. Full settings live on the Device page.",
+    "privacyBlurAlphaHint": "255 hides the subject completely; lower lets the picture through in proportion. Takes effect as soon as you release — judge it against the view above."
   },
   "device": {
     "title": "Device",
@@ -599,6 +602,11 @@
     "copy": "Copy",
     "copied": "Copied"
   },
+  "rtsp": {
+    "title": "RTSP live stream",
+    "subtitle": "The camera's raw stream address, usable by anything that speaks RTSP.",
+    "hint": "VLC: Media -> Open Network Stream -> paste the address above. Home Assistant, a VMS and ffmpeg all take the same one."
+  },
   "onvif": {
     "title": "ONVIF",
     "subtitle": "Make this camera ONVIF-compatible: let video management systems (VMS) discover it and pull the stream, and publish inference results as ONVIF analytics metadata.",
@@ -633,5 +641,65 @@
     "invalidPort": "Port must be between 1025 and 65535",
     "invalidInterval": "Interval must be between 20 and 60000 ms",
     "complianceNote": "This device is ONVIF-compatible and implements the ONVIF interfaces described above. It is not an ONVIF-conformant product and carries no ONVIF certification."
+  },
+  "blur": {
+    "title": "Privacy blur",
+    "subtitle": "Mask the subjects the camera detects before the picture is encoded, so faces are already covered in the live stream and in any recording.",
+    "noderedNotice": "The device is in Node-RED mode. Masking is applied by the Console application — settings saved here take effect after switching back to Console mode.",
+    "enabled": "Privacy blur",
+    "enabledHint": "Covers each detected subject in the picture itself. Nothing unmasked leaves the device.",
+    "regionsNote": "Up to {{regions}} subjects are masked at the same time. When more are detected, the largest ones in the picture — the closest to the camera — are masked first.",
+    "advanced": "Advanced settings",
+    "backend": "Masking style",
+    "backendLabel": {
+      "pixelate": "Mosaic (recommended)",
+      "coverex": "Solid colour",
+      "mosaic": "Noise blocks"
+    },
+    "backendHint": {
+      "pixelate": "Blocks take their colour from the picture itself and are composited by the hardware, so this costs almost nothing at runtime.",
+      "coverex": "Solid colour blocks. At most 4 subjects can be masked at once with this style.",
+      "mosaic": "The stock effect of the camera chip. Be aware that it does not pixelate the picture: it draws black-and-white noise over each subject."
+    },
+    "blockPx": "Mosaic block size",
+    "blockPxFine": "8 px (fine)",
+    "blockPxCoarse": "16 px (coarse)",
+    "blockPxHint": "Larger blocks hide more detail. The hardware grid supports these two sizes only.",
+    "maxRegions": "Maximum subjects masked",
+    "maxRegionsHint": "Between 1 and 8. Extra detections beyond this number are left unmasked.",
+    "coverexLimitNotice": "Solid colour masking supports at most 4 subjects at once; a higher number will not be honoured with this style.",
+    "alpha": "Mask opacity",
+    "alphaHint": "255 hides the subject completely; lower values let the picture through in proportion. The debug stream shows the result immediately — judge it against what the site needs.",
+    "alphaTransparent": "0 · invisible",
+    "alphaOpaque": "255 · opaque",
+    "invalidAlpha": "Opacity must be between 0 and 255",
+    "save": "Save",
+    "saved": "Configuration saved.",
+    "saveFailed": "Failed to save configuration",
+    "restarted": "The running application was restarted to apply it.",
+    "busy": "Another operation is in progress, please retry shortly",
+    "invalidMaxRegions": "The number of subjects must be between 1 and 8",
+    "appliedLive": "Applied immediately; no restart needed."
+  },
+  "blurDriver": {
+    "card": "Hardware masking acceleration",
+    "state": "Current driver",
+    "stateStock": "Factory driver",
+    "stateInstalled": "Patched driver deployed",
+    "rebootPending": "Reboot to take effect",
+    "explain": "Privacy blur works either way. Without the patched driver the mask is composited by the CPU, which costs about 38 ms per frame; deploying it moves that work into the camera hardware. It replaces two kernel modules and only takes effect after the device is restarted.",
+    "unavailableNotPackaged": "No patched driver is shipped with this firmware, so there is nothing to deploy.",
+    "unavailableVermagic": "The packaged driver was built for kernel “{{vermagic}}” but this device runs “{{kernel}}”. Installing it would leave the camera unable to start after the next reboot, so deployment is blocked.",
+    "install": "Deploy",
+    "restore": "Restore factory driver",
+    "installTitle": "Deploy the patched driver?",
+    "installConfirm": "Two kernel modules will be replaced. The factory ones are backed up first and can be restored from this page. The change takes effect only after you restart the device.",
+    "restoreTitle": "Restore the factory driver?",
+    "restoreConfirm": "The backed-up factory modules will be put back and hardware masking acceleration will be lost — the blur keeps working in software, at about 38 ms per frame. The change takes effect only after you restart the device.",
+    "doneReboot": "Done. Restart the device for the new driver to take effect.",
+    "rebootHint": "The modules on disk are not the ones the running kernel loaded. Restart the device to apply them.",
+    "noBackup": "No factory backup exists on this device yet; it is created the first time you deploy.",
+    "failed": "The driver operation failed; nothing was changed",
+    "busy": "Another driver operation is in progress, please retry shortly"
   }
 }

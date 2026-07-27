@@ -16,6 +16,7 @@
     "video_path": "/",
     "results_path": "/results"
   },
+  "privacy_blur": true,
   "models": [],
   "pipeline": [
     {

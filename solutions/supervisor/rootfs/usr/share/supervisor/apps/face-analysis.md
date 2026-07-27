@@ -24,7 +24,7 @@ Outputs:
 
 - **URL**: `rtsp://<device-ip>:8554/live0`
 - **Codec**: H.264 (Annex-B), 1280x720 @ 15 fps (defaults; configurable at launch)
-- **Privacy**: face regions are **blurred by default** on the RTSP stream (`--no-blur` disables, max 16 regions).
+- **Privacy**: when device-wide masking is on, every detected face is concealed before the frame is encoded, so the RTSP stream, the console preview and `/snapshot.jpg` all carry the mask. Off by default; the switch and its opacity live on the console's **Device** page (there is a shortcut on the debug page). Applies immediately without restarting the application.
 - One RTSP consumer at a time is recommended; the camera pipeline is owned exclusively by this application.
 
 ## MQTT Output
