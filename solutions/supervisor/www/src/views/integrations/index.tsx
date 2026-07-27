@@ -9,7 +9,7 @@ import {
   InputNumber,
   Switch,
 } from "antd";
-import { CopyOutlined, CheckOutlined } from "@ant-design/icons";
+import { CopyOutlined, CheckOutlined, DownOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { getHaConfigApi, setHaConfigApi, testHaConnectionApi } from "@/api/ha";
 import { ISetHaConfigParams } from "@/api/ha/ha";
@@ -69,6 +69,50 @@ const CodeBlock = ({ text }: { text: string }) => (
     </div>
   </div>
 );
+
+
+/**
+ * A collapsible integration section, collapsed by default.
+ *
+ * These sections are reference material -- stream URLs and YAML to paste into
+ * somebody else's configuration -- and a page that opens with three screens of
+ * it buries the switches that actually do something. Collapsed, the page reads
+ * as a list of what this device can be integrated with, and the details are one
+ * click away for whoever is actually wiring one up.
+ */
+const IntegrationSection = ({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-16 bg-white p-30 mt-12 mb-24">
+      <div
+        className="flex items-start justify-between cursor-pointer"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <div className="font-bold text-18">{title}</div>
+          <div className="text-black opacity-60 mt-4 text-13">{subtitle}</div>
+        </div>
+        <DownOutlined
+          className="mt-6 ml-16 transition-transform"
+          style={{
+            transform: open ? "rotate(180deg)" : "none",
+            opacity: 0.45,
+            flexShrink: 0,
+          }}
+        />
+      </div>
+      {open && <div className="mt-16">{children}</div>}
+    </div>
+  );
+};
 
 /** Home Assistant integration card: MQTT config + RTSP stream how-to. */
 const HomeAssistantCard = () => {
@@ -215,11 +259,7 @@ const HomeAssistantCard = () => {
   };
 
   return (
-    <div className="rounded-16 bg-white p-30 mt-12 mb-24">
-      <div className="font-bold text-18">{t("ha.title")}</div>
-      <div className="text-black opacity-60 mt-4 mb-16 text-13">
-        {t("ha.subtitle")}
-      </div>
+    <IntegrationSection title={t("ha.title")} subtitle={t("ha.subtitle")}>
 
       {noderedMode && (
         <Alert
@@ -349,27 +389,38 @@ const HomeAssistantCard = () => {
         />
       </div>
 
-      <div className="font-bold text-16 mt-24">{t("ha.rtspTitle")}</div>
-      <div className="mt-12">
-        <div className="text-black opacity-60 mb-8 text-13">
-          {t("ha.rtspHint")}
-        </div>
-        <div className="flex items-center justify-between bg-black bg-opacity-5 rounded-8 p-12 mb-16">
-          <code className="text-13 break-all mr-12">{rtspUrl}</code>
-          <CopyButton text={rtspUrl} />
-        </div>
+      {/* The bare stream URL has its own section: it is not a Home Assistant
+          thing, and burying it here made it look like one. What stays are the
+          two recipes that only make sense inside Home Assistant. */}
+      <div className="font-bold text-16 mt-24">{t("ha.gcTitle")}</div>
+      <div className="text-black opacity-60 text-13">{t("ha.gcHint")}</div>
+      <CodeBlock text={genericCameraExample} />
 
-        <div className="font-bold mb-4">{t("ha.gcTitle")}</div>
-        <div className="text-black opacity-60 text-13">{t("ha.gcHint")}</div>
-        <CodeBlock text={genericCameraExample} />
+      <div className="font-bold text-16 mt-24">{t("ha.go2rtcTitle")}</div>
+      <div className="text-black opacity-60 text-13">{t("ha.go2rtcHint")}</div>
+      <CodeBlock text={go2rtcExample} />
+    </IntegrationSection>
+  );
+};
 
-        <div className="font-bold mb-4">{t("ha.go2rtcTitle")}</div>
-        <div className="text-black opacity-60 text-13">
-          {t("ha.go2rtcHint")}
-        </div>
-        <CodeBlock text={go2rtcExample} />
+/**
+ * The RTSP stream on its own, ahead of the integrations that consume it.
+ *
+ * Anything that speaks RTSP -- VLC, a VMS, ffmpeg, a Home Assistant Generic
+ * Camera -- needs exactly this one line, so it is the first thing on the page
+ * and it belongs to no particular integration.
+ */
+const RtspCard = () => {
+  const { t } = useTranslation();
+  const rtspUrl = `rtsp://${getDeviceHost()}:8554/live0`;
+  return (
+    <IntegrationSection title={t("rtsp.title")} subtitle={t("rtsp.subtitle")}>
+      <div className="flex items-center justify-between bg-black bg-opacity-5 rounded-8 p-12">
+        <code className="text-13 break-all mr-12">{rtspUrl}</code>
+        <CopyButton text={rtspUrl} />
       </div>
-    </div>
+      <div className="text-black opacity-60 mt-8 text-13">{t("rtsp.hint")}</div>
+    </IntegrationSection>
   );
 };
 
@@ -521,11 +572,7 @@ const OnvifCard = () => {
   };
 
   return (
-    <div className="rounded-16 bg-white p-30 mt-12 mb-24">
-      <div className="font-bold text-18">{t("onvif.title")}</div>
-      <div className="text-black opacity-60 mt-4 mb-16 text-13">
-        {t("onvif.subtitle")}
-      </div>
+    <IntegrationSection title={t("onvif.title")} subtitle={t("onvif.subtitle")}>
 
       {noderedMode && (
         <Alert
@@ -750,15 +797,19 @@ const OnvifCard = () => {
         {/* "ONVIF-compatible", never "conformant": we ship no certification. */}
         <Alert type="info" showIcon message={t("onvif.complianceNote")} />
       </div>
-    </div>
+    </IntegrationSection>
   );
 };
+
+
+
 
 /**
  * Integration cards shown on the page, in order.
  * Add a new integration by appending a { key, Card } entry here.
  */
 const integrationCards: { key: string; Card: () => JSX.Element }[] = [
+  { key: "rtsp", Card: RtspCard },
   { key: "home-assistant", Card: HomeAssistantCard },
   { key: "onvif", Card: OnvifCard },
 ];

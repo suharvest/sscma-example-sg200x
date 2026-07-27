@@ -602,6 +602,11 @@
     "copy": "Copy",
     "copied": "Copied"
   },
+  "rtsp": {
+    "title": "RTSP live stream",
+    "subtitle": "The camera's raw stream address, usable by anything that speaks RTSP.",
+    "hint": "VLC: Media -> Open Network Stream -> paste the address above. Home Assistant, a VMS and ffmpeg all take the same one."
+  },
   "onvif": {
     "title": "ONVIF",
     "subtitle": "Make this camera ONVIF-compatible: let video management systems (VMS) discover it and pull the stream, and publish inference results as ONVIF analytics metadata.",

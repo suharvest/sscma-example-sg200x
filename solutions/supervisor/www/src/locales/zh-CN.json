@@ -597,6 +597,11 @@
     "copy": "复制",
     "copied": "已复制"
   },
+  "rtsp": {
+    "title": "RTSP 实时视频流",
+    "subtitle": "摄像头的原始视频流地址，任何支持 RTSP 的软件都能直接使用。",
+    "hint": "VLC：媒体 → 打开网络串流 → 粘贴上方地址。Home Assistant、VMS、ffmpeg 同样使用这一个地址。"
+  },
   "onvif": {
     "title": "ONVIF",
     "subtitle": "让本设备兼容 ONVIF（ONVIF-compatible）：视频管理系统（VMS）可以自动发现设备并拉流，同时可将推理结果按 ONVIF 数据模型发布为分析元数据。",
