@@ -84,12 +84,16 @@ const IntegrationSection = ({
   title,
   subtitle,
   children,
+  defaultOpen = false,
 }: {
   title: string;
   subtitle: string;
   children: React.ReactNode;
+  /** Open on arrival. For the section whose whole content is one line worth
+      reading -- collapsing that costs a click and saves no space. */
+  defaultOpen?: boolean;
 }) => {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="rounded-16 bg-white p-30 mt-12 mb-24">
       <div
@@ -414,7 +418,11 @@ const RtspCard = () => {
   const { t } = useTranslation();
   const rtspUrl = `rtsp://${getDeviceHost()}:8554/live0`;
   return (
-    <IntegrationSection title={t("rtsp.title")} subtitle={t("rtsp.subtitle")}>
+    <IntegrationSection
+      title={t("rtsp.title")}
+      subtitle={t("rtsp.subtitle")}
+      defaultOpen
+    >
       <div className="flex items-center justify-between bg-black bg-opacity-5 rounded-8 p-12">
         <code className="text-13 break-all mr-12">{rtspUrl}</code>
         <CopyButton text={rtspUrl} />
