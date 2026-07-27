@@ -41,9 +41,6 @@ public:
     // On /userdata, which is writable and survives a package upgrade, so the
     // stock modules remain recoverable even after the supervisor is replaced.
     static constexpr const char* BACKUP_DIR = "/userdata/ko-backup";
-    // Touched by install/restore; its mtime is compared against the boot time
-    // to decide whether the pending change has been picked up yet.
-    static constexpr const char* PENDING_MARKER = "/userdata/ko-backup/.reboot-pending";
 
     struct status {
         bool available = false;       // packaged modules present and loadable on this kernel
@@ -85,7 +82,6 @@ private:
     // verifying each result by hash. Shared by install and restore because the
     // two differ only in direction.
     static bool deploy(const std::string& src_dir, const std::string& dst_dir, std::string& err);
-    static void mark_reboot_pending();
 };
 
 #endif // BLUR_DRIVER_H

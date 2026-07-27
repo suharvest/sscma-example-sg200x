@@ -26,6 +26,57 @@ const std::vector<std::string>& blur_driver::modules()
     return m;
 }
 
+namespace {
+
+/*
+ * A string that appears in the patched cv181x_vpss and in no stock build: the
+ * module parameter the mask patch adds. It is the discriminator for "is this
+ * module patched?", asked two ways -- of a file on disk (does the image contain
+ * the name?) and of the running kernel (did the module export the parameter?).
+ *
+ * If the patch ever renames this parameter, driver state silently reports the
+ * patched module as stock. That is the cost of using a feature of the artefact
+ * as its own identity; the alternative, srcversion, is not built into these
+ * modules (checked on the device: /sys/module/cv181x_vpss/srcversion does not
+ * exist and the .ko carries no srcversion string).
+ */
+constexpr const char* PATCH_MARKER = "mask_force_alpha";
+constexpr const char* PATCH_MARKER_SYSFS = "/sys/module/cv181x_vpss/parameters/mask_force_alpha";
+constexpr const char* LOADED_VPSS_MODULE = "cv181x_vpss.ko";
+
+/* Does this module image contain the marker? Substring search over the file --
+ * the modules are under a megabyte and this runs only when the console asks for
+ * driver state. */
+bool image_is_patched(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) {
+        return false;
+    }
+    const std::string marker(PATCH_MARKER);
+    std::string window;
+    std::vector<char> buf(64 * 1024);
+    while (f) {
+        f.read(buf.data(), (std::streamsize)buf.size());
+        const std::streamsize n = f.gcount();
+        if (n <= 0) {
+            break;
+        }
+        window.append(buf.data(), (size_t)n);
+        if (window.find(marker) != std::string::npos) {
+            return true;
+        }
+        /* Keep just enough tail that a marker split across two reads is still
+         * found, and do not grow the buffer without bound. */
+        if (window.size() > marker.size()) {
+            window.erase(0, window.size() - (marker.size() - 1));
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 bool blur_driver::file_md5(const std::string& path, std::string& out)
 {
     std::ifstream f(path, std::ios::binary);
@@ -226,32 +277,28 @@ blur_driver::status blur_driver::probe()
         st.reason = "vermagic_mismatch";
     }
 
-    // A pending marker written after the machine last booted means the modules
-    // on disk are not the ones the kernel is running. The comparison is
-    // against the boot time rather than a flag we would have to clear at
-    // startup, so it becomes false on its own after the reboot happens.
-    std::error_code ec;
-    if (fs::exists(PENDING_MARKER, ec)) {
-        struct stat sb;
-        struct sysinfo si;
-        if (::stat(PENDING_MARKER, &sb) == 0 && ::sysinfo(&si) == 0) {
-            const time_t boot_time = time(nullptr) - (time_t)si.uptime;
-            st.reboot_required = sb.st_mtime > boot_time;
-        } else {
-            st.reboot_required = true; // cannot tell -> say so rather than hide it
-        }
-    }
+    /*
+     * Does the module on disk differ from the one the kernel is running?
+     *
+     * Asked of the artefacts themselves -- the marker in the image on disk
+     * against the same marker in /sys/module -- and not of any clock.
+     *
+     * This used to compare a marker file's mtime against boot time, on the
+     * reasoning that the flag would then clear itself after a reboot. That
+     * reasoning assumed a monotonic wall clock. This device has no RTC battery:
+     * every boot restarts wall time at epoch 0, so a marker written late in the
+     * previous session (mtime 16606) always looks newer than this session's
+     * boot (time 230 - uptime 230 = 0). The check therefore reported "reboot
+     * required" forever, and the longer the previous session had run the more
+     * certain it looked. Observed on the device after a restore that had in
+     * fact already taken effect.
+     */
+    const std::string live_vpss = std::string(SYS_DIR) + "/" + LOADED_VPSS_MODULE;
+    const bool disk_patched   = image_is_patched(live_vpss);
+    std::error_code ec2;
+    const bool loaded_patched = fs::exists(PATCH_MARKER_SYSFS, ec2);
+    st.reboot_required = disk_patched != loaded_patched;
     return st;
-}
-
-void blur_driver::mark_reboot_pending()
-{
-    std::error_code ec;
-    fs::create_directories(BACKUP_DIR, ec);
-    int fd = ::open(PENDING_MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) {
-        ::close(fd);
-    }
 }
 
 bool blur_driver::deploy(const std::string& src_dir, const std::string& dst_dir, std::string& err)
@@ -347,7 +394,9 @@ bool blur_driver::install(std::string& err)
     if (!deploy(PKG_DIR, SYS_DIR, err)) {
         return false;
     }
-    mark_reboot_pending();
+    /* No "reboot pending" flag to write: probe() answers that by comparing the
+     * module on disk with the one the kernel is running, which cannot go stale
+     * and needs no clock. */
     return true;
 }
 
@@ -363,6 +412,5 @@ bool blur_driver::restore(std::string& err)
     if (!deploy(BACKUP_DIR, SYS_DIR, err)) {
         return false;
     }
-    mark_reboot_pending();
     return true;
 }
