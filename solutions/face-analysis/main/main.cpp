@@ -18,10 +18,12 @@
 #include "face_detector.h"
 #include "attribute_analyzer.h"
 #include "mqtt_payload.h"
-#include "face_blur.h"
+#include "privacy_blur.h"
 
 using namespace ma;
 using namespace face_analysis;
+using privacy_blur::PrivacyBlur;
+using privacy_blur::PrivacyBlurConfig;
 
 #define TAG "face-analysis"
 
@@ -73,7 +75,11 @@ static std::atomic<bool> g_running(true);
 static FaceDetector* g_face_detector = nullptr;
 static AttributeAnalyzer* g_attribute_analyzer = nullptr;
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
-static FaceBlur* g_face_blur = nullptr;
+static PrivacyBlur* g_face_blur = nullptr;
+/* Temporary placement diagnostics, off unless BLUR_TRACE is set in the
+ * environment. Behind a switch rather than always-on because it prints once per
+ * face per frame, which would bury the log it is meant to be read in. */
+static const bool g_blur_trace = (getenv("BLUR_TRACE") != nullptr);
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 
@@ -98,7 +104,7 @@ static void print_usage(const char* prog) {
     printf("  --no-blur                 Disable face blur on RTSP stream\n");
     printf("  --no-debug                Disable debug WebSocket stream\n");
     printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
-    printf("  --max-regions N           Max blur regions (1-16, default: %d)\n", g_config.max_regions);
+    printf("  --max-regions N           Max blur regions (1-8, default: %d)\n", g_config.max_regions);
     printf("  --emotion-interval N      Run emotion every N frames (default: %d)\n", g_config.emotion_interval);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
@@ -373,16 +379,28 @@ static bool init_blur() {
         return true;
     }
 
-    g_face_blur = new FaceBlur();
-    g_face_blur->setMaxRegions(g_config.max_regions);
-    if (!g_face_blur->init(g_config.stream_width, g_config.stream_height)) {
+    PrivacyBlurConfig cfg;
+    loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, nullptr);
+
+    /* No device-wide config: stay off, which is what this application has
+     * always shipped as (its own conf carried BLUR_ENABLED=0). Turning masking
+     * on for existing devices merely because the setting moved would be a
+     * surprising change to what their stream looks like. A blur.conf written
+     * by the console is an explicit decision and is honoured in both
+     * directions. */
+    if (!cfg.present) cfg.enabled = false;
+    cfg.max_regions = g_config.max_regions;
+
+    g_face_blur = new PrivacyBlur();
+    if (!g_face_blur->init(cfg, g_config.stream_width, g_config.stream_height)) {
         MA_LOGE(TAG, "Failed to initialize face blur");
         delete g_face_blur;
         g_face_blur = nullptr;
         return false;
     }
 
-    MA_LOGI(TAG, "Face blur enabled");
+    MA_LOGI(TAG, "Face blur ready (backend=%s, max_regions=%d, enabled=%d)",
+            cfg.backend.c_str(), cfg.max_regions, (int)cfg.enabled);
     return true;
 }
 
@@ -445,9 +463,69 @@ static void process_frame() {
     auto detect_end = std::chrono::high_resolution_clock::now();
     auto detect_time = std::chrono::duration_cast<std::chrono::milliseconds>(detect_end - detect_start).count();
 
-    // Step 2: Feed face detections to blur overlay
+    // Step 2: Feed face detections to the privacy mask. Before returnFrame()
+    // below, because the pixelating backend averages the pixels it hides and
+    // frame.data is invalid once the frame goes back to the camera.
     if (g_config.enable_blur && g_face_blur) {
-        g_face_blur->onDetection(faces, &frame, g_frame_id);
+        /*
+         * The mask has to travel the same road as the overlay boxes, and for
+         * the same reason.
+         *
+         * FaceInfo is normalised against the *inference* frame (640x480 here),
+         * the mask is applied on the *stream* frame (1280x720), and the two
+         * have different aspect ratios. The camera fits the sensor content into
+         * each channel preserving aspect, so the inference frame carries
+         * letterbox bars the stream does not: a normalised coordinate means a
+         * different place in each. Handing the inference-normalised value
+         * straight to a component initialised with the stream dimensions treats
+         * one as the other and puts the mask somewhere the face is not.
+         *
+         * debug_stream_letterbox_to_display() already does this conversion for
+         * the console overlay a few lines up. Reusing it -- rather than
+         * repeating the arithmetic -- is what keeps the drawn box and the mask
+         * from drifting apart later: they now derive from one implementation.
+         */
+        std::vector<debug_stream_box_t> px;
+        px.reserve(faces.size());
+        for (const auto& f : faces) {
+            /* FaceInfo carries the TOP-LEFT corner -- FaceDetector normalises
+             * every model to that because the attribute analyzer crops from it
+             * -- while BlurBox is centre-based like every other detector in the
+             * tree. Converting here rather than changing either convention: the
+             * cropping code downstream depends on top-left, and the component
+             * is shared with applications whose boxes are already centred. */
+            px.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
+                          (f.y + f.h * 0.5f) * g_config.inference_height,
+                          f.w * g_config.inference_width,
+                          f.h * g_config.inference_height,
+                          f.score, std::string()});
+        }
+        debug_stream_letterbox_to_display(px, g_config.inference_width, g_config.inference_height,
+                                          g_config.stream_width, g_config.stream_height);
+
+        std::vector<privacy_blur::BlurBox> blur_boxes;
+        blur_boxes.reserve(px.size());
+        for (const auto& b : px) {
+            blur_boxes.push_back({b.x / g_config.stream_width, b.y / g_config.stream_height,
+                                  b.w / g_config.stream_width, b.h / g_config.stream_height,
+                                  b.score});
+        }
+
+        /* Temporary: prints the raw detection next to what the mask is actually
+         * asked to cover, so a misplaced mask can be read off the log instead of
+         * inferred from a screenshot. Remove once the placement is settled. */
+        if (g_blur_trace && !faces.empty()) {
+            for (size_t i = 0; i < faces.size(); ++i) {
+                MA_LOGI(TAG,
+                        "blur-trace face[%zu] inf_norm(tl)=(%.3f,%.3f,%.3f,%.3f) -> "
+                        "disp_px(c)=(%.1f,%.1f,%.1f,%.1f) -> stream_norm(c)=(%.3f,%.3f,%.3f,%.3f)",
+                        i, faces[i].x, faces[i].y, faces[i].w, faces[i].h,
+                        px[i].x, px[i].y, px[i].w, px[i].h,
+                        blur_boxes[i].x, blur_boxes[i].y, blur_boxes[i].w, blur_boxes[i].h);
+            }
+        }
+
+        g_face_blur->onDetection(blur_boxes, &frame);
     }
 
     // Step 3: Attribute analysis for each face
@@ -456,11 +534,36 @@ static void process_frame() {
     auto analyze_end = std::chrono::high_resolution_clock::now();
     auto analyze_time = std::chrono::duration_cast<std::chrono::milliseconds>(analyze_end - analyze_start).count();
 
-    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
-    // unless a snapshot client asked recently; must precede returnFrame(),
-    // after which frame.data is invalid. Raw, not annotated: the video path
-    // is unannotated too and overlays are drawn client-side.
-    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
+    // Offer the frame for /snapshot.jpg. Returns after one atomic load unless a
+    // snapshot client asked recently; must precede returnFrame(), after which
+    // frame.data is invalid. Unannotated: the video path is unannotated too and
+    // overlays are drawn client-side.
+    //
+    // The privacy mask, though, has to be applied here in software. The RGN
+    // mask lives in the VPSS->VENC path and so covers RTSP and the console's
+    // debug video only; this buffer is the inference frame and goes to the JPEG
+    // encoder untouched by it. Left as it was, the device would serve a masked
+    // video stream and an unmasked still of the same scene -- from the very URL
+    // ONVIF advertises as GetSnapshotUri, so a client honouring the mask on the
+    // stream could pull the faces it hides from the same device.
+    //
+    // The detections are used directly, without the letterbox conversion the
+    // mask path needs: FaceInfo is normalised against this exact frame, so
+    // converting to stream coordinates and back would only add a way to be
+    // wrong.
+    if (debug_stream_snapshot_armed()) {
+        if (g_config.enable_blur && g_face_blur != nullptr && g_face_blur->enabled() &&
+            !faces.empty()) {
+            std::vector<privacy_blur::BlurBox> snap_boxes;
+            snap_boxes.reserve(faces.size());
+            for (const auto& f : faces) {
+                snap_boxes.push_back({f.x + f.w * 0.5f, f.y + f.h * 0.5f, f.w, f.h, f.score});
+            }
+            privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes,
+                                         g_face_blur->blockPx());
+        }
+        debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
+    }
 
     // Return frame to camera
     g_camera->returnFrame(frame);

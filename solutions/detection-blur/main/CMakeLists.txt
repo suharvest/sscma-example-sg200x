@@ -6,6 +6,6 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS sscma-micro sophgo rtsp_server mosquitto rgn
+    PRIVATE_REQUIREDS sscma-micro sophgo rtsp_server mosquitto privacy_blur
     REQUIREDS opencv_core opencv_imgcodecs opencv_imgproc
 )

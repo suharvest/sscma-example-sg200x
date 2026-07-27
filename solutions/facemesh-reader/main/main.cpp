@@ -23,6 +23,7 @@
 
 #include "face_detector.h"
 #include "facemesh_pipeline.h"
+#include "privacy_blur.h"
 #include "mqtt_payload.h"
 #include "drowsiness_detector.h"
 #include "yawn_detector.h"
@@ -57,6 +58,9 @@ static struct {
 
     // Runtime flags
     bool enable_rtsp        = true;
+    /* Device-wide switch lives in /userdata/local/blur.conf; this only allows an
+     * operator to force it off for one run without editing that file. */
+    bool enable_blur        = true;
     bool enable_mqtt        = true;
     bool enable_debug       = true;   // H.264-over-WS + results JSON for supervisor console
     bool include_landmarks  = false;  // include 468 (x,y) per face in MQTT JSON
@@ -76,6 +80,7 @@ static FaceDetector*     g_face_detector = nullptr;
 static FacemeshPipeline* g_pipeline      = nullptr;
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera*           g_camera        = nullptr;
+static privacy_blur::PrivacyBlur* g_face_blur = nullptr;
 static uint32_t          g_frame_id      = 0;
 
 // Alert edge tracking shared between the local alert and the HA snapshot.
@@ -157,6 +162,36 @@ static bool parse_args(int argc, char** argv) {
                 return false;
         }
     }
+    return true;
+}
+
+static bool init_blur() {
+    if (!g_config.enable_blur) return true;
+
+    if (!g_config.enable_rtsp) {
+        MA_LOGW(TAG, "Face blur requires RTSP streaming, ignoring");
+        g_config.enable_blur = false;
+        return true;
+    }
+
+    privacy_blur::PrivacyBlurConfig cfg;
+    loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, nullptr);
+
+    /* No device-wide config: stay off. Masking is a decision about what the
+     * stream is allowed to show, and a device that was never configured must
+     * not start hiding parts of its own video on its own initiative. */
+    if (!cfg.present) cfg.enabled = false;
+
+    g_face_blur = new privacy_blur::PrivacyBlur();
+    if (!g_face_blur->init(cfg, g_config.stream_width, g_config.stream_height)) {
+        MA_LOGE(TAG, "Failed to initialize face blur");
+        delete g_face_blur;
+        g_face_blur = nullptr;
+        g_config.enable_blur = false;
+        return false;
+    }
+    MA_LOGI(TAG, "Face blur ready (backend=%s, enabled=%d)",
+            cfg.backend.c_str(), (int)cfg.enabled);
     return true;
 }
 
@@ -311,6 +346,7 @@ static bool init_mqtt() {
 }
 
 static void cleanup() {
+    if (g_face_blur) { g_face_blur->deinit(); delete g_face_blur; g_face_blur = nullptr; }
     if (g_camera) g_camera->stopStream();
 
     if (g_config.enable_debug) debug_stream_destroy();
@@ -472,12 +508,66 @@ static void process_frame() {
             snapshot_rgb = wrap.clone();
             have_snapshot = true;
         }
-    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
-    // unless a snapshot client asked recently; must precede returnFrame(),
-    // after which frame.data is invalid. Raw, not annotated: the video path
-    // is unannotated too and overlays are drawn client-side.
-    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
+    }
 
+    // Feed detections to the privacy mask, before returnFrame(): the pixelating
+    // backend averages the pixels it hides and frame.data is invalid after the
+    // frame goes back.
+    //
+    // FaceInfo is normalised against the inference frame (4:3) while the mask
+    // is applied on the stream (16:9), and the two carry different letterbox
+    // offsets, so the boxes are converted with the same helper the console
+    // overlay uses rather than handed over as they are.
+    if (g_config.enable_blur && g_face_blur) {
+        std::vector<debug_stream_box_t> px;
+        px.reserve(faces.size());
+        for (const auto& f : faces) {
+            px.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
+                          (f.y + f.h * 0.5f) * g_config.inference_height,
+                          f.w * g_config.inference_width,
+                          f.h * g_config.inference_height,
+                          f.score, std::string()});
+        }
+        debug_stream_letterbox_to_display(px, g_config.inference_width, g_config.inference_height,
+                                          g_config.stream_width, g_config.stream_height);
+        std::vector<privacy_blur::BlurBox> blur_boxes;
+        blur_boxes.reserve(px.size());
+        for (const auto& b : px) {
+            blur_boxes.push_back({b.x / g_config.stream_width, b.y / g_config.stream_height,
+                                  b.w / g_config.stream_width, b.h / g_config.stream_height,
+                                  b.score});
+        }
+        g_face_blur->onDetection(blur_boxes, &frame);
+    }
+
+    // Offer the frame for /snapshot.jpg. Returns after one atomic load unless a
+    // snapshot client asked recently; must precede returnFrame(), after which
+    // frame.data is invalid. Unannotated: the video path is unannotated too and
+    // overlays are drawn client-side.
+    //
+    // Outside the Home Assistant block above, where it used to sit. In there it
+    // only ran when HA was switched on AND a face with valid metrics was in
+    // shot, so on an ordinary device /snapshot.jpg served whatever frame had
+    // last satisfied those conditions -- and that URL is what ONVIF advertises
+    // as GetSnapshotUri.
+    //
+    // The mask has to be reapplied here in software: the RGN mask lives in the
+    // VPSS->VENC path and never touches this buffer, so an unmasked still would
+    // otherwise be available from a device whose video stream is masked. The
+    // detections are used unconverted -- FaceInfo is normalised against this
+    // exact frame.
+    if (debug_stream_snapshot_armed()) {
+        if (g_config.enable_blur && g_face_blur != nullptr && g_face_blur->enabled() &&
+            !faces.empty()) {
+            std::vector<privacy_blur::BlurBox> snap_boxes;
+            snap_boxes.reserve(faces.size());
+            for (const auto& f : faces) {
+                snap_boxes.push_back({f.x + f.w * 0.5f, f.y + f.h * 0.5f, f.w, f.h, f.score});
+            }
+            privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes,
+                                         g_face_blur->blockPx());
+        }
+        debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
     }
 
     g_camera->returnFrame(frame);
@@ -595,6 +685,12 @@ int main(int argc, char** argv) {
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
     if (g_config.enable_rtsp) startVideo();
+
+    // After the video pipeline, like the other applications: RGN attaches to a
+    // running VPSS channel and silently does nothing if it is not up yet.
+    if (!init_blur()) {
+        MA_LOGW(TAG, "continuing without privacy blur");
+    }
 
     // ONVIF discovery + Device/Media2 services. After startVideo() on purpose:
     // GetProfiles and GetStreamUri are answered from the running RTSP server's

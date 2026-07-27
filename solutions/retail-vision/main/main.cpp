@@ -22,9 +22,12 @@
 #include "zone_metrics.h"
 #include "mqtt_payload.h"
 #include "app_config.h"
+#include "privacy_blur.h"
 
 using namespace ma;
 using namespace retail_vision;
+using privacy_blur::PrivacyBlur;
+using privacy_blur::PrivacyBlurConfig;
 
 #define TAG "retail-vision"
 
@@ -91,6 +94,11 @@ static ZoneMetrics* g_zone_metrics = nullptr;
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
+/* Privacy mask over the people this application tracks. Null unless
+ * /userdata/local/blur.conf switches it on: analytics is the product here and
+ * masking is a deployment decision, so a store that never asked for it gets an
+ * unaltered stream. */
+static PrivacyBlur* g_privacy_blur = nullptr;
 static std::chrono::steady_clock::time_point g_start_time;
 
 // FPS tracking
@@ -457,7 +465,41 @@ static bool init_mqtt() {
     return true;
 }
 
+static bool init_blur() {
+    PrivacyBlurConfig cfg;
+    loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, nullptr);
+    if (!cfg.enabled) {
+        MA_LOGI(TAG, "Privacy blur off (no %s or BLUR_ENABLED=0)",
+                privacy_blur::PRIVACY_BLUR_CONFIG_PATH);
+        return true;
+    }
+    if (!g_config.enable_rtsp) {
+        // The mask lives in the RGN unit on the encoder's VPSS channel, so with
+        // no stream there is nothing to mask.
+        MA_LOGW(TAG, "Privacy blur needs RTSP streaming, skipping");
+        return true;
+    }
+
+    g_privacy_blur = new PrivacyBlur();
+    if (!g_privacy_blur->init(cfg, g_config.stream_width, g_config.stream_height)) {
+        MA_LOGE(TAG, "Failed to initialize privacy blur");
+        delete g_privacy_blur;
+        g_privacy_blur = nullptr;
+        return false;
+    }
+
+    MA_LOGI(TAG, "Privacy blur enabled (backend=%s, max_regions=%d)",
+            cfg.backend.c_str(), cfg.max_regions);
+    return true;
+}
+
 static void cleanup() {
+    if (g_privacy_blur) {
+        g_privacy_blur->deinit();
+        delete g_privacy_blur;
+        g_privacy_blur = nullptr;
+    }
+
     if (g_camera) {
         g_camera->stopStream();
     }
@@ -521,6 +563,20 @@ static void process_frame() {
 
     // Detect
     auto detections = g_detector->detect(&frame);
+
+    // Mask the people before the frame goes back to the camera: the pixelating
+    // backend averages the pixels it is about to hide, and frame.data is
+    // invalid after returnFrame(). Fed from the raw detections rather than the
+    // tracker output so a person is masked on the frame they first appear,
+    // without waiting for the track to be confirmed.
+    if (g_privacy_blur) {
+        std::vector<privacy_blur::BlurBox> blur_boxes;
+        blur_boxes.reserve(detections.size());
+        for (const auto& d : detections) {
+            blur_boxes.push_back({d.x, d.y, d.w, d.h, d.score});
+        }
+        g_privacy_blur->onDetection(blur_boxes, &frame);
+    }
 
     g_camera->returnFrame(frame);
 
@@ -637,6 +693,13 @@ int main(int argc, char** argv) {
     if (!init_mqtt())     { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
+
+    // Privacy blur after the video pipeline is up: RGN regions attach to a live
+    // VPSS channel. Non-fatal, because unmasked analytics still beats no
+    // analytics.
+    if (!init_blur()) {
+        MA_LOGW(TAG, "Privacy blur initialization failed, continuing without it");
+    }
 
     // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
     // purpose: GetProfiles and GetStreamUri are answered from the running RTSP

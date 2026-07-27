@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <vector>
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -11,11 +13,13 @@
 #include "rtsp_server.h"
 
 #include "detector.h"
-#include "region_blur.h"
+#include "privacy_blur.h"
 #include "mqtt_publisher.h"
 
 using namespace ma;
 using namespace detection_blur;
+using privacy_blur::PrivacyBlur;
+using privacy_blur::PrivacyBlurConfig;
 
 #define TAG "detection-blur"
 
@@ -55,10 +59,25 @@ static struct {
 // Global state
 static std::atomic<bool> g_running(true);
 static Detector* g_detector = nullptr;
-static RegionBlur* g_region_blur = nullptr;
+/*
+ * Atomic because the SIGUSR1 handler below reads it. A signal can arrive on any
+ * thread at any point, including while init_blur() is still assigning it.
+ */
+static std::atomic<PrivacyBlur*> g_privacy_blur{nullptr};
 static MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
+
+/*
+ * Live blur toggle. Restarting the application to compare masked against
+ * unmasked output changes the scene between the two captures, which is exactly
+ * what you need held constant to judge a mask. SIGUSR1 flips it in place.
+ */
+static void blur_toggle_handler(int sig) {
+    (void)sig;
+    PrivacyBlur* b = g_privacy_blur.load();
+    if (b) b->setEnabled(!b->enabled());
+}
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -273,28 +292,36 @@ static bool init_blur() {
         return true;
     }
 
-    g_region_blur = new RegionBlur();
-    g_region_blur->setMaxRegions(g_config.max_regions);
-    if (!g_config.targets.empty()) {
-        g_region_blur->setTargets(g_config.targets);
-    }
+    PrivacyBlurConfig cfg;
+    std::string err;
+    loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, &err);
 
-    if (!g_region_blur->init(g_config.stream_width, g_config.stream_height)) {
-        MA_LOGE(TAG, "Failed to initialize region blur");
-        delete g_region_blur;
-        g_region_blur = nullptr;
+    /* The component defaults to off, which is right for an application that
+     * merely happens to be able to mask. This one exists to demonstrate
+     * masking, so with no device-wide config to honour it starts masking. */
+    if (!cfg.present) cfg.enabled = true;
+
+    // The command line still wins, so --no-blur means no blur whatever the
+    // console last wrote.
+    cfg.max_regions = g_config.max_regions;
+
+    PrivacyBlur* blur = new PrivacyBlur();
+    if (!blur->init(cfg, g_config.stream_width, g_config.stream_height)) {
+        MA_LOGE(TAG, "Failed to initialize privacy blur");
+        delete blur;
         return false;
     }
+    g_privacy_blur.store(blur);
 
-    MA_LOGI(TAG, "Region blur enabled (max_regions=%d)", g_config.max_regions);
+    MA_LOGI(TAG, "Privacy blur ready (backend=%s, max_regions=%d, enabled=%d)",
+            cfg.backend.c_str(), cfg.max_regions, (int)cfg.enabled);
     return true;
 }
 
 static void cleanup() {
-    if (g_region_blur) {
-        g_region_blur->deinit();
-        delete g_region_blur;
-        g_region_blur = nullptr;
+    if (PrivacyBlur* blur = g_privacy_blur.exchange(nullptr)) {
+        blur->deinit();
+        delete blur;
     }
 
     if (g_camera) {
@@ -335,6 +362,25 @@ static void process_frame() {
     // Step 1: Run object detection
     std::vector<DetectionBox> detections = g_detector->detect(&frame);
 
+    // Blur before returning the frame: the pixelating backend averages the
+    // pixels it is about to hide, so it needs the frame still in hand.
+    if (PrivacyBlur* blur = g_privacy_blur.load()) {
+        /* Class filtering happens here rather than inside the component: which
+         * classes are worth hiding is this application's judgement, and --targets
+         * deliberately does not narrow what MQTT reports. */
+        std::vector<privacy_blur::BlurBox> boxes;
+        boxes.reserve(detections.size());
+        for (const auto& det : detections) {
+            if (!g_config.targets.empty() &&
+                std::find(g_config.targets.begin(), g_config.targets.end(), det.target)
+                    == g_config.targets.end()) {
+                continue;
+            }
+            boxes.push_back({det.x, det.y, det.w, det.h, det.score});
+        }
+        blur->onDetection(boxes, &frame);
+    }
+
     // Return frame to camera
     g_camera->returnFrame(frame);
 
@@ -342,11 +388,6 @@ static void process_frame() {
     auto inference_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time
     ).count();
-
-    // Step 2: Feed detections to blur overlay
-    if (g_config.enable_blur && g_region_blur) {
-        g_region_blur->onDetection(detections);
-    }
 
     // Step 3: Publish results via MQTT
     if (g_config.enable_mqtt && g_mqtt_publisher) {
@@ -389,6 +430,7 @@ int main(int argc, char** argv) {
 
     // Install signal handlers
     signal(SIGINT, signal_handler);
+    signal(SIGUSR1, blur_toggle_handler);
     signal(SIGTERM, signal_handler);
 
     // Initialize components
