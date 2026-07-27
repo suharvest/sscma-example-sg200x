@@ -50,6 +50,13 @@ export interface IAppManifest {
   rtsp_url?: string; // may contain "{host}" placeholder
   mqtt_topic?: string;
   debug_ws?: IDebugWsInfo;
+  /**
+   * Does this app apply the device-wide privacy mask? Gates the masking
+   * shortcut on the debug page — the setting is device-wide, but offering it
+   * beside a stream that ignores it makes the switch look broken. The backend
+   * normalizes this to a bool (absent = false).
+   */
+  privacy_blur?: boolean;
   /** Switchable alternative models (mutually exclusive, setModel target). */
   models?: IAppModel[];
   /**

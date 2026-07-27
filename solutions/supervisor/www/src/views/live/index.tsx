@@ -937,10 +937,16 @@ const Live = () => {
                               second setting: an operator watching this stream is
                               exactly who notices the mask is wrong, and sending
                               them to the Device page to fix it loses the view
-                              they were judging it by. Same blur.conf, same API.
-                              Flipping it restarts the application, so the stream
-                              drops and reconnects -- said plainly below rather
-                              than left to look like a stall. */}
+                              they were judging it by. Same blur.conf, same API,
+                              applied live -- neither the switch nor the slider
+                              restarts anything.
+
+                              Shown only for apps that declare privacy_blur in
+                              their manifest. The setting is device-wide, but an
+                              app that does not mask would leave this switch
+                              changing nothing on the picture right above it. */}
+                          {!!app.privacy_blur && (
+                          <>
                           <div className="flex items-center justify-between gap-12 mt-16 pt-16 border-t border-line">
                             <div>
                               <div className="text-14 font-medium">
@@ -987,6 +993,8 @@ const Live = () => {
                                 {t("live.privacyBlurAlphaHint")}
                               </div>
                             </div>
+                          )}
+                          </>
                           )}
                           {!!app.models && app.models.length >= 2 && (
                             <div className="mt-16 pt-16 border-t border-line">

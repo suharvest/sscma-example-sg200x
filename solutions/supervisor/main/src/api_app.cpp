@@ -287,6 +287,14 @@ json api_app::load_manifest_file(const std::string& path)
     if (m.contains("pipeline") && !m["pipeline"].is_array()) {
         m.erase("pipeline");
     }
+    // Does this app apply the device-wide privacy mask? The masking setting
+    // itself is device-wide, but the shortcut for it only belongs on apps that
+    // honour it -- a switch offered next to a stream it cannot change is worse
+    // than no switch at all. Normalized to a bool, defaulting to false: an app
+    // that does not say so does not mask.
+    m["privacy_blur"] = m.contains("privacy_blur") && m["privacy_blur"].is_boolean()
+                            ? m["privacy_blur"].get<bool>()
+                            : false;
     // Optional hardware dependencies (P5-A): requires = ["gimbal", ...].
     // Keys are validated against the capability whitelist; unknown keys are
     // dropped with a warning (forward compatibility: an app written for a
