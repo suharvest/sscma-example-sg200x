@@ -522,8 +522,14 @@ static void process_frame() {
         std::vector<debug_stream_box_t> px;
         px.reserve(faces.size());
         for (const auto& f : faces) {
-            px.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
-                          (f.y + f.h * 0.5f) * g_config.inference_height,
+            // FaceInfo.x/y is already the box CENTER -- same as the overlay
+            // path above, and for the same reason: face_detector.cpp passes the
+            // model's center xy straight through. Adding w/2 here put the mask
+            // half a box down and to the right of the face it was meant to
+            // cover, which on a stream is not a cosmetic offset: the face stays
+            // visible and something else gets pixelated.
+            px.push_back({f.x * g_config.inference_width,
+                          f.y * g_config.inference_height,
                           f.w * g_config.inference_width,
                           f.h * g_config.inference_height,
                           f.score, std::string()});
@@ -562,7 +568,8 @@ static void process_frame() {
             std::vector<privacy_blur::BlurBox> snap_boxes;
             snap_boxes.reserve(faces.size());
             for (const auto& f : faces) {
-                snap_boxes.push_back({f.x + f.w * 0.5f, f.y + f.h * 0.5f, f.w, f.h, f.score});
+                // Center already, as above -- BlurBox wants a center too.
+                snap_boxes.push_back({f.x, f.y, f.w, f.h, f.score});
             }
             privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes,
                                          g_face_blur->blockPx());
