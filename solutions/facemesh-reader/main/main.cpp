@@ -519,31 +519,20 @@ static void process_frame() {
     // offsets, so the boxes are converted with the same helper the console
     // overlay uses rather than handed over as they are.
     if (g_config.enable_blur && g_face_blur) {
-        std::vector<debug_stream_box_t> px;
-        px.reserve(faces.size());
+        // fromCenter, not fromCorner: face_detector.cpp passes the model's
+        // center xy straight through. This one line is the only place in the
+        // application that has to know that, and naming it is what stops the
+        // next person from adding w/2 -- which put the mask half a box down and
+        // to the right of the face, leaving the face itself visible.
+        std::vector<geometry::InferBox> boxes;
+        boxes.reserve(faces.size());
         for (const auto& f : faces) {
-            // FaceInfo.x/y is already the box CENTER -- same as the overlay
-            // path above, and for the same reason: face_detector.cpp passes the
-            // model's center xy straight through. Adding w/2 here put the mask
-            // half a box down and to the right of the face it was meant to
-            // cover, which on a stream is not a cosmetic offset: the face stays
-            // visible and something else gets pixelated.
-            px.push_back({f.x * g_config.inference_width,
-                          f.y * g_config.inference_height,
-                          f.w * g_config.inference_width,
-                          f.h * g_config.inference_height,
-                          f.score, std::string()});
+            boxes.push_back(geometry::InferBox::fromCenter(f.x, f.y, f.w, f.h, f.score));
         }
-        debug_stream_letterbox_to_display(px, g_config.inference_width, g_config.inference_height,
-                                          g_config.stream_width, g_config.stream_height);
-        std::vector<privacy_blur::BlurBox> blur_boxes;
-        blur_boxes.reserve(px.size());
-        for (const auto& b : px) {
-            blur_boxes.push_back({b.x / g_config.stream_width, b.y / g_config.stream_height,
-                                  b.w / g_config.stream_width, b.h / g_config.stream_height,
-                                  b.score});
-        }
-        g_face_blur->onDetection(blur_boxes, &frame);
+        g_face_blur->onDetection(
+            geometry::toStream(boxes, g_config.inference_width, g_config.inference_height,
+                               g_config.stream_width, g_config.stream_height),
+            &frame);
     }
 
     // Offer the frame for /snapshot.jpg. Returns after one atomic load unless a
@@ -565,11 +554,12 @@ static void process_frame() {
     if (debug_stream_snapshot_armed()) {
         if (g_config.enable_blur && g_face_blur != nullptr && g_face_blur->enabled() &&
             !faces.empty()) {
-            std::vector<privacy_blur::BlurBox> snap_boxes;
+            // InferBox, unconverted: the snapshot IS the inference frame, so
+            // these are already normalised against the buffer being pixelated.
+            std::vector<geometry::InferBox> snap_boxes;
             snap_boxes.reserve(faces.size());
             for (const auto& f : faces) {
-                // Center already, as above -- BlurBox wants a center too.
-                snap_boxes.push_back({f.x, f.y, f.w, f.h, f.score});
+                snap_boxes.push_back(geometry::InferBox::fromCenter(f.x, f.y, f.w, f.h, f.score));
             }
             privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes,
                                          g_face_blur->blockPx());

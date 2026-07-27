@@ -62,11 +62,10 @@ beta_h = (sh << 16) / dh;
 | 0.50 | 360 px | 640 |
 
 恒为 16/9，绝对值恰好 `h_norm × stream_width`。改成直接用 `stream_w/h`、offset 归零后三档精确吻合。
-**detection-blur 也受影响**（待办 #10 未复查）。
+**detection-blur 与 retail-vision 同样受影响，已修**（见第九节）。
 
-**契约**：`BlurBox` 是**相对输出流**的归一化中心坐标。调用方若检测帧形状与流不同，
-**必须自己先转** —— 只有调用方知道检测跑在什么帧上，在组件里猜就是这个 bug 的来历。
-face-analysis / facemesh-reader 用 `debug_stream_letterbox_to_display()` 转（与叠加框共用实现）。
+**契约**：遮罩收的是**相对输出流**的归一化中心坐标。这个契约现在由类型强制
+（`geometry::StreamBox`，见第九节），不再靠调用方记得。
 
 ### 3. 内核「整格填充」是错的（已回退）
 
@@ -175,7 +174,9 @@ applyRegions:  设置区域显示属性 → query 布局 → 填表 → 上传
 - 残影修复（被 P0 掩盖，见上）
 - 调试页快捷开关的**浏览器交互**（只验了后端 API 与编译）
 - 驱动部署/还原**按钮**（API 通了，按钮没点过）
-- retail-vision / detection-blur / facemesh-reader 的遮罩（只有 face-analysis 真验过）
+- retail-vision / detection-blur 的遮罩位置（代码已修，真机未看）
+- facemesh-reader 的半框偏移修复（已部署，用户正在验）
+- `geometry` 类型化之后的五个应用（**全部只编译过，一个都没上真机**）
 
 ---
 
@@ -210,7 +211,8 @@ applyRegions:  设置区域显示属性 → query 布局 → 填表 → 上传
 - **必须从 fork 编，不是从 SDK 树** —— 见 `docs/kernel-build.md`（vermagic 陷阱、只读根分区、防分叉检查）
 - `scripts/check-osdrv-sync.sh` 查两棵树是否分叉
 
-**应用侧**（全部未提交）
+**应用侧**
+- `components/geometry/` —— **坐标语义的类型化，先读这个**（见下节九）
 - `components/privacy_blur/` —— 三后端 + 硬件探测 + 按面积截断 + 自适应块 + 配置热重载
 - `components/debug_stream/` —— letterbox 正/逆变换（一份实现，两个方向）
 - `solutions/blur-probe/` —— 验证工具
@@ -236,3 +238,66 @@ applyRegions:  设置区域显示属性 → query 布局 → 填表 → 上传
 - 本机 scratchpad 另有一份驱动备份
 
 **换驱动出问题就从 `/userdata/ko-backup/` 还原 + 重启。**
+
+---
+
+## 九、坐标语义进类型（`components/geometry/`）
+
+**这一节是为了让这类 bug 不再出现，写清楚代价和边界。**
+
+### 起因
+
+一个下午翻出两个同族 bug，都是「四个 float 说不清自己是什么」：
+
+| bug | 现象 | 真实后果 |
+|---|---|---|
+| retail-vision / detection-blur 直接把推理帧坐标喂给遮罩 | 遮罩只有该有高度的 3/4，往画面中心收 | 靠近上下边缘的人露脸 |
+| facemesh-reader 对已是中心的 `FaceInfo` 又加了 `w/2` | 遮罩右下偏半个框 | 脸完整露着，糊的是旁边 |
+
+两个都**不响**：截图里都像"打码功能正常"。而且两处**都有注释警告过**——
+facemesh 那条正确答案就写在同一文件上方十行。**注释不参与编译。**
+
+### 做法
+
+```cpp
+geometry::InferBox   // 相对推理通道归一化
+geometry::StreamBox  // 相对出流归一化
+```
+
+- 两者是**不同类型**（`NormBox<Frame>` 的两个实例），互不隐式转换
+- 没有聚合初始化，只能 `fromCenter()` / `fromCorner()` —— 逼你在**紧挨检测器**的那一行回答中心还是角
+- 跨参照系只有 `geometry::toStream()` 一条路
+- `PrivacyBlur::onDetection` 只收 `StreamBox`；`pixelateRgb888` 只收 `InferBox`（快照就是推理帧）
+
+上表两个 bug 因此都变成编译错误。实测：把 `vector<InferBox>` 传给收 `StreamBox` 的函数，
+报 `no known conversion`。`norm_box.cpp` 里有 `static_assert` 守着这几条性质，
+谁把两个类型"简化"成一个，构建就断。
+
+运行期零开销：还是五个 float，无虚函数。
+
+### 各应用的约定（**这是最容易搞错的地方**）
+
+| 应用 | 检测器输出 | 构造方式 |
+|---|---|---|
+| face-analysis | **左上角**（FaceDetector 统一归一化成角，因为属性分析要按角裁剪） | `fromCorner` |
+| facemesh-reader | **中心**（透传模型输出） | `fromCenter` |
+| retail-vision | 中心 | `fromCenter` |
+| detection-blur | 中心（sscma bbox） | `fromCenter` |
+| blur-probe | 直接写 stream 坐标，无检测器 | `StreamBox::fromCenter` |
+
+**face-analysis 是唯一的角制**，别照抄邻居。
+
+### 边界：类型没管住什么
+
+- **`debug_stream_box_t` 还是裸结构体**（像素单位、中心制）。叠加层那条路没有类型保护，
+  所以叠加层和遮罩仍可能各自漂移——今天 retail-vision 就是这么漂的。下一步该把它也纳进来。
+- **`Frame` 只有两个取值**。真出现第三种参照系（比如裁剪过的 ROI），得先加枚举值再加转换函数。
+- 类型能挡住"传错参照系"，**挡不住"检测器本身的约定被改了"**。谁改 `FaceDetector` 的归一化方式，
+  上表就得跟着改，编译器不会提醒。
+
+### 顺带修的构建系统 bug
+
+`cmake/macro.cmake` 加了 `if(TARGET x) return()`。`project.cmake` 的依赖解析是
+"扫一遍 + 把跳过的再扫一遍"，一个**被传递依赖拉进来、且字典序在依赖者之前**的组件
+（`geometry` < `privacy_blur`）会被重复 include，第二次 `add_library` 直接报
+"target already exists"。这不是 geometry 特有的，是任何新传递依赖都会踩的坑。

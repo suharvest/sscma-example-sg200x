@@ -20,4 +20,5 @@ component_register(
     INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/include"
     PRIVATE_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/src"
     PRIVATE_REQUIREDS rgn pthread
+    REQUIREDS geometry
 )

@@ -485,31 +485,20 @@ static void process_frame() {
          * repeating the arithmetic -- is what keeps the drawn box and the mask
          * from drifting apart later: they now derive from one implementation.
          */
-        std::vector<debug_stream_box_t> px;
-        px.reserve(faces.size());
+        /* fromCorner: face-analysis's FaceDetector normalises every model to
+         * the TOP-LEFT corner because the attribute analyzer crops from it --
+         * unlike facemesh-reader and yolo-detector, whose detectors pass the
+         * model's centre through. Naming the convention here is the whole
+         * point: this is the one line that knows, and it sits next to the
+         * detector that decided it. */
+        std::vector<geometry::InferBox> boxes;
+        boxes.reserve(faces.size());
         for (const auto& f : faces) {
-            /* FaceInfo carries the TOP-LEFT corner -- FaceDetector normalises
-             * every model to that because the attribute analyzer crops from it
-             * -- while BlurBox is centre-based like every other detector in the
-             * tree. Converting here rather than changing either convention: the
-             * cropping code downstream depends on top-left, and the component
-             * is shared with applications whose boxes are already centred. */
-            px.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
-                          (f.y + f.h * 0.5f) * g_config.inference_height,
-                          f.w * g_config.inference_width,
-                          f.h * g_config.inference_height,
-                          f.score, std::string()});
+            boxes.push_back(geometry::InferBox::fromCorner(f.x, f.y, f.w, f.h, f.score));
         }
-        debug_stream_letterbox_to_display(px, g_config.inference_width, g_config.inference_height,
-                                          g_config.stream_width, g_config.stream_height);
-
-        std::vector<privacy_blur::BlurBox> blur_boxes;
-        blur_boxes.reserve(px.size());
-        for (const auto& b : px) {
-            blur_boxes.push_back({b.x / g_config.stream_width, b.y / g_config.stream_height,
-                                  b.w / g_config.stream_width, b.h / g_config.stream_height,
-                                  b.score});
-        }
+        const auto stream_boxes =
+            geometry::toStream(boxes, g_config.inference_width, g_config.inference_height,
+                               g_config.stream_width, g_config.stream_height);
 
         /* Temporary: prints the raw detection next to what the mask is actually
          * asked to cover, so a misplaced mask can be read off the log instead of
@@ -518,14 +507,14 @@ static void process_frame() {
             for (size_t i = 0; i < faces.size(); ++i) {
                 MA_LOGI(TAG,
                         "blur-trace face[%zu] inf_norm(tl)=(%.3f,%.3f,%.3f,%.3f) -> "
-                        "disp_px(c)=(%.1f,%.1f,%.1f,%.1f) -> stream_norm(c)=(%.3f,%.3f,%.3f,%.3f)",
+                        "stream_norm(c)=(%.3f,%.3f,%.3f,%.3f)",
                         i, faces[i].x, faces[i].y, faces[i].w, faces[i].h,
-                        px[i].x, px[i].y, px[i].w, px[i].h,
-                        blur_boxes[i].x, blur_boxes[i].y, blur_boxes[i].w, blur_boxes[i].h);
+                        stream_boxes[i].cx, stream_boxes[i].cy,
+                        stream_boxes[i].w, stream_boxes[i].h);
             }
         }
 
-        g_face_blur->onDetection(blur_boxes, &frame);
+        g_face_blur->onDetection(stream_boxes, &frame);
     }
 
     // Step 3: Attribute analysis for each face
@@ -554,10 +543,13 @@ static void process_frame() {
     if (debug_stream_snapshot_armed()) {
         if (g_config.enable_blur && g_face_blur != nullptr && g_face_blur->enabled() &&
             !faces.empty()) {
-            std::vector<privacy_blur::BlurBox> snap_boxes;
+            /* InferBox, unconverted: the snapshot IS the inference frame,
+             * so these are already normalised against the buffer. Corner form
+             * again -- same detector, same convention. */
+            std::vector<geometry::InferBox> snap_boxes;
             snap_boxes.reserve(faces.size());
             for (const auto& f : faces) {
-                snap_boxes.push_back({f.x + f.w * 0.5f, f.y + f.h * 0.5f, f.w, f.h, f.score});
+                snap_boxes.push_back(geometry::InferBox::fromCorner(f.x, f.y, f.w, f.h, f.score));
             }
             privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes,
                                          g_face_blur->blockPx());

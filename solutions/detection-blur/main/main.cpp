@@ -368,7 +368,8 @@ static void process_frame() {
         /* Class filtering happens here rather than inside the component: which
          * classes are worth hiding is this application's judgement, and --targets
          * deliberately does not narrow what MQTT reports. */
-        std::vector<privacy_blur::BlurBox> boxes;
+        /* fromCenter: the sscma bbox is centre-based. */
+        std::vector<geometry::InferBox> boxes;
         boxes.reserve(detections.size());
         for (const auto& det : detections) {
             if (!g_config.targets.empty() &&
@@ -376,16 +377,12 @@ static void process_frame() {
                     == g_config.targets.end()) {
                 continue;
             }
-            boxes.push_back({det.x, det.y, det.w, det.h, det.score});
+            boxes.push_back(geometry::InferBox::fromCenter(det.x, det.y, det.w, det.h, det.score));
         }
-        /* Detections are normalised against the 4:3 inference channel, the mask
-         * lands on the 16:9 stream, and VPSS letterboxes the scene into each.
-         * Feeding one to the other leaves the mask 3/4 of the height it should
-         * be and pulled toward the middle of the frame. */
-        privacy_blur::letterboxToStream(boxes,
-                                        g_config.inference_width, g_config.inference_height,
-                                        g_config.stream_width, g_config.stream_height);
-        blur->onDetection(boxes, &frame);
+        blur->onDetection(
+            geometry::toStream(boxes, g_config.inference_width, g_config.inference_height,
+                               g_config.stream_width, g_config.stream_height),
+            &frame);
     }
 
     // Return frame to camera

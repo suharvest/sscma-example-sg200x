@@ -49,7 +49,10 @@
 #include "rtsp_server.h"
 
 using namespace ma;
-using privacy_blur::BlurBox;
+/* The probe's boxes are authored directly in stream coordinates -- that is the
+ * whole point of a probe: no detector, no frame conversion, just "put a mask
+ * exactly here" so anything misplaced on screen is the mask path's doing. */
+using geometry::StreamBox;
 using privacy_blur::PrivacyBlur;
 using privacy_blur::PrivacyBlurConfig;
 
@@ -71,7 +74,7 @@ struct Config {
      * mask needs more than one box: a lone rectangle gives no gap, and the gap
      * between two is the one edge in the picture whose position is unambiguous
      * (it renders as pure black, which the scene never produces). */
-    std::vector<BlurBox> explicit_boxes;
+    std::vector<StreamBox> explicit_boxes;
 
     int  debug_port  = 8001;
     bool mask_snapshot = true;
@@ -96,8 +99,8 @@ void onSignal(int) { g_running.store(false); }
  * the gap belong to neither rectangle and so are nobody's to fill. A single box
  * cannot show that failure at all.
  */
-std::vector<BlurBox> makeBoxes(unsigned frame) {
-    std::vector<BlurBox> v;
+std::vector<StreamBox> makeBoxes(unsigned frame) {
+    std::vector<StreamBox> v;
 
     if (!g_config.explicit_boxes.empty()) {
         return g_config.explicit_boxes;
@@ -105,24 +108,24 @@ std::vector<BlurBox> makeBoxes(unsigned frame) {
 
     const std::string& p = g_config.pattern;
     if (p == "one") {
-        v.push_back({0.5f, 0.5f, 0.25f, 0.25f, 1.0f});
+        v.push_back(StreamBox::fromCenter(0.5f, 0.5f, 0.25f, 0.25f, 1.0f));
     } else if (p == "two") {
-        v.push_back({0.30f, 0.5f, 0.18f, 0.25f, 1.0f});
-        v.push_back({0.70f, 0.5f, 0.18f, 0.25f, 1.0f});
+        v.push_back(StreamBox::fromCenter(0.30f, 0.5f, 0.18f, 0.25f, 1.0f));
+        v.push_back(StreamBox::fromCenter(0.70f, 0.5f, 0.18f, 0.25f, 1.0f));
     } else if (p == "grid") {
         /* Four corners plus the centre: catches an offset that only shows up
          * away from the middle, where a scale error and a correct mapping agree. */
-        v.push_back({0.20f, 0.25f, 0.14f, 0.18f, 1.0f});
-        v.push_back({0.80f, 0.25f, 0.14f, 0.18f, 1.0f});
-        v.push_back({0.20f, 0.75f, 0.14f, 0.18f, 1.0f});
-        v.push_back({0.80f, 0.75f, 0.14f, 0.18f, 1.0f});
-        v.push_back({0.50f, 0.50f, 0.14f, 0.18f, 1.0f});
+        v.push_back(StreamBox::fromCenter(0.20f, 0.25f, 0.14f, 0.18f, 1.0f));
+        v.push_back(StreamBox::fromCenter(0.80f, 0.25f, 0.14f, 0.18f, 1.0f));
+        v.push_back(StreamBox::fromCenter(0.20f, 0.75f, 0.14f, 0.18f, 1.0f));
+        v.push_back(StreamBox::fromCenter(0.80f, 0.75f, 0.14f, 0.18f, 1.0f));
+        v.push_back(StreamBox::fromCenter(0.50f, 0.50f, 0.14f, 0.18f, 1.0f));
     } else if (p == "sweep") {
         /* Moves so the tracker and the prediction thread are exercised: a mask
          * that is correct only while nothing moves is not much of a mask. */
         const float t  = (frame % 120) / 120.0f;
         const float cx = 0.15f + 0.70f * t;
-        v.push_back({cx, 0.5f, 0.18f, 0.25f, 1.0f});
+        v.push_back(StreamBox::fromCenter(cx, 0.5f, 0.18f, 0.25f, 1.0f));
     }
     return v;
 }
@@ -229,8 +232,8 @@ bool parseArgs(int argc, char** argv) {
             g_config.pattern = optarg;
             break;
         case 'b': {
-            BlurBox b;
-            if (sscanf(optarg, "%f,%f,%f,%f", &b.x, &b.y, &b.w, &b.h) != 4) {
+            StreamBox b;
+            if (sscanf(optarg, "%f,%f,%f,%f", &b.cx, &b.cy, &b.w, &b.h) != 4) {
                 fprintf(stderr, "--box wants cx,cy,w,h\n");
                 return false;
             }
@@ -294,21 +297,21 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        std::vector<BlurBox> boxes = makeBoxes(frame_id);
+        std::vector<StreamBox> boxes = makeBoxes(frame_id);
         g_blur->onDetection(boxes, &frame);
 
         /* Once a second, and only the first box: enough to confirm what was
          * asked for without burying the log the mask errors appear in. */
         if (g_config.log_boxes && !boxes.empty() &&
             (frame_id % (unsigned)(g_config.inference_fps > 0 ? g_config.inference_fps : 10)) == 0) {
-            const BlurBox& b = boxes[0];
-            const int left = (int)((b.x - b.w / 2.0f) * g_config.stream_width);
-            const int top  = (int)((b.y - b.h / 2.0f) * g_config.stream_height);
+            const StreamBox& b = boxes[0];
+            const int left = (int)(b.left() * g_config.stream_width);
+            const int top  = (int)(b.top() * g_config.stream_height);
             const int w    = (int)(b.w * g_config.stream_width);
             const int h    = (int)(b.h * g_config.stream_height);
             MA_LOGI(TAG, "frame %u: %zu box(es); box[0] norm(c)=(%.3f,%.3f,%.3f,%.3f) "
                          "expect px rect=(%d,%d %dx%d)",
-                    frame_id, boxes.size(), b.x, b.y, b.w, b.h, left, top, w, h);
+                    frame_id, boxes.size(), b.cx, b.cy, b.w, b.h, left, top, w, h);
         }
 
         /*
@@ -330,17 +333,22 @@ int main(int argc, char** argv) {
                 std::vector<debug_stream_box_t> px;
                 px.reserve(boxes.size());
                 for (const auto& b : boxes) {
-                    px.push_back({b.x * g_config.stream_width, b.y * g_config.stream_height,
+                    px.push_back({b.cx * g_config.stream_width, b.cy * g_config.stream_height,
                                   b.w * g_config.stream_width, b.h * g_config.stream_height,
                                   b.score, std::string()});
                 }
                 debug_stream_display_to_letterbox(px, frame.width, frame.height,
                                                   g_config.stream_width, g_config.stream_height);
-                std::vector<BlurBox> local;
+                /* InferBox: normalised against the snapshot buffer itself,
+                 * which is the inference frame -- not against the stream the
+                 * boxes were authored in. The conversion above is what moves
+                 * between the two. */
+                std::vector<geometry::InferBox> local;
                 local.reserve(px.size());
                 for (const auto& b : px) {
-                    local.push_back({b.x / frame.width, b.y / frame.height,
-                                     b.w / frame.width, b.h / frame.height, b.score});
+                    local.push_back(geometry::InferBox::fromCenter(
+                        b.x / frame.width, b.y / frame.height,
+                        b.w / frame.width, b.h / frame.height, b.score));
                 }
                 privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, local, 16);
             }

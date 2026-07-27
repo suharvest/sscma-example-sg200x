@@ -498,7 +498,7 @@ void PrivacyBlur::predictThreadEntry() {
 
 // ============ Detection callback ============
 
-void PrivacyBlur::onDetection(const std::vector<BlurBox>& detections,
+void PrivacyBlur::onDetection(const std::vector<geometry::StreamBox>& detections,
                               const ma_img_t* frame) {
     if (!initialized_ || !regions_inited_) return;
 
@@ -508,7 +508,12 @@ void PrivacyBlur::onDetection(const std::vector<BlurBox>& detections,
      * the tracker an empty set is what makes the existing masks disappear. */
     std::vector<BlurBox> input;
     if (enabled_.load()) {
-        input = detections;
+        /* The one place a StreamBox becomes the internal form. Same numbers,
+         * same order; the type check has already happened at the call site. */
+        input.reserve(detections.size());
+        for (const auto& d : detections) {
+            input.push_back({d.cx, d.cy, d.w, d.h, d.score});
+        }
         truncateToCapacity(input);
     }
 
@@ -1337,40 +1342,8 @@ bool PrivacyBlur::updateHwLut(const ma_img_t* frame, const std::vector<BlurBox>&
                             lut_.data(), (uint32_t)lut_.size()) == 0;
 }
 
-void letterboxToStream(std::vector<BlurBox>& boxes,
-                       int inference_w, int inference_h,
-                       int stream_w, int stream_h) {
-    if (boxes.empty()) return;
-    if (inference_w <= 0 || inference_h <= 0 || stream_w <= 0 || stream_h <= 0) return;
-
-    /* Where the scene actually sits inside the inference frame, as a fraction
-     * of that frame. Cross-multiply rather than divide so the aspect comparison
-     * is exact. */
-    float content_w = 1.0f, content_h = 1.0f;
-    float x_off = 0.0f, y_off = 0.0f;
-    const long long stream_vs_inf = (long long)stream_w * inference_h - (long long)stream_h * inference_w;
-    if (stream_vs_inf > 0) {
-        /* Stream is the wider shape -> bars top and bottom. */
-        content_h = ((float)inference_w * stream_h / stream_w) / (float)inference_h;
-        y_off     = (1.0f - content_h) * 0.5f;
-    } else if (stream_vs_inf < 0) {
-        /* Stream is the taller shape -> bars left and right. */
-        content_w = ((float)inference_h * stream_w / stream_h) / (float)inference_w;
-        x_off     = (1.0f - content_w) * 0.5f;
-    } else {
-        return;  /* Same shape: the two normalised frames are the same frame. */
-    }
-
-    for (auto& b : boxes) {
-        b.x = (b.x - x_off) / content_w;
-        b.y = (b.y - y_off) / content_h;
-        b.w = b.w / content_w;
-        b.h = b.h / content_h;
-    }
-}
-
 void pixelateRgb888(void* rgb888, int width, int height,
-                    const std::vector<BlurBox>& boxes, int block_px) {
+                    const std::vector<geometry::InferBox>& boxes, int block_px) {
     if (rgb888 == nullptr || width <= 0 || height <= 0 || boxes.empty()) return;
     if (block_px < 2) block_px = 2;
 
@@ -1381,10 +1354,10 @@ void pixelateRgb888(void* rgb888, int width, int height,
          * past the frame when the subject is half out of shot, and the part
          * that is still visible is exactly the part that has to be covered --
          * so clamp rather than skip. */
-        int left   = (int)((b.x - b.w * 0.5f) * width);
-        int top    = (int)((b.y - b.h * 0.5f) * height);
-        int right  = (int)((b.x + b.w * 0.5f) * width);
-        int bottom = (int)((b.y + b.h * 0.5f) * height);
+        int left   = (int)(b.left() * width);
+        int top    = (int)(b.top() * height);
+        int right  = (int)(b.right() * width);
+        int bottom = (int)(b.bottom() * height);
         if (left < 0) left = 0;
         if (top < 0) top = 0;
         if (right > width) right = width;
