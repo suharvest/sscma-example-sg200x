@@ -1,7 +1,7 @@
 #ifndef API_WIFI_H
 #define API_WIFI_H
 
-#include "../../components/mongoose/json.hpp"
+#include "json.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <map>

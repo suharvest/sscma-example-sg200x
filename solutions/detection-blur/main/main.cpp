@@ -8,7 +8,7 @@
 
 #include <sscma.h>
 #include <video.h>
-#include "rtsp_demo.h"
+#include "rtsp_server.h"
 
 #include "detector.h"
 #include "region_blur.h"

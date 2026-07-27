@@ -1,0 +1,5 @@
+# Build output of fetch_and_build.sh. Not vendored: the lws tree is ~68 MB with
+# a layered roles/plat/tls structure, unlike the single-file mongoose it
+# replaces. Treated the same way as the SDK and the toolchain -- external,
+# reproducible from a pinned version, not in the repository.
+prebuilt/

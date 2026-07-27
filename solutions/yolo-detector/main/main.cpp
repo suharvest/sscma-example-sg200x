@@ -11,7 +11,10 @@
 #include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
-#include "rtsp_demo.h"
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
+#include "rtsp_server.h"
 
 #include "detector.h"
 #include "person_tracker.h"
@@ -78,6 +81,28 @@ static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 static std::chrono::steady_clock::time_point g_start_time;
+
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
+
+// COCO class names carry more detail than ONVIF's object taxonomy, so collapse
+// them onto the tt:ObjectType spellings a VMS knows how to filter on. Anything
+// outside these groups passes through verbatim, which the schema allows:
+// tt:ClassDescriptor/Type is a free string, and a client that understands
+// "traffic light" is better served by the real label than by a wrong one.
+static std::string onvif_class_of(const std::string& label) {
+    if (label == "person") return "Human";
+    if (label == "bicycle") return "Bicycle";
+    if (label == "car" || label == "bus" || label == "truck" ||
+        label == "motorcycle" || label == "train" || label == "boat" ||
+        label == "airplane") return "Vehicle";
+    if (label == "cat" || label == "dog" || label == "bird" ||
+        label == "horse" || label == "sheep" || label == "cow" ||
+        label == "elephant" || label == "bear" || label == "zebra" ||
+        label == "giraffe") return "Animal";
+    return label;
+}
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -333,12 +358,22 @@ static bool init_mqtt() {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+    }
+
     return true;
 }
 
 static void cleanup() {
     if (g_camera) g_camera->stopStream();
     if (g_config.enable_debug) debug_stream_destroy();
+    onvif_service_stop();
     if (g_config.enable_rtsp) { deinitRtsp(); deinitVideo(); }
     if (g_mqtt_publisher) { g_mqtt_publisher->deinit(); delete g_mqtt_publisher; g_mqtt_publisher = nullptr; }
     if (g_tracker) { delete g_tracker; g_tracker = nullptr; }
@@ -366,6 +401,11 @@ static void process_frame() {
     // Run detection (ModelFactory auto-selects YOLO variant)
     std::vector<Detection> detections = g_detector->detect(&frame);
 
+    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
+    // unless a snapshot client asked recently; must precede returnFrame(),
+    // after which frame.data is invalid. Raw, not annotated: the video path
+    // is unannotated too and overlays are drawn client-side.
+    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
     g_camera->returnFrame(frame);
 
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -408,6 +448,28 @@ static void process_frame() {
                                               has_tracking ? &tracking : nullptr);
         g_mqtt_publisher->publishResultsJson(payload);
 
+        // Additionally publish the same detections in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/<app>/detections contract above is consumed by SenseCraft
+        // and does not change.
+        if (g_onvif_meta.take(timestamp_ms)) {
+            std::vector<onvif_box_t> ob;
+            ob.reserve(detections.size());
+            for (const auto& det : detections) {
+                ob.push_back({det.x * g_config.inference_width,
+                              det.y * g_config.inference_height,
+                              det.w * g_config.inference_width,
+                              det.h * g_config.inference_height,
+                              det.confidence, Detector::getClassName(det.class_id)});
+            }
+            g_mqtt_publisher->publishText(
+                g_onvif_meta.topic(),
+                onvif_meta_to_json(onvif_meta_from_boxes(
+                    timestamp_ms, "YoloDetector",
+                    g_config.inference_width, g_config.inference_height,
+                    ob, onvif_class_of)));
+        }
+
         if (g_config.verbose || !detections.empty()) {
             if (has_tracking) {
                 MA_LOGI(TAG, "Frame %u: %zu detections, %d active tracks, inference=%lldms",
@@ -446,6 +508,16 @@ int main(int argc, char** argv) {
     if (!init_mqtt()) { cleanup(); return 1; }
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
+
+    // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
+    // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
+    // server's session list, so bringing this up earlier advertises zero
+    // profiles and a VMS shows a camera with no video.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
+        onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    }
 
     MA_LOGI(TAG, "YOLO detector running...");
     MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");

@@ -13,5 +13,5 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS mongoose mosquitto ssl crypto cares
+    PRIVATE_REQUIREDS json libwebsockets mosquitto ssl crypto cares
 )

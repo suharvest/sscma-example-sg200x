@@ -47,6 +47,9 @@ private:
     static api_status_t getHaConfig(request_t req, response_t res);
     static api_status_t setHaConfig(request_t req, response_t res);
     static api_status_t testHaConnection(request_t req, response_t res);
+    // ONVIF integration (/userdata/local/onvif.conf, see onvif_config.h)
+    static api_status_t getOnvifConfig(request_t req, response_t res);
+    static api_status_t setOnvifConfig(request_t req, response_t res);
     // Camera picture orientation (/userdata/local/camera.conf, see
     // camera_config.h) + read-only focus assist (/tmp/camera_fv.json).
     static api_status_t getCameraConfig(request_t req, response_t res);

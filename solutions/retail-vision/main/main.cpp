@@ -8,11 +8,14 @@
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
-#include "ma_transport_rtsp.h"
+#include "rtsp_server.h"
 
 #include <sstream>
 
 #include <ha_mqtt.h>
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
 
 #include "detector.h"
 #include "person_tracker.h"
@@ -39,7 +42,12 @@ static struct {
 
     // RTSP
     int rtsp_port = 8554;
-    std::string rtsp_session = "live0";
+    // A PREFIX, not a full name: rtsp_server names session i "<prefix><i>", so
+    // the default "live" still yields "live0" exactly as before. Renamed from
+    // rtsp_session when this application moved off TransportRTSP, because
+    // silently reinterpreting the old field would have turned "live0" into
+    // "live00" for anyone passing it explicitly.
+    std::string rtsp_session_prefix = "live";
     std::string rtsp_user;
     std::string rtsp_pass;
 
@@ -82,7 +90,6 @@ static PersonTracker* g_tracker = nullptr;
 static ZoneMetrics* g_zone_metrics = nullptr;
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static Camera* g_camera = nullptr;
-static TransportRTSP* g_rtsp_transport = nullptr;
 static uint32_t g_frame_id = 0;
 static std::chrono::steady_clock::time_point g_start_time;
 
@@ -90,6 +97,10 @@ static std::chrono::steady_clock::time_point g_start_time;
 static float g_fps = 0.0f;
 static int g_fps_frame_count = 0;
 static std::chrono::steady_clock::time_point g_fps_last_time;
+
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -103,7 +114,7 @@ static void print_usage(const char* prog) {
     printf("  -m, --model PATH              Model path (default: %s)\n", g_config.model_path.c_str());
     printf("  -c, --conf-threshold FLOAT    Confidence threshold (default: %.2f)\n", g_config.conf_threshold);
     printf("  --rtsp-port PORT              RTSP server port (default: %d)\n", g_config.rtsp_port);
-    printf("  --rtsp-session NAME           RTSP session name (default: %s)\n", g_config.rtsp_session.c_str());
+    printf("  --rtsp-session PREFIX         RTSP session name prefix; session i is <PREFIX><i> (default: %s)\n", g_config.rtsp_session_prefix.c_str());
     printf("  --rtsp-user USER              RTSP auth username (default: none)\n");
     printf("  --rtsp-pass PASS              RTSP auth password (default: none)\n");
     printf("  --mqtt-host HOST              MQTT broker host (default: %s)\n", g_config.mqtt_host.c_str());
@@ -123,7 +134,7 @@ static void print_usage(const char* prog) {
     printf("  -v, --verbose                 Verbose logging\n");
     printf("  -h, --help                    Show this help\n");
     printf("\n");
-    printf("RTSP Stream: rtsp://<device_ip>:%d/%s\n", g_config.rtsp_port, g_config.rtsp_session.c_str());
+    printf("RTSP Stream: rtsp://<device_ip>:%d/%s0\n", g_config.rtsp_port, g_config.rtsp_session_prefix.c_str());
     printf("MQTT Topic:  %s\n", g_config.mqtt_topic.c_str());
 }
 
@@ -160,7 +171,7 @@ static bool parse_args(int argc, char** argv) {
             case 'm': g_config.model_path = optarg; break;
             case 'c': g_config.conf_threshold = std::stof(optarg); break;
             case 1:   g_config.rtsp_port = std::stoi(optarg); break;
-            case 2:   g_config.rtsp_session = optarg; break;
+            case 2:   g_config.rtsp_session_prefix = optarg; break;
             case 3:   g_config.rtsp_user = optarg; break;
             case 4:   g_config.rtsp_pass = optarg; break;
             case 5:   g_config.mqtt_host = optarg; break;
@@ -303,23 +314,6 @@ static bool init_camera() {
     return false;
 }
 
-static int rtspFrameCallback(void* pData, void* pArgs, void* pUserData) {
-    auto* transport = static_cast<TransportRTSP*>(pUserData);
-    if (!transport) return 0;
-
-    VENC_STREAM_S* pstStream = (VENC_STREAM_S*)pData;
-    if (!pstStream || pstStream->u32PackCount == 0) return 0;
-
-    for (CVI_U32 i = 0; i < pstStream->u32PackCount; i++) {
-        VENC_PACK_S* ppack = &pstStream->pstPack[i];
-        transport->send(
-            reinterpret_cast<const char*>(ppack->pu8Addr + ppack->u32Offset),
-            ppack->u32Len - ppack->u32Offset);
-    }
-
-    return 0;
-}
-
 static bool init_video_streaming() {
     if (!g_config.enable_rtsp) {
         MA_LOGI(TAG, "RTSP streaming disabled");
@@ -338,35 +332,39 @@ static bool init_video_streaming() {
     stream_param.fps = g_config.stream_fps;
     setupVideo(VIDEO_CH2, &stream_param);
 
-    g_rtsp_transport = new TransportRTSP();
-    TransportRTSP::Config rtsp_cfg = {
-        g_config.rtsp_port,
-        MA_PIXEL_FORMAT_H264,
-        MA_AUDIO_FORMAT_PCM,
-        16000, 1, 16,
-        g_config.rtsp_session,
-        g_config.rtsp_user,
-        g_config.rtsp_pass
-    };
-
-    ma_err_t err = g_rtsp_transport->init(&rtsp_cfg);
-    if (err != MA_OK) {
-        MA_LOGE(TAG, "Failed to initialize RTSP transport: %d", err);
-        delete g_rtsp_transport;
-        g_rtsp_transport = nullptr;
+    // rtsp_server rather than sscma-micro's TransportRTSP, which this
+    // application used until the streams it produced turned out to be
+    // undecodable. The old frame callback forwarded each VENC pack with its own
+    // send(), so the SPS, the PPS and the slice of one frame left as three
+    // separate RTP frames; a decoder then met a slice referencing a parameter
+    // set that was not part of its access unit and reported "non-existing PPS 0
+    // referenced" forever. rtsp_server writes all packs of a frame as one
+    // CVI_RTSP_DATA, which is what the other seven applications have always
+    // done. Moving over also lets ONVIF query the port and session name instead
+    // of being told them.
+    rtsp_server_config_t rtsp_cfg;
+    rtsp_server_config_init(&rtsp_cfg);
+    rtsp_cfg.port = g_config.rtsp_port;
+    rtsp_cfg.session_prefix = g_config.rtsp_session_prefix.c_str();
+    rtsp_cfg.username = g_config.rtsp_user.empty() ? nullptr : g_config.rtsp_user.c_str();
+    rtsp_cfg.password = g_config.rtsp_pass.empty() ? nullptr : g_config.rtsp_pass.c_str();
+    rtsp_cfg.ch_mask = (0x01 << VIDEO_CH2);
+    if (rtsp_server_start(&rtsp_cfg) != 0) {
+        MA_LOGE(TAG, "Failed to start RTSP server");
         return false;
     }
 
     // Debug stream registers its own consumer (idx 1); RTSP owns idx 0.
-    registerVideoFrameHandler(VIDEO_CH2, 0, rtspFrameCallback, g_rtsp_transport);
+    registerVideoFrameHandler(VIDEO_CH2, 0, rtsp_server_video_handler, nullptr);
 
-    std::string url = "rtsp://";
-    if (!g_config.rtsp_user.empty()) {
-        url += g_config.rtsp_user + ":" + g_config.rtsp_pass + "@";
+    // Asked of the server rather than assembled here. Hand-assembled URLs are
+    // how ":554" stayed wrong across eight applications.
+    char url[192];
+    if (rtsp_server_url(url, sizeof(url), "<device_ip>", 0) < 0) {
+        url[0] = '\0';
     }
-    url += "<device_ip>:" + std::to_string(g_config.rtsp_port) + "/" + g_config.rtsp_session;
     MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps) %s",
-            g_config.stream_width, g_config.stream_height, g_config.stream_fps, url.c_str());
+            g_config.stream_width, g_config.stream_height, g_config.stream_fps, url);
     return true;
 }
 
@@ -447,6 +445,15 @@ static bool init_mqtt() {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+    }
+
     return true;
 }
 
@@ -459,11 +466,9 @@ static void cleanup() {
         debug_stream_destroy();
     }
 
-    if (g_rtsp_transport) {
-        g_rtsp_transport->deInit();
-        delete g_rtsp_transport;
-        g_rtsp_transport = nullptr;
-    }
+    onvif_service_stop();
+
+    rtsp_server_stop();
 
     if (g_config.enable_rtsp) {
         deinitVideo();
@@ -556,6 +561,35 @@ static void process_frame() {
             g_config.stream_width, g_config.stream_height,
             g_detector->getInputWidth(), g_detector->getInputHeight());
         g_mqtt_publisher->publishResultsJson(payload);
+
+        // Additionally publish the same people in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/retail-vision/vision contract above is consumed by
+        // SenseCraft and does not change.
+        //
+        // Filled object by object rather than through onvif_meta_from_boxes so
+        // the tracker's stable track id becomes tt:Object/@ObjectId: that is
+        // what lets a VMS follow one shopper across frames instead of seeing a
+        // new object every time.
+        if (g_onvif_meta.take(timestamp_ms)) {
+            onvif_frame_t f;
+            f.utc_ms = timestamp_ms;
+            f.source = "RetailVision";
+            f.frame_w = g_config.inference_width;
+            f.frame_h = g_config.inference_height;
+            f.objects.reserve(tracked_persons.size());
+            for (const auto& p : tracked_persons) {
+                onvif_object_t o;
+                o.id = p.track_id;
+                o.cx = p.detection.x * g_config.inference_width;
+                o.cy = p.detection.y * g_config.inference_height;
+                o.w  = p.detection.w * g_config.inference_width;
+                o.h  = p.detection.h * g_config.inference_height;
+                o.classes.push_back({"Human", p.detection.score});
+                f.objects.push_back(std::move(o));
+            }
+            g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
+        }
     }
 
     // Log
@@ -604,8 +638,18 @@ int main(int argc, char** argv) {
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
+    // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
+    // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
+    // server, so bringing this up earlier advertises zero profiles and a VMS
+    // shows a camera with no video.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
+        onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    }
+
     MA_LOGI(TAG, "Retail Vision running...");
-    if (g_config.enable_rtsp) MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:%d/%s", g_config.rtsp_port, g_config.rtsp_session.c_str());
+    if (g_config.enable_rtsp) MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:%d/%s0", g_config.rtsp_port, g_config.rtsp_session_prefix.c_str());
     if (g_config.enable_mqtt) MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
 
     while (g_running.load()) {

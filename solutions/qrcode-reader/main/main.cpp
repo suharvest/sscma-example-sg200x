@@ -24,7 +24,10 @@
 #include <ha_mqtt.h>
 
 #include "mqtt_payload.h"
-#include "rtsp_demo.h"
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
+#include "rtsp_server.h"
 
 using namespace ma;
 
@@ -68,6 +71,10 @@ static struct quirc* g_qr = nullptr;
 static std::mutex g_qr_mutex;
 static std::atomic<uint64_t> g_frame_id{0};
 
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
+
 // ---------------------------------------------------------------------------
 // Letterbox mapping
 // ---------------------------------------------------------------------------
@@ -110,6 +117,7 @@ static void map_point_norm(float px, float py,
 static void cleanup() {
     if (g_camera) g_camera->stopStream();
     if (g_config.enable_debug) debug_stream_destroy();
+    onvif_service_stop();
     deinitVideo();
     deinitRtsp();
     if (g_mqtt_publisher) {
@@ -242,6 +250,54 @@ static void processQRCode(const ma_img_t& frame) {
         const std::string payload =
             qrcode_reader::buildResultJson(frame_id, qr_found, detect_ms, codes);
         g_mqtt_publisher->publishResultsJson(payload);
+
+        // Additionally publish the same codes in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/qrcode-reader/results contract above is consumed by
+        // SenseCraft and does not change.
+        //
+        // Filled object by object rather than through onvif_meta_from_boxes
+        // because ONVIF models a barcode first class (tt:BarcodeInfo): the
+        // payload belongs there, not in a vendor extension.
+        const uint64_t onvif_ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::system_clock::now().time_since_epoch())
+                                      .count();
+        if (g_onvif_meta.take(onvif_ts)) {
+            onvif_frame_t f;
+            f.utc_ms = onvif_ts;
+            f.source = "QrcodeReader";
+            // quirc gives corners in inference pixels, but map_point_norm() has
+            // already carried them into the display frame as [0,1]; denormalise
+            // against the stream geometry they were mapped to, not the
+            // inference geometry they came from.
+            f.frame_w = g_config.stream_width;
+            f.frame_h = g_config.stream_height;
+            f.objects.reserve(codes.size());
+            int next_id = 1;
+            for (const auto& c : codes) {
+                float min_x = c.points[0][0], max_x = c.points[0][0];
+                float min_y = c.points[0][1], max_y = c.points[0][1];
+                for (int p = 1; p < 4; ++p) {
+                    min_x = std::min(min_x, c.points[p][0]);
+                    max_x = std::max(max_x, c.points[p][0]);
+                    min_y = std::min(min_y, c.points[p][1]);
+                    max_y = std::max(max_y, c.points[p][1]);
+                }
+                onvif_object_t o;
+                o.id = next_id++;
+                o.cx = (min_x + max_x) * 0.5f * g_config.stream_width;
+                o.cy = (min_y + max_y) * 0.5f * g_config.stream_height;
+                o.w  = (max_x - min_x) * g_config.stream_width;
+                o.h  = (max_y - min_y) * g_config.stream_height;
+                // quirc reports a successful decode or nothing at all, so
+                // there is no score to report; 1.0 is the honest likelihood.
+                o.classes.push_back({"Barcode", 1.0f});
+                o.barcode_data = c.text;
+                o.barcode_type = "QRCode";
+                f.objects.push_back(std::move(o));
+            }
+            g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
+        }
     }
 
     if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
@@ -364,6 +420,15 @@ static bool init_mqtt() {
         return false;
     }
     std::printf("[OK] MQTT publishing topic=%s\n", g_config.mqtt_topic.c_str());
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        std::printf("[OK] ONVIF metadata topic=%s every %ums\n",
+                    g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+    }
+
     return true;
 }
 
@@ -416,6 +481,11 @@ static void process_frame() {
         return;
     }
     processQRCode(frame);
+    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
+    // unless a snapshot client asked recently; must precede returnFrame(),
+    // after which frame.data is invalid. Raw, not annotated: the video path
+    // is unannotated too and overlays are drawn client-side.
+    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
     g_camera->returnFrame(frame);
 }
 
@@ -462,6 +532,16 @@ int main(int argc, char* argv[]) {
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
     startVideo();
+
+    // ONVIF discovery + Device/Media2 services. After startVideo() on purpose:
+    // GetProfiles and GetStreamUri are answered from the running RTSP server's
+    // session list, so bringing this up earlier advertises zero profiles and a
+    // VMS shows a camera with no video.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? 8001 : 0) == 0 &&
+        onvif_service_soap_running()) {
+        std::printf("[OK] ONVIF service on port %d\n", g_onvif_meta.config().service_port);
+    }
 
     std::printf("[OK] qrcode reader running (inference %dx%d RGB888)\n",
                 g_config.camera_w, g_config.camera_h);

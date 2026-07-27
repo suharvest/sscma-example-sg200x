@@ -10,7 +10,10 @@
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
-#include "rtsp_demo.h"
+#include "onvif_meta.h"
+#include "onvif_meta_gate.h"
+#include "onvif_service_bringup.h"
+#include "rtsp_server.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -77,6 +80,10 @@ static uint32_t          g_frame_id      = 0;
 
 // Alert edge tracking shared between the local alert and the HA snapshot.
 static bool g_prev_alert = false;
+
+// ONVIF analytics metadata, off unless switched on in the console. The gate
+// owns the switch and the rate limit; when disabled it costs one bool test.
+static OnvifMetaGate g_onvif_meta;
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -291,6 +298,15 @@ static bool init_mqtt() {
         MA_LOGE(TAG, "Failed to initialize MQTT publisher");
         return false;
     }
+
+    // Rides the connection above rather than opening a second one; the switch
+    // lives in /userdata/local/onvif.conf, written by the console.
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+    }
+
     return true;
 }
 
@@ -298,6 +314,8 @@ static void cleanup() {
     if (g_camera) g_camera->stopStream();
 
     if (g_config.enable_debug) debug_stream_destroy();
+
+    onvif_service_stop();
 
     if (g_config.enable_rtsp) {
         deinitRtsp();
@@ -454,6 +472,12 @@ static void process_frame() {
             snapshot_rgb = wrap.clone();
             have_snapshot = true;
         }
+    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
+    // unless a snapshot client asked recently; must precede returnFrame(),
+    // after which frame.data is invalid. Raw, not annotated: the video path
+    // is unannotated too and overlays are drawn client-side.
+    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
+
     }
 
     g_camera->returnFrame(frame);
@@ -501,6 +525,31 @@ static void process_frame() {
                                               static_cast<float>(total_time),
                                               g_config.include_landmarks);
         g_mqtt_publisher->publishResultsJson(payload);
+
+        // Additionally publish the same faces in ONVIF's analytics
+        // representation, on its own topic and its own rate limit. The
+        // recamera/<app>/results contract above is consumed by SenseCraft and
+        // does not change. Only boxes and a class here; the drowsiness state
+        // has no ONVIF vocabulary and would need a vendor extension.
+        if (g_onvif_meta.take(timestamp_ms)) {
+            std::vector<onvif_box_t> ob;
+            ob.reserve(analyzed.size());
+            for (const auto& af : analyzed) {
+                const auto& f = af.face;
+                // FaceInfo.x/y is already the box centre (see the note in
+                // build_debug_results_json), which is what onvif_box_t wants.
+                ob.push_back({f.x * g_config.inference_width,
+                              f.y * g_config.inference_height,
+                              f.w * g_config.inference_width,
+                              f.h * g_config.inference_height,
+                              f.score, "HumanFace"});
+            }
+            g_mqtt_publisher->publishText(
+                g_onvif_meta.topic(),
+                onvif_meta_to_json(onvif_meta_from_boxes(
+                    timestamp_ms, "FacemeshReader",
+                    g_config.inference_width, g_config.inference_height, ob)));
+        }
     }
 
     if (g_config.verbose || !analyzed.empty()) {
@@ -546,6 +595,16 @@ int main(int argc, char** argv) {
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
     if (g_config.enable_rtsp) startVideo();
+
+    // ONVIF discovery + Device/Media2 services. After startVideo() on purpose:
+    // GetProfiles and GetStreamUri are answered from the running RTSP server's
+    // session list, so bringing this up earlier advertises zero profiles and a
+    // VMS shows a camera with no video.
+    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
+            "reCamera", g_config.enable_debug ? 8001 : 0) == 0 &&
+        onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    }
 
     MA_LOGI(TAG, "FaceMesh reader running...");
     MA_LOGI(TAG, "RTSP stream: rtsp://<device_ip>:554/live");

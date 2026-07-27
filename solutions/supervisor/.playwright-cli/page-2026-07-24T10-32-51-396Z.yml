@@ -1,0 +1,101 @@
+- generic [ref=e55]:
+  - generic [ref=e56]:
+    - generic [ref=e57]:
+      - generic [ref=e58]: reCamera
+      - generic "Language / 语言" [ref=e60]:
+        - generic [ref=e61] [cursor=pointer]: EN
+        - generic [ref=e62]: /
+        - generic [ref=e63] [cursor=pointer]: 中
+    - generic [ref=e64]: 192.168.42.1
+  - generic [ref=e65]:
+    - generic [ref=e66]:
+      - generic [ref=e67]:
+        - generic [ref=e68]: Console
+        - generic [ref=e69] [cursor=pointer]:
+          - img "appstore" [ref=e70]:
+            - img [ref=e71]
+          - generic [ref=e73]: Applications
+        - generic [ref=e74] [cursor=pointer]:
+          - img "play-square" [ref=e75]:
+            - img [ref=e76]
+          - generic [ref=e79]: Debug
+        - generic [ref=e80] [cursor=pointer]:
+          - img "control" [ref=e81]:
+            - img [ref=e82]
+          - generic [ref=e84]: Device
+      - generic [ref=e85]:
+        - generic [ref=e86]: Configuration
+        - generic [ref=e88] [cursor=pointer]: Files
+        - generic [ref=e90] [cursor=pointer]: Security
+        - generic [ref=e92] [cursor=pointer]: Network
+        - generic [ref=e93] [cursor=pointer]:
+          - img "api" [ref=e94]:
+            - img [ref=e95]
+          - generic [ref=e97]: Integrations
+      - generic [ref=e98]:
+        - generic [ref=e99]: System
+        - generic [ref=e101] [cursor=pointer]: Terminal
+        - generic [ref=e103] [cursor=pointer]: System
+    - generic [ref=e106]:
+      - generic [ref=e107]:
+        - generic [ref=e108]:
+          - generic [ref=e109]: Solution Console
+          - heading "Live Debug" [level=1] [ref=e110]
+        - button "reload Refresh" [ref=e111] [cursor=pointer]:
+          - img "reload" [ref=e113]:
+            - img [ref=e114]
+          - generic [ref=e116]: Refresh
+      - generic [ref=e118]:
+        - generic [ref=e120]:
+          - generic [ref=e121]: Drowsiness Detection
+          - generic [ref=e122]: Long-haul driving · Duty posts · Heavy machinery
+          - generic [ref=e123]: running
+        - generic [ref=e125]:
+          - generic [ref=e127]:
+            - generic [ref=e129]:
+              - img "video-camera" [ref=e130]:
+                - img [ref=e131]
+              - generic [ref=e133]: Debug stream is off. Toggle it on to preview the camera in the browser.
+            - generic [ref=e134]:
+              - button "swap" [ref=e135] [cursor=pointer]:
+                - img "swap" [ref=e136]:
+                  - img [ref=e137]
+              - button "swap" [ref=e139] [cursor=pointer]:
+                - img "swap" [ref=e140]:
+                  - img [ref=e141]
+              - button "sync" [ref=e143] [cursor=pointer]:
+                - img "sync" [ref=e144]:
+                  - img [ref=e145]
+              - button "aim" [ref=e148] [cursor=pointer]:
+                - img "aim" [ref=e149]:
+                  - img [ref=e150]
+          - generic [ref=e154]:
+            - generic [ref=e155]:
+              - button "expanded Debug Controls" [expanded] [ref=e156] [cursor=pointer]:
+                - img "expanded" [ref=e158]:
+                  - img [ref=e159]
+                - generic [ref=e161]: Debug Controls
+              - generic [ref=e163]:
+                - generic [ref=e164]:
+                  - generic [ref=e165]:
+                    - generic [ref=e166]: Debug stream
+                    - generic [ref=e167]: Taps H.264 from the device only while enabled — zero overhead when off.
+                  - switch [ref=e168] [cursor=pointer]
+                - generic [ref=e171]:
+                  - generic [ref=e172]:
+                    - generic [ref=e173]: Result overlay
+                    - generic [ref=e174]: Draw inference boxes over the video.
+                  - switch [checked] [disabled] [ref=e175]
+            - button "collapsed Endpoints" [ref=e179] [cursor=pointer]:
+              - img "collapsed" [ref=e181]:
+                - img [ref=e182]
+              - generic [ref=e184]: Endpoints
+            - button "collapsed Pipeline (fixed)" [ref=e186] [cursor=pointer]:
+              - img "collapsed" [ref=e188]:
+                - img [ref=e189]
+              - generic [ref=e191]: Pipeline (fixed)
+        - generic [ref=e192]:
+          - generic [ref=e193]:
+            - generic [ref=e194]: Recent Inference Messages
+            - generic [ref=e195]: live
+          - generic [ref=e196]: Enable the debug stream to see live inference results here.
