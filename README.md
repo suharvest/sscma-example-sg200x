@@ -61,7 +61,25 @@ cd sscma-example-sg200x
 git submodule update --init
 ```  
 
-### 2. Build the Application  
+### 2. Build libwebsockets (once per clone)  
+
+Solutions that serve HTTP or WebSocket — `supervisor` and anything using
+`debug_stream`, which is most of them — link a privately built libwebsockets.
+The build artefact is not tracked in git, so build it once after cloning:
+
+```bash
+components/libwebsockets/fetch_and_build.sh
+```  
+
+Run it with the riscv64 toolchain on `PATH` (inside the build container if you
+use one). Skipping it stops CMake with a message naming this script, so a fresh
+clone fails loudly rather than linking the wrong library.
+
+**Why private rather than the SDK's copy**: the SDK ships two different
+libwebsockets versions, and picking either up silently produces an ABI mismatch.
+The private build pins one version and puts its headers ahead of both.
+
+### 3. Build the Application  
 
 Navigate to the project directory and compile:  
 
@@ -73,7 +91,7 @@ cmake --build build
 
 If the build process completes successfully, the executable binary should be available in the `build` directory.  
 
-### 3. Package the Application  
+### 4. Package the Application  
 
 To prepare the application for distribution, package it using `cpack`:  
 
