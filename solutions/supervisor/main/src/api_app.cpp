@@ -1,6 +1,7 @@
 #include "api_app.h"
 
 #include "api_device.h"
+#include "blur_config.h"
 #include "camera_config.h"
 #include "config_schema.hpp"
 #include "ha_config.h"
@@ -124,6 +125,8 @@ api_app::api_app()
     REG_API(testHaConnection);
     REG_API(getOnvifConfig);
     REG_API(setOnvifConfig);
+    REG_API(getBlurConfig);
+    REG_API(setBlurConfig);
     REG_API(getCameraConfig);
     REG_API(setCameraConfig);
     REG_API(getFocusValue);
@@ -1761,6 +1764,185 @@ api_status_t api_app::setOnvifConfig(request_t req, response_t res)
     json data = json::object();
     data["restarted"] = true;
     data["note"] = "";
+
+    // Node-RED mode: the conf is persisted, but the C++ app stack is parked --
+    // never restart it (that would start a camera app under Node-RED's feet).
+    // The saved config takes effect when the device returns to console mode.
+    if (in_nodered_mode()) {
+        data["restarted"] = false;
+        data["note"] = "nodered_mode";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+
+    // Restart the active app (if any) so the new config takes effect.
+    json state = read_state();
+    std::string active = jstr(state, "active_app");
+    if (active.empty()) {
+        data["restarted"] = false;
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    json manifests = load_manifests();
+    if (!manifests.contains(active)) {
+        data["restarted"] = false;
+        data["note"] = "active app manifest missing, not restarted";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
+    return restart_after_change(manifests[active], active, data, g, res);
+}
+
+// --- Privacy blur ---
+
+namespace {
+
+json blur_conf_to_json(const blur_config::conf& c)
+{
+    json data = json::object();
+    data["enabled"] = c.enabled;
+    data["backend"] = c.backend;
+    data["block_px"] = c.block_px;
+    data["max_regions"] = c.max_regions;
+    data["alpha"] = c.alpha;
+    return data;
+}
+
+} // namespace
+
+// GET/POST /api/appMgr/getBlurConfig
+api_status_t api_app::getBlurConfig(request_t req, response_t res)
+{
+    response(res, 0, STR_OK, blur_conf_to_json(blur_config::load()));
+    return API_STATUS_OK;
+}
+
+// POST /api/appMgr/setBlurConfig
+// body: any subset of {enabled, backend, block_px, max_regions, alpha}. Every omitted
+// field keeps its stored value. Shares the app op busy gate (same level as
+// switchApp); after the atomic conf write the active app (if any) is restarted
+// so the new config takes effect. Reply data carries restarted + note.
+api_status_t api_app::setBlurConfig(request_t req, response_t res)
+{
+    auto&& body = parse_body(req);
+    if (!body.is_object()) {
+        response(res, -1, "Invalid body (JSON object required)");
+        return API_STATUS_OK;
+    }
+
+    blur_config::conf next = blur_config::load();
+
+    if (body.contains("enabled")) {
+        if (!body["enabled"].is_boolean()) {
+            response(res, -1, "Invalid enabled (boolean required)");
+            return API_STATUS_OK;
+        }
+        next.enabled = body["enabled"].get<bool>();
+    }
+
+    if (body.contains("backend")) {
+        if (!body["backend"].is_string() || !blur_config::valid_backend(body["backend"].get<std::string>())) {
+            response(res, -1, "Invalid backend (mosaic, coverex or pixelate required)");
+            return API_STATUS_OK;
+        }
+        next.backend = body["backend"].get<std::string>();
+    }
+
+    if (body.contains("block_px")) {
+        if (!body["block_px"].is_number_integer()) {
+            response(res, -1, "Invalid block_px (integer 8 or 16 required)");
+            return API_STATUS_OK;
+        }
+        next.block_px = body["block_px"].get<int>();
+    }
+    // Rejected rather than snapped to the nearest supported size: a console
+    // that echoed back a block size the hardware does not actually use would
+    // be lying to the user about how coarse their masking is.
+    if (!blur_config::valid_block_px(next.block_px)) {
+        response(res, -1, "Invalid block_px (integer 8 or 16 required)");
+        return API_STATUS_OK;
+    }
+
+    if (body.contains("max_regions")) {
+        if (!body["max_regions"].is_number_integer()) {
+            response(res, -1, "Invalid max_regions (integer 1-8 required)");
+            return API_STATUS_OK;
+        }
+        next.max_regions = body["max_regions"].get<int>();
+    }
+    // Same reasoning as the block size, with a privacy failure mode: silently
+    // lowering the ceiling would leave subjects unmasked while the console
+    // claimed they were covered.
+    if (!blur_config::valid_max_regions(next.max_regions)) {
+        response(res, -1, "Invalid max_regions (integer 1-8 required)");
+        return API_STATUS_OK;
+    }
+
+    if (body.contains("alpha")) {
+        if (!body["alpha"].is_number_integer()) {
+            response(res, -1, "Invalid alpha (integer 0-255 required)");
+            return API_STATUS_OK;
+        }
+        next.alpha = body["alpha"].get<int>();
+    }
+    // Out-of-range alpha is rejected instead of clamped, for the same reason a
+    // bad block size is: the console must never report a mask strength the
+    // device is not actually applying. Clamping would be especially misleading
+    // here because the direction matters -- a caller asking for 300 and
+    // silently getting 255 is harmless, but one asking for -1 and getting 0
+    // would end up with an invisible mask it believes is opaque.
+    if (!blur_config::valid_alpha(next.alpha)) {
+        response(res, -1, "Invalid alpha (integer 0-255 required)");
+        return API_STATUS_OK;
+    }
+
+    // Same busy level as switchApp: writing the conf and restarting the active
+    // app must not race a concurrent app operation.
+    op_guard g;
+    if (!acquire_op_or_busy(res, g)) {
+        return API_STATUS_OK;
+    }
+
+    // Which fields changed decides whether anything has to be restarted.
+    // Read before the write, obviously, and compared field by field rather than
+    // wholesale: an operator adjusting opacity while watching the stream should
+    // not have the stream taken away, and that is the only way they can judge
+    // whether the value is right.
+    const blur_config::conf prev = blur_config::load();
+    const bool cold_changed = prev.backend != next.backend ||
+                              prev.block_px != next.block_px ||
+                              prev.max_regions != next.max_regions;
+
+    if (!blur_config::save(next)) {
+        response(res, -1, "Failed to persist privacy blur config");
+        return API_STATUS_OK;
+    }
+
+    // Opacity is a kernel parameter the mask unit re-reads on every region
+    // update, so pushing it here makes it effective immediately -- even when no
+    // application is running to notice the file changed.
+    if (prev.alpha != next.alpha) {
+        FILE* f = ::fopen("/sys/module/cv181x_vpss/parameters/mask_alpha", "w");
+        if (f != nullptr) {
+            ::fprintf(f, "%d\n", next.alpha);
+            ::fclose(f);
+        }
+        // No error if absent: a stock kernel simply has no such parameter, and
+        // its mask is always fully opaque, which is the safe end to fail at.
+    }
+
+    json data = json::object();
+    data["restarted"] = true;
+    data["note"] = "";
+
+    // The application re-reads the switch, the opacity and the block cap from
+    // the conf file about once a second, so those need no restart at all.
+    if (!cold_changed) {
+        data["restarted"] = false;
+        data["note"] = "applied_live";
+        response(res, 0, STR_OK, data);
+        return API_STATUS_OK;
+    }
 
     // Node-RED mode: the conf is persisted, but the C++ app stack is parked --
     // never restart it (that would start a camera app under Node-RED's feet).

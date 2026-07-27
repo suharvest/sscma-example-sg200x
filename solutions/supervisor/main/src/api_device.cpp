@@ -1,5 +1,6 @@
 #include "api_device.h"
 #include "api_file.h"
+#include "blur_driver.h"
 #include <iterator>
 #include <algorithm>
 #include <numeric>
@@ -948,6 +949,112 @@ api_status_t api_device::getCapabilities(request_t req, response_t res)
             return API_STATUS_OK;
         },
         []() {},
+        res);
+}
+
+// --- Hardware masking driver ------------------------------------------------
+
+namespace {
+
+json blur_driver_status_to_json(const blur_driver::status& st)
+{
+    json data = json::object();
+    data["available"] = st.available;
+    data["installed"] = st.installed;
+    data["backup_present"] = st.backup_present;
+    data["reboot_required"] = st.reboot_required;
+    // Present only when the feature cannot be used, so the console can say why
+    // the buttons are disabled instead of just greying them out.
+    data["reason"] = st.reason;
+    data["kernel_release"] = st.kernel_release;
+    data["packaged_vermagic"] = st.packaged_vermagic;
+    return data;
+}
+
+} // namespace
+
+// GET /api/deviceMgr/getBlurDriverStatus
+// Hashes a few hundred kilobytes and reads two vermagic strings; fast enough
+// to answer on the poll thread and never cached, because install/restore can
+// change the answer at any moment.
+api_status_t api_device::getBlurDriverStatus(request_t req, response_t res)
+{
+    response(res, 0, STR_OK, blur_driver_status_to_json(blur_driver::probe()));
+    return API_STATUS_OK;
+}
+
+// POST /api/deviceMgr/installBlurDriver
+//
+// Replaces the stock cv181x_rgn/cv181x_vpss modules with the patched builds
+// shipped in this package, after backing the originals up. The vermagic is
+// checked before anything is written: a mismatched module cannot be loaded,
+// and a device that has one installed comes back from its next reboot without
+// a working camera.
+//
+// The device is deliberately NOT rebooted here. The modules are already in use
+// by the running kernel, so the change only takes effect on the next boot, and
+// choosing when that happens belongs to whoever is standing next to the camera.
+api_status_t api_device::installBlurDriver(request_t req, response_t res)
+{
+    if (!ko_try_acquire()) {
+        response(res, -2, "busy: a driver operation is already in progress");
+        return API_STATUS_OK;
+    }
+
+    // Copying a few megabytes across a remounted root blocks for long enough
+    // that it must not sit on the poll thread, which also serves the live view.
+    auto ok = std::make_shared<bool>(false);
+    auto err = std::make_shared<std::string>();
+    return submit_async(
+        [ok, err]() { *ok = blur_driver::install(*err); },
+        [ok, err](json& res) -> api_status_t {
+            if (!*ok) {
+                LOGE("installBlurDriver failed: %s", err->c_str());
+                response(res, -1, *err);
+                return API_STATUS_OK;
+            }
+            json data = blur_driver_status_to_json(blur_driver::probe());
+            data["installed"] = true;
+            data["reboot_required"] = true;
+            LOGI("installBlurDriver: patched modules installed, reboot required");
+            response(res, 0, STR_OK, data);
+            return API_STATUS_OK;
+        },
+        []() { ko_release(); },
+        res);
+}
+
+// POST /api/deviceMgr/restoreBlurDriver
+//
+// Puts the backed-up stock modules back. Without a backup this fails instead
+// of doing nothing quietly, because "restored" reported over a device that
+// still runs patched modules would send someone looking for the fault in the
+// wrong place. Also takes effect on the next boot only.
+api_status_t api_device::restoreBlurDriver(request_t req, response_t res)
+{
+    if (!ko_try_acquire()) {
+        response(res, -2, "busy: a driver operation is already in progress");
+        return API_STATUS_OK;
+    }
+
+    auto ok = std::make_shared<bool>(false);
+    auto err = std::make_shared<std::string>();
+    return submit_async(
+        [ok, err]() { *ok = blur_driver::restore(*err); },
+        [ok, err](json& res) -> api_status_t {
+            if (!*ok) {
+                LOGE("restoreBlurDriver failed: %s", err->c_str());
+                response(res, -1, *err);
+                return API_STATUS_OK;
+            }
+            json data = blur_driver_status_to_json(blur_driver::probe());
+            data["installed"] = false;
+            data["reboot_required"] = true;
+            LOGI("restoreBlurDriver: stock modules restored, reboot required");
+            response(res, 0, STR_OK, data);
+            return API_STATUS_OK;
+        },
+        []() { ko_release(); },
         res);
 }
 
