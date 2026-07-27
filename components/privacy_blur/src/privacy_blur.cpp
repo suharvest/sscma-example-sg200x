@@ -1337,6 +1337,38 @@ bool PrivacyBlur::updateHwLut(const ma_img_t* frame, const std::vector<BlurBox>&
                             lut_.data(), (uint32_t)lut_.size()) == 0;
 }
 
+void letterboxToStream(std::vector<BlurBox>& boxes,
+                       int inference_w, int inference_h,
+                       int stream_w, int stream_h) {
+    if (boxes.empty()) return;
+    if (inference_w <= 0 || inference_h <= 0 || stream_w <= 0 || stream_h <= 0) return;
+
+    /* Where the scene actually sits inside the inference frame, as a fraction
+     * of that frame. Cross-multiply rather than divide so the aspect comparison
+     * is exact. */
+    float content_w = 1.0f, content_h = 1.0f;
+    float x_off = 0.0f, y_off = 0.0f;
+    const long long stream_vs_inf = (long long)stream_w * inference_h - (long long)stream_h * inference_w;
+    if (stream_vs_inf > 0) {
+        /* Stream is the wider shape -> bars top and bottom. */
+        content_h = ((float)inference_w * stream_h / stream_w) / (float)inference_h;
+        y_off     = (1.0f - content_h) * 0.5f;
+    } else if (stream_vs_inf < 0) {
+        /* Stream is the taller shape -> bars left and right. */
+        content_w = ((float)inference_h * stream_w / stream_h) / (float)inference_w;
+        x_off     = (1.0f - content_w) * 0.5f;
+    } else {
+        return;  /* Same shape: the two normalised frames are the same frame. */
+    }
+
+    for (auto& b : boxes) {
+        b.x = (b.x - x_off) / content_w;
+        b.y = (b.y - y_off) / content_h;
+        b.w = b.w / content_w;
+        b.h = b.h / content_h;
+    }
+}
+
 void pixelateRgb888(void* rgb888, int width, int height,
                     const std::vector<BlurBox>& boxes, int block_px) {
     if (rgb888 == nullptr || width <= 0 || height <= 0 || boxes.empty()) return;

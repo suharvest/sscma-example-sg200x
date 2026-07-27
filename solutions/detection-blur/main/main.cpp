@@ -378,6 +378,13 @@ static void process_frame() {
             }
             boxes.push_back({det.x, det.y, det.w, det.h, det.score});
         }
+        /* Detections are normalised against the 4:3 inference channel, the mask
+         * lands on the 16:9 stream, and VPSS letterboxes the scene into each.
+         * Feeding one to the other leaves the mask 3/4 of the height it should
+         * be and pulled toward the middle of the frame. */
+        privacy_blur::letterboxToStream(boxes,
+                                        g_config.inference_width, g_config.inference_height,
+                                        g_config.stream_width, g_config.stream_height);
         blur->onDetection(boxes, &frame);
     }
 

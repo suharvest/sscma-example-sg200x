@@ -575,6 +575,14 @@ static void process_frame() {
         for (const auto& d : detections) {
             blur_boxes.push_back({d.x, d.y, d.w, d.h, d.score});
         }
+        /* Detections are normalised against the 4:3 inference channel; the mask
+         * lands on the 16:9 stream. The overlay path already remaps (via
+         * debug_stream_letterbox_to_display) -- without the same remap here the
+         * box drawn on the debug video and the box actually concealed are not
+         * the same box, and the mask comes out too short. */
+        privacy_blur::letterboxToStream(blur_boxes,
+                                        g_config.inference_width, g_config.inference_height,
+                                        g_config.stream_width, g_config.stream_height);
         g_privacy_blur->onDetection(blur_boxes, &frame);
     }
 

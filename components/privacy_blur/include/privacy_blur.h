@@ -68,6 +68,29 @@ void pixelateRgb888(void* rgb888, int width, int height,
                     const std::vector<BlurBox>& boxes, int block_px);
 
 /*
+ * Remap boxes from the inference channel's coordinates into the video stream's,
+ * both normalised, in place.
+ *
+ * VPSS fits the sensor content into each channel preserving aspect, so a 4:3
+ * inference channel carries the 16:9 scene as a band with bars above and below.
+ * A box normalised against that channel is NOT normalised against the stream:
+ * feeding one straight to onDetection() leaves the mask 3/4 of the height it
+ * should be and pulled towards the centre of the frame, so a face near the top
+ * or bottom edge is only partly covered. That is a privacy defect, not a
+ * cosmetic misalignment.
+ *
+ * Applications that already carry debug_stream can use
+ * debug_stream_letterbox_to_display() instead -- same geometry, pixel units,
+ * and it is what their overlay path uses. This exists so an application can
+ * mask correctly without depending on the debug HTTP server.
+ *
+ * A no-op when the two aspects match.
+ */
+void letterboxToStream(std::vector<BlurBox>& boxes,
+                       int inference_w, int inference_h,
+                       int stream_w, int stream_h);
+
+/*
  * Device-wide privacy settings, written by supervisor and read in-process by
  * whichever application is running. Same mechanism as /userdata/local/ha.conf
  * and /userdata/local/onvif.conf: one switch in the console, no per-application
