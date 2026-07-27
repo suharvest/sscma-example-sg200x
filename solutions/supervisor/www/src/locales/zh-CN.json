@@ -199,7 +199,10 @@
     "switchModelFailed": "切换模型失败",
     "gimbalTitle": "云台控制",
     "gimbalSoon": "即将支持",
-    "gimbalPlaceholder": "已检测到云台（CAN 电机总线）。本页的水平/俯仰控制将在 Phase 6 提供。"
+    "gimbalPlaceholder": "已检测到云台（CAN 电机总线）。本页的水平/俯仰控制将在 Phase 6 提供。",
+    "privacyBlur": "隐私打码",
+    "privacyBlurHint": "遮挡画面中检测到的人。这是设备级设置，即时生效、不中断画面。完整配置在「设备」页。",
+    "privacyBlurAlphaHint": "255 完全遮住，调低则原画按比例透出。拖动后立即生效，直接看上方画面取舍。"
   },
   "device": {
     "title": "设备",
@@ -628,5 +631,65 @@
     "invalidPort": "端口必须在 1025-65535 之间",
     "invalidInterval": "间隔必须在 20-60000 毫秒之间",
     "complianceNote": "本设备兼容 ONVIF（ONVIF-compatible），实现了上述 ONVIF 接口；但并非 ONVIF 认证产品，未获得 ONVIF 认证。"
+  },
+  "blur": {
+    "title": "隐私打码",
+    "subtitle": "在画面编码之前遮挡摄像头检测到的目标，实时流和录像里的人脸都已经是打码后的画面。",
+    "noderedNotice": "当前为 Node-RED 模式，打码由 Console 应用执行，切回 Console 模式后生效。",
+    "enabled": "隐私打码",
+    "enabledHint": "直接在画面上遮挡每个检测到的目标，未打码的画面不会离开设备。",
+    "regionsNote": "最多同时遮挡 {{regions}} 个目标；超出时优先遮挡画面中最大的（离镜头最近的）。",
+    "advanced": "高级设置",
+    "backend": "遮挡方式",
+    "backendLabel": {
+      "pixelate": "马赛克（推荐）",
+      "coverex": "纯色遮挡",
+      "mosaic": "噪点遮挡"
+    },
+    "backendHint": {
+      "pixelate": "色块取自画面本身，由硬件合成，几乎没有性能开销。",
+      "coverex": "实心色块。这种方式最多只能同时遮挡 4 个目标。",
+      "mosaic": "摄像头芯片的原厂效果。请注意它并不是把画面打成马赛克，而是在目标上覆盖一层黑白噪点。"
+    },
+    "blockPx": "马赛克块大小",
+    "blockPxFine": "8 px（细）",
+    "blockPxCoarse": "16 px（粗）",
+    "blockPxHint": "块越大遮挡得越彻底。硬件网格只支持这两种尺寸。",
+    "maxRegions": "最多遮挡目标数",
+    "maxRegionsHint": "取值 1-8。超出这个数量的检测结果不会被遮挡。",
+    "coverexLimitNotice": "纯色遮挡最多支持同时遮挡 4 个目标，这种方式下更大的数量不会生效。",
+    "alpha": "遮罩透明度",
+    "alphaHint": "255 完全遮住目标，调低则原始画面按比例透出。改完在调试画面里能立刻看到效果，按现场需要取舍。",
+    "alphaTransparent": "0 · 完全透明",
+    "alphaOpaque": "255 · 完全不透明",
+    "invalidAlpha": "透明度必须在 0-255 之间",
+    "save": "保存",
+    "saved": "配置已保存。",
+    "saveFailed": "保存配置失败",
+    "restarted": "正在运行的应用已重启以应用新配置。",
+    "busy": "另一个操作正在进行中，请稍后重试",
+    "invalidMaxRegions": "目标数量必须在 1-8 之间",
+    "appliedLive": "已即时生效，无需重启应用。"
+  },
+  "blurDriver": {
+    "card": "硬件遮挡加速",
+    "state": "当前驱动",
+    "stateStock": "出厂驱动",
+    "stateInstalled": "已部署补丁驱动",
+    "rebootPending": "重启后生效",
+    "explain": "不部署也能打码。没有补丁驱动时遮罩由 CPU 合成，每帧多约 38 毫秒开销；部署后这部分工作交给摄像头硬件完成。该操作会替换两个内核模块，且必须重启设备才会生效。",
+    "unavailableNotPackaged": "当前固件未随包提供补丁驱动，没有可部署的内容。",
+    "unavailableVermagic": "随包驱动是为内核“{{vermagic}}”编译的，而本设备运行的是“{{kernel}}”。装上去会导致下次重启后摄像头无法启动，因此已阻止部署。",
+    "install": "部署",
+    "restore": "还原出厂驱动",
+    "installTitle": "确认部署补丁驱动？",
+    "installConfirm": "将替换两个内核模块。出厂模块会先备份，之后可以在本页面还原。该改动需要重启设备后才生效。",
+    "restoreTitle": "确认还原出厂驱动？",
+    "restoreConfirm": "将把备份的出厂模块拷回，硬件遮挡加速随之失效——打码功能仍然可用，改由软件合成，每帧多约 38 毫秒开销。该改动需要重启设备后才生效。",
+    "doneReboot": "操作完成。请重启设备使新驱动生效。",
+    "rebootHint": "磁盘上的模块与当前内核已加载的不一致，请重启设备使其生效。",
+    "noBackup": "本设备还没有出厂备份，首次部署时会自动创建。",
+    "failed": "驱动操作失败，设备未做任何改动",
+    "busy": "另一个驱动操作正在进行中，请稍后重试"
   }
 }

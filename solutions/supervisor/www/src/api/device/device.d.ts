@@ -105,3 +105,28 @@ interface IAudioVolume {
   supported: boolean;        // false: no amixer / no volume controls
   controls: IAudioControl[];
 }
+
+/**
+ * Hardware masking driver (patched cv181x_rgn / cv181x_vpss kernel modules).
+ *
+ * The privacy blur works without these: the application composites the mask in
+ * software, producing the same picture at a cost of roughly 38 ms of CPU per
+ * frame. Installing them moves that work into the hardware compositor, so this
+ * is an optional acceleration rather than a requirement.
+ */
+interface IBlurDriverStatus {
+  /** Patched modules are shipped with this build and match the running kernel. */
+  available: boolean;
+  /** The modules in /mnt/system/ko are the patched ones. */
+  installed: boolean;
+  /** The stock modules were backed up and can be put back. */
+  backup_present: boolean;
+  /** On-disk modules differ from the ones the running kernel loaded. */
+  reboot_required: boolean;
+  /** Why `available` is false: "not_packaged" | "vermagic_mismatch" | "". */
+  reason: string;
+  /** uname -r of the running kernel. */
+  kernel_release: string;
+  /** vermagic string read out of the packaged module ("" when not packaged). */
+  packaged_vermagic: string;
+}

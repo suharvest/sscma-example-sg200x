@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { App, Button, Collapse, Select, Spin, Switch, Tooltip } from "antd";
+import { App, Button, Collapse, Select, Slider, Spin, Switch, Tooltip } from "antd";
 import {
   ReloadOutlined,
   ExclamationCircleOutlined,
@@ -13,6 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { getCurrentAppApi, setAppModelApi } from "@/api/app";
+import { getBlurConfigApi, setBlurConfigApi } from "@/api/blur";
 import {
   getFocusValueApi,
   getCameraConfigApi,
@@ -201,6 +202,61 @@ const Live = () => {
   const [currentModel, setCurrentModel] = useState<string | undefined>();
   const [debugOn, setDebugOn] = useState(false);
   const [overlayOn, setOverlayOn] = useState(true);
+  /* undefined until read: an unread switch must not render as "off", which
+     would tell the operator masking is disabled when it may well be on. */
+  const [blurEnabled, setBlurEnabled] = useState<boolean | undefined>(undefined);
+  const [blurBusy, setBlurBusy] = useState(false);
+  const [blurAlpha, setBlurAlpha] = useState<number | undefined>(undefined);
+
+  useEffect(() => {
+    getBlurConfigApi()
+      .then((res) => {
+        if (res.code === 0 && res.data) {
+          setBlurEnabled(!!res.data.enabled);
+          setBlurAlpha(res.data.alpha ?? 255);
+        }
+      })
+      .catch(() => {
+        /* Leave it undefined: the switch stays disabled rather than claiming a
+           state it does not know. */
+      });
+  }, []);
+
+  const commitAlpha = async (next: number) => {
+    try {
+      const res = await setBlurConfigApi({ alpha: next });
+      if (res.code !== 0) {
+        message.error(res.msg || t("blur.saveFailed"));
+      }
+    } catch {
+      message.error(t("blur.saveFailed"));
+    }
+  };
+
+  const toggleBlur = async (next: boolean) => {
+    setBlurBusy(true);
+    try {
+      const res = await setBlurConfigApi({ enabled: next });
+      if (res.code === 0) {
+        setBlurEnabled(next);
+        message.success(
+          res.data?.restarted
+            ? `${t("blur.saved")} ${t("blur.restarted")}`
+            : res.data?.note === "applied_live"
+              ? `${t("blur.saved")} ${t("blur.appliedLive")}`
+              : t("blur.saved")
+        );
+      } else if (res.code === -3) {
+        message.warning(t("blur.busy"));
+      } else {
+        message.error(res.msg || t("blur.saveFailed"));
+      }
+    } catch {
+      message.error(t("blur.saveFailed"));
+    } finally {
+      setBlurBusy(false);
+    }
+  };
   const [modelSwitching, setModelSwitching] = useState(false);
   const [contentRect, setContentRect] = useState<ContentRect>({
     left: 0,
@@ -877,6 +933,61 @@ const Live = () => {
                               onChange={setOverlayOn}
                             />
                           </div>
+                          {/* Shortcut to the device-wide masking switch, not a
+                              second setting: an operator watching this stream is
+                              exactly who notices the mask is wrong, and sending
+                              them to the Device page to fix it loses the view
+                              they were judging it by. Same blur.conf, same API.
+                              Flipping it restarts the application, so the stream
+                              drops and reconnects -- said plainly below rather
+                              than left to look like a stall. */}
+                          <div className="flex items-center justify-between gap-12 mt-16 pt-16 border-t border-line">
+                            <div>
+                              <div className="text-14 font-medium">
+                                {t("live.privacyBlur")}
+                              </div>
+                              <div className="text-12 text-muted mt-2">
+                                {blurEnabled === undefined
+                                  ? t("common.reading")
+                                  : t("live.privacyBlurHint")}
+                              </div>
+                            </div>
+                            <Switch
+                              checked={!!blurEnabled}
+                              loading={blurBusy}
+                              disabled={!app || blurEnabled === undefined || blurBusy}
+                              onChange={toggleBlur}
+                            />
+                          </div>
+                          {/* Opacity belongs next to the picture it changes.
+                              It applies without restarting anything, so the
+                              stream keeps running while the slider moves --
+                              which is the only way to tell whether a value is
+                              concealing enough. Committed on release, not on
+                              every pixel of drag, so one adjustment is one
+                              write. */}
+                          {!!blurEnabled && (
+                            <div className="mt-12">
+                              <div className="flex items-center justify-between">
+                                <div className="text-13">{t("blur.alpha")}</div>
+                                <div className="text-13 text-muted">
+                                  {blurAlpha ?? "—"}
+                                </div>
+                              </div>
+                              <Slider
+                                min={0}
+                                max={255}
+                                value={blurAlpha ?? 255}
+                                disabled={blurAlpha === undefined || blurBusy}
+                                onChange={(v: number) => setBlurAlpha(v)}
+                                onChangeComplete={(v: number) => commitAlpha(v)}
+                                tooltip={{ open: false }}
+                              />
+                              <div className="text-12 text-muted">
+                                {t("live.privacyBlurAlphaHint")}
+                              </div>
+                            </div>
+                          )}
                           {!!app.models && app.models.length >= 2 && (
                             <div className="mt-16 pt-16 border-t border-line">
                               <div className="text-14 font-medium mb-8">
