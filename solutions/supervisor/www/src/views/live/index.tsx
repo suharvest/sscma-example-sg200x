@@ -59,7 +59,8 @@ interface ContentRect {
  *  facemesh's debug envelope is center boxes with a "state EAR" label). */
 function adaptDebugFrame(frame: IOverlayFrame) {
   const layers: Array<Record<string, unknown>> = [];
-  const { resW, resH, boxes, classification, qrcodes } = frame;
+  const { resW, resH, boxes, classification, qrcodes, keypoints, statusCard } =
+    frame;
   if (boxes && boxes.length) {
     const items = boxes.map((b) => {
       const normalized = b.x <= 1 && b.y <= 1 && b.w <= 1 && b.h <= 1;
@@ -88,6 +89,31 @@ function adaptDebugFrame(frame: IOverlayFrame) {
         confidence: classification.confidence,
         scores,
       },
+    });
+  }
+  // Skeletons / meshes: same pixel space as boxes, normalized here so the
+  // renderer's contract (normalized coords) is met in one place. Topology
+  // (`edges`) is passed through untouched — it is the app's, not ours.
+  if (keypoints && keypoints.length) {
+    layers.push({
+      type: "keypoints",
+      items: keypoints.map((g) => ({
+        points: g.points.map(([x, y]) =>
+          x <= 1 && y <= 1 ? [x, y] : [x / resW, y / resH]
+        ),
+        edges: g.edges,
+        color: g.color,
+      })),
+    });
+  }
+  // Corner-pinned status card: counters and state that should stay put rather
+  // than ride along with a moving subject.
+  if (statusCard) {
+    layers.push({
+      type: "card",
+      variant: "status",
+      anchor: "tl",
+      data: statusCard,
     });
   }
   // QR codes: each decoded code is a closed polygon (4 normalized corners) with

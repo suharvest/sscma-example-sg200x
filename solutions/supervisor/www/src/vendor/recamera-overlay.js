@@ -172,31 +172,63 @@ function drawKeypoints(ctx, layer, W, H) {
     const grp = items[g];
     const pts = grp.points || [];
     const color = grp.color || BRAND;
+    // Weight scales with density, like the dot radius below. A 468-point
+    // facemesh wants a faint hairline or it turns into a solid blob; a
+    // 17-joint body skeleton drawn that way is nearly invisible over live
+    // video, which is what a single shared default produced before.
+    // `lineWidth` / `alpha` on the group override the heuristic.
+    const dense = pts.length > 100;
+    const mid = !dense && pts.length > 30;
+    const lineWidth = grp.lineWidth != null ? grp.lineWidth : dense ? 1 : mid ? 1.5 : 3;
+    const alpha = grp.alpha != null ? grp.alpha : dense ? 0.5 : mid ? 0.7 : 0.95;
+
     // Edges first (skeleton / mesh wireframe) so dots sit on top.
     if (Array.isArray(grp.edges) && grp.edges.length) {
+      const trace = () => {
+        ctx.beginPath();
+        for (const e of grp.edges) {
+          const a = pts[e[0]];
+          const b = pts[e[1]];
+          if (!a || !b) continue;
+          ctx.moveTo(a[0] * W, a[1] * H);
+          ctx.lineTo(b[0] * W, b[1] * H);
+        }
+        ctx.stroke();
+      };
       ctx.save();
-      ctx.strokeStyle = color;
-      ctx.globalAlpha = 0.5;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (const e of grp.edges) {
-        const a = pts[e[0]];
-        const b = pts[e[1]];
-        if (!a || !b) continue;
-        ctx.moveTo(a[0] * W, a[1] * H);
-        ctx.lineTo(b[0] * W, b[1] * H);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      // Sparse skeletons get a dark halo underneath: the accent green vanishes
+      // against a pale wall or bare skin, and the overlay has no control over
+      // what the camera is pointed at. Skipped for dense meshes, where the
+      // halo would fill the gaps between strokes.
+      if (!dense) {
+        ctx.strokeStyle = "rgba(0,0,0,0.45)";
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = lineWidth + 2;
+        trace();
       }
-      ctx.stroke();
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = lineWidth;
+      trace();
       ctx.restore();
     }
     // Dot radius shrinks for dense meshes (e.g. 468-pt facemesh).
-    const r = pts.length > 100 ? 0.9 : pts.length > 30 ? 1.4 : 2.4;
+    const r = dense ? 0.9 : mid ? 1.4 : 3.5;
     ctx.save();
     ctx.fillStyle = color;
-    ctx.globalAlpha = pts.length > 100 ? 0.75 : 1;
+    ctx.globalAlpha = dense ? 0.75 : 1;
+    // Same reasoning as the edge halo: outline the joints of a sparse skeleton
+    // so they stay readable on a bright background.
+    if (!dense) {
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.lineWidth = 1.5;
+    }
     for (const p of pts) {
       ctx.beginPath();
       ctx.arc(p[0] * W, p[1] * H, r, 0, Math.PI * 2);
+      if (!dense) ctx.stroke();
       ctx.fill();
     }
     ctx.restore();
@@ -304,7 +336,6 @@ function drawClassificationCard(ctx, data, W) {
     const pct = data.data.confidence <= 1 ? data.data.confidence * 100 : data.data.confidence;
     ctx.font = "500 13px Inter, system-ui, sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.85)";
-    const lw = ctx.measureText(label).width;
     ctx.font = "600 20px Inter, system-ui, sans-serif";
     const bigW = ctx.measureText(label).width;
     ctx.font = "500 13px Inter, system-ui, sans-serif";

@@ -57,12 +57,34 @@ export interface IResultQrcode {
   points: number[][];
 }
 
+/** One skeleton / mesh: points in the same pixel space as boxes, plus the
+ *  edges connecting them (indices into `points`). The topology is the app's
+ *  business — pose apps, hand apps and face meshes all differ — so it travels
+ *  with the data rather than living here. */
+export interface IResultKeypointGroup {
+  points: number[][];
+  edges?: number[][];
+  color?: string;
+}
+
+/** Corner-pinned status card (renderer's `card:status` variant). */
+export interface IResultStatusCard {
+  title?: string;
+  tone?: string;
+  metrics?: Array<{ k: string; v: string }>;
+  banner?: string;
+}
+
 export interface IOverlayFrame {
   boxes: IResultBox[];
   /** present when the latest results message carries a `classification` */
   classification: IResultClassification | null;
   /** present when the latest results message carries a top-level `qrcodes` */
   qrcodes?: IResultQrcode[];
+  /** present when the latest results message carries a top-level `keypoints` */
+  keypoints?: IResultKeypointGroup[];
+  /** present when the latest results message carries a `status_card` */
+  statusCard?: IResultStatusCard;
   /** inference resolution the coordinates are relative to */
   resW: number;
   resH: number;
@@ -148,6 +170,67 @@ function parseQrcodes(
   return out;
 }
 
+function parseKeypoints(
+  data: Record<string, unknown>
+): IResultKeypointGroup[] | null {
+  const raw = data.keypoints;
+  if (!Array.isArray(raw)) return null;
+  const out: IResultKeypointGroup[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const o = entry as Record<string, unknown>;
+    const rawPts = Array.isArray(o.points) ? (o.points as unknown[]) : [];
+    const points: number[][] = [];
+    for (const p of rawPts) {
+      if (Array.isArray(p) && p.length >= 2) {
+        const x = Number(p[0]);
+        const y = Number(p[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+      }
+    }
+    if (!points.length) continue;
+    // Edges index into points[]; drop any that point outside it, since the
+    // renderer would silently skip them anyway and a bad index usually means
+    // the producer compacted its points without reindexing.
+    const rawEdges = Array.isArray(o.edges) ? (o.edges as unknown[]) : [];
+    const edges: number[][] = [];
+    for (const e of rawEdges) {
+      if (!Array.isArray(e) || e.length < 2) continue;
+      const a = Number(e[0]);
+      const b = Number(e[1]);
+      if (!Number.isInteger(a) || !Number.isInteger(b)) continue;
+      if (a < 0 || b < 0 || a >= points.length || b >= points.length) continue;
+      edges.push([a, b]);
+    }
+    const color = typeof o.color === "string" ? o.color : undefined;
+    out.push({ points, edges, color });
+  }
+  return out.length ? out : null;
+}
+
+function parseStatusCard(
+  data: Record<string, unknown>
+): IResultStatusCard | null {
+  const raw = data.status_card;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const metrics: Array<{ k: string; v: string }> = [];
+  if (Array.isArray(o.metrics)) {
+    for (const m of o.metrics) {
+      if (!m || typeof m !== "object" || Array.isArray(m)) continue;
+      const mo = m as Record<string, unknown>;
+      if (mo.k === undefined || mo.v === undefined) continue;
+      metrics.push({ k: String(mo.k), v: String(mo.v) });
+    }
+  }
+  return {
+    title: typeof o.title === "string" ? o.title : undefined,
+    tone: typeof o.tone === "string" ? o.tone : undefined,
+    metrics,
+    banner: typeof o.banner === "string" && o.banner ? o.banner : undefined,
+  };
+}
+
 /** Parse a results JSON message into an overlay frame (defensive). */
 function parseOverlayFrame(
   data: Record<string, unknown> | null
@@ -155,11 +238,23 @@ function parseOverlayFrame(
   if (!data) return null;
   const classification = parseClassification(data);
   const qrcodes = parseQrcodes(data);
+  const keypoints = parseKeypoints(data);
+  const statusCard = parseStatusCard(data);
   const rawBoxes = data.boxes;
   // Box apps require a boxes[] array; classifier apps may omit it entirely
-  // (or send an empty one) — a classification or a top-level qrcodes array
-  // alone still yields a frame (so an empty codes[] clears the overlay).
-  if (!Array.isArray(rawBoxes) && !classification && !qrcodes) return null;
+  // (or send an empty one) — a classification, a top-level qrcodes array, a
+  // skeleton or a status card alone still yields a frame (so an empty codes[]
+  // clears the overlay). Pose apps draw a skeleton and no box at all, so
+  // requiring boxes[] here would blank their overlay entirely.
+  if (
+    !Array.isArray(rawBoxes) &&
+    !classification &&
+    !qrcodes &&
+    !keypoints &&
+    !statusCard
+  ) {
+    return null;
+  }
 
   let resW = DEFAULT_RESOLUTION;
   let resH = DEFAULT_RESOLUTION;
@@ -220,7 +315,15 @@ function parseOverlayFrame(
       });
     }
   }
-  return { boxes, classification, qrcodes: qrcodes ?? undefined, resW, resH };
+  return {
+    boxes,
+    classification,
+    qrcodes: qrcodes ?? undefined,
+    keypoints: keypoints ?? undefined,
+    statusCard: statusCard ?? undefined,
+    resW,
+    resH,
+  };
 }
 
 export default function useDebugStream({
