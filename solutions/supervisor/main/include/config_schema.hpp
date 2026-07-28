@@ -9,7 +9,12 @@
 // Item types:
 //   number  : min / max (optional), step is UI-only
 //   boolean
-//   enum    : options[] (array of allowed values, strings)
+//   enum    : options[] (array of allowed values, strings). Optional
+//             option_labels[] / option_labels_zh[] carry the display text,
+//             positionally parallel to options[]; the UI falls back to the
+//             raw value per-entry, so a partial or absent list is fine.
+//             Validation only ever looks at options[] -- the labels are
+//             presentation and are passed through to the client untouched.
 //   string  : maxLength (optional, default 256)
 //   zone    : value = [[x,y], ...], 3..maxPoints points, coords normalized 0..1
 //   line    : value = {"a":[x,y], "b":[x,y], "direction":"ab_in"|"ab_out"},

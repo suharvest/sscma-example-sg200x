@@ -150,6 +150,11 @@ export interface IConfigItem {
   step?: number;
   /** enum */
   options?: string[];
+  /** enum — display text, positionally parallel to options[]. Both lists are
+   *  optional and may be shorter than options[]; each entry falls back to the
+   *  raw option value. Only options[] is validated server-side. */
+  option_labels?: string[];
+  option_labels_zh?: string[];
   /** string (backend default 256) */
   maxLength?: number;
   /** zone (backend default 8) */

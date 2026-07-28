@@ -118,9 +118,16 @@ const SchemaForm = ({
             className="w-full"
             value={typeof value === "string" ? value : undefined}
             onChange={(v) => onChange(item.key, v)}
-            options={(item.options || []).map((o) => ({
+            options={(item.options || []).map((o, i) => ({
               value: o,
-              label: o,
+              // Labels are optional and positionally parallel to options[];
+              // an absent entry shows the raw value, which is what every
+              // manifest written before option_labels existed relies on.
+              label:
+                pickLocalizedText(
+                  item.option_labels?.[i],
+                  item.option_labels_zh?.[i]
+                ) || o,
             }))}
           />
         );
