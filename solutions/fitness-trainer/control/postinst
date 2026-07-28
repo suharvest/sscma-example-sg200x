@@ -1,0 +1,51 @@
+#!/bin/sh
+
+# Post-installation script for fitness-trainer
+
+echo "Installing Fitness Trainer..."
+
+mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
+
+chmod +x /usr/local/bin/fitness-trainer
+chmod +x /etc/init.d/K92fitness-trainer 2>/dev/null || true
+
+# Register with the supervisor app gallery. The console scans
+# /usr/share/supervisor/apps/ (built-ins) and /userdata/local/apps/ (installed
+# apps); /usr/share/fitness-trainer/ is neither, so the manifest and the
+# integration docs have to be copied across or the app never appears.
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/fitness-trainer
+for f in fitness-trainer.json fitness-trainer.md fitness-trainer.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    else
+        echo "WARNING: $SHARE_DIR/$f missing, not registered"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/fitness-trainer.json"
+
+# The pose model ships with the supervisor; warn rather than fail, since the
+# supervisor may simply be older than this app.
+POSE_MODEL=/usr/share/supervisor/models/yolo11n_pose_cv181x_int8.cvimodel
+if [ ! -f "$POSE_MODEL" ]; then
+    echo "WARNING: $POSE_MODEL not found."
+    echo "         Install a supervisor that ships it, or set MODEL_PATH in"
+    echo "         /etc/fitness-trainer.conf to a YOLO pose cvimodel."
+fi
+
+echo "Fitness Trainer installed successfully!"
+echo ""
+echo "Exercise selection: console app page, or"
+echo "  /userdata/local/apps/fitness-trainer.config.json"
+echo "Configuration file: /etc/fitness-trainer.conf"
+echo ""
+echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:      recamera/fitness-trainer/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+# Migration guard: gallery apps must never be S-prefixed (boot autostart races
+# the supervisor for the camera).
+rm -f /etc/init.d/S92fitness-trainer
+
+exit 0

@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# Pre-removal script for fitness-trainer
+
+echo "Removing Fitness Trainer..."
+
+for script in /etc/init.d/[SK]92fitness-trainer; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/fitness-trainer 2>/dev/null || true
+
+exit 0

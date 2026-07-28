@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Post-removal script for fitness-trainer
+# Deregister from the app gallery. The user's workout config is left in place
+# so a reinstall keeps the chosen exercise.
+
+rm -f /userdata/local/apps/fitness-trainer.json
+rm -f /userdata/local/apps/fitness-trainer.md
+rm -f /userdata/local/apps/fitness-trainer.zh.md
+
+exit 0
