@@ -1,6 +1,5 @@
-import { Outlet } from "react-router-dom";
+import { Navigate, Outlet } from "react-router-dom";
 import Network from "@/views/network";
-import Init from "@/views/init";
 import Overview from "@/views/overview";
 import Security from "@/views/security";
 import WebShell from "@/views/terminal";
@@ -46,8 +45,11 @@ const Routes = [
         element: <DeviceTools />,
       },
       {
+        // Legacy entry point: the Node-RED sidebar's "Setting" button links to
+        // #/init. The old standalone network-info page is gone — send it to the
+        // System page, which carries device info, runtime mode, power and update.
         path: "init",
-        element: <Init />,
+        element: <Navigate to="/system" replace />,
       },
       {
         path: "files",
