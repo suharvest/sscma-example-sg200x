@@ -65,7 +65,12 @@ constexpr Bone kSkeleton[] = {
 
 // Build the "keypoints" layer payload: visible joints only, compacted, with
 // edges reindexed into the compacted array.
-json skeletonJson(const PayloadContext& ctx, const Pose& pose) {
+//
+// `normalize` picks the units: the debug envelope carries pixels (matching its
+// own `resolution` field and the boxes other apps put there), while the MQTT
+// document carries 0..1 — that is what the ecosystem preview overlays consume,
+// and they have no resolution field to divide by.
+json skeletonJson(const PayloadContext& ctx, const Pose& pose, bool normalize) {
     constexpr int kJointCount = static_cast<int>(Joint::Count);
 
     // Map inference-frame pixels into debug-video pixels by running each joint
@@ -91,7 +96,12 @@ json skeletonJson(const PayloadContext& ctx, const Pose& pose) {
 
     json points = json::array();
     for (const auto& p : pts) {
-        points.push_back({std::round(p.x * 10.0f) / 10.0f, std::round(p.y * 10.0f) / 10.0f});
+        if (normalize) {
+            points.push_back({std::round(p.x / ctx.stream_w * 10000.0f) / 10000.0f,
+                              std::round(p.y / ctx.stream_h * 10000.0f) / 10000.0f});
+        } else {
+            points.push_back({std::round(p.x * 10.0f) / 10.0f, std::round(p.y * 10.0f) / 10.0f});
+        }
     }
 
     json edges = json::array();
@@ -139,7 +149,8 @@ json statusCardJson(const PayloadContext& ctx, const ExerciseState& st) {
 
 }  // namespace
 
-std::string buildResultJson(const PayloadContext& ctx, const ExerciseState& st) {
+std::string buildResultJson(const PayloadContext& ctx, const ExerciseState& st,
+                            const Pose* pose) {
     json j = coreFields(ctx, st);
     j["timestamp"] = ctx.timestamp_ms;
     j["frame_id"] = ctx.frame_id;
@@ -147,6 +158,16 @@ std::string buildResultJson(const PayloadContext& ctx, const ExerciseState& st) 
     // Edge events, so a subscriber can react to a rep without diffing counts.
     j["rep_completed"] = st.rep_completed;
     j["set_completed"] = st.set_completed;
+
+    // Skeleton in normalized stream coordinates, for overlay consumers that
+    // only ever see MQTT (the SenseCraft preview). Absent when nobody is
+    // tracked, so a subscriber can tell "no person" from "person at origin".
+    if (pose != nullptr && !pose->empty()) {
+        json skel = skeletonJson(ctx, *pose, /*normalize=*/true);
+        if (!skel.is_null()) {
+            j["keypoints"] = std::move(skel);
+        }
+    }
     return j.dump();
 }
 
@@ -155,7 +176,7 @@ std::string buildDebugExtraJson(const PayloadContext& ctx, const ExerciseState& 
     json j = coreFields(ctx, st);
 
     if (pose != nullptr && !pose->empty()) {
-        json skel = skeletonJson(ctx, *pose);
+        json skel = skeletonJson(ctx, *pose, /*normalize=*/false);
         if (!skel.is_null()) {
             j["keypoints"] = std::move(skel);
         }

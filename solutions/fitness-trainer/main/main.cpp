@@ -347,7 +347,7 @@ static void process_frame() {
     }
 
     if (g_config.enable_mqtt && g_mqtt) {
-        const std::string payload = buildResultJson(ctx, st);
+        const std::string payload = buildResultJson(ctx, st, subject ? &subject->pose : nullptr);
         g_mqtt->publishResultsJson(payload);
     }
 

@@ -30,7 +30,10 @@ struct PayloadContext {
 // This is the app's external contract -- Home Assistant templates, Node-RED
 // flows and anything else downstream read these field names. Add fields
 // freely; do not rename or remove them.
-std::string buildResultJson(const PayloadContext& ctx, const ExerciseState& st);
+// `pose` may be null (nobody detected); when present the document gains a
+// "keypoints" skeleton in normalized [0,1] stream coordinates.
+std::string buildResultJson(const PayloadContext& ctx, const ExerciseState& st,
+                            const Pose* pose);
 
 // Extra top-level members for the debug /results envelope, which
 // debug_stream_build_results() appends verbatim. Returned without the
