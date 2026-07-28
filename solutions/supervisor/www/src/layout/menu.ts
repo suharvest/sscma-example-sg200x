@@ -39,15 +39,17 @@ export function getMenuSections({
 }: MenuOptions): MenuSection[] {
   const sections: MenuSection[] = [];
 
-  // Console group (Applications/Live/Device) is gallery-mode only: in
-  // Node-RED mode the C++ app stack is stopped, so the entries are hidden.
+  // Console group (Applications/Live) is gallery-mode only: in Node-RED mode
+  // the C++ app stack is stopped, so those two entries have nothing to show.
+  // Device is NOT part of this gate — its contents (time/timezone/NTP, audio,
+  // battery, power, privacy-blur driver) all go through supervisor's own APIs
+  // and stay useful in either mode, so it lives in Configuration below.
   if (galleryMode || !modeKnown) {
     sections.push({
       title: "menu.sectionConsole",
       items: [
         { key: "applications", label: "menu.applications", route: "/" },
         { key: "live", label: "menu.live", route: "/live" },
-        { key: "device", label: "menu.device", route: "/device" },
       ],
     });
   }
@@ -78,6 +80,7 @@ export function getMenuSections({
     {
       title: "menu.sectionConfiguration",
       items: [
+        { key: "device", label: "menu.device", route: "/device" },
         { key: "files", label: "menu.files", route: "/files" },
         { key: "security", label: "menu.security", route: "/security" },
         { key: "network", label: "menu.network", route: "/network" },
