@@ -56,7 +56,6 @@ const PCLayout: React.FC<Props> = ({ children }) => {
 
   const menuSections = getMenuSections({
     galleryMode,
-    isReCamera: Boolean(deviceInfo.isReCamera),
     // queryDeviceInfo always sets appName; before it lands the mode is unknown
     modeKnown: Boolean(deviceInfo.appName),
   });

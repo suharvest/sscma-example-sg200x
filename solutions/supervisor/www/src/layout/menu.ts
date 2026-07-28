@@ -23,7 +23,6 @@ export interface MenuSection {
 
 interface MenuOptions {
   galleryMode: boolean;
-  isReCamera: boolean;
   /**
    * False until queryDeviceInfo has populated the store. While unknown we
    * keep the pre-P4-D rendering (Console section visible) to avoid the
@@ -34,7 +33,6 @@ interface MenuOptions {
 
 export function getMenuSections({
   galleryMode,
-  isReCamera,
   modeKnown = true,
 }: MenuOptions): MenuSection[] {
   const sections: MenuSection[] = [];
@@ -54,25 +52,22 @@ export function getMenuSections({
     });
   }
 
+  // Overview is the bare camera preview. It is Node-RED mode only: gallery mode
+  // has Live, which does everything Overview does and more (overlay, RTSP
+  // fallback, per-app binding), so showing both there is just a worse duplicate.
+  // Both entries used to be gated on `isReCamera`, a field the C++ backend has
+  // never emitted (zero hits for it across all history in *.cpp/*.h, and absent
+  // from queryDeviceInfo on-device) — so the flag was permanently false and
+  // Overview had never once appeared in the sidebar. The gate is gone rather
+  // than repaired: every device running this firmware is a reCamera.
   if (!galleryMode) {
-    const workspaceItems: MenuItem[] = [];
-    if (isReCamera) {
-      workspaceItems.push({
-        key: "overview",
-        label: "menu.overview",
-        route: "/overview",
-      });
-    }
-    workspaceItems.push(
-      { key: "dashboard", label: "menu.dashboard", route: "/dashboard" },
-      { key: "workspace", label: "menu.workspace", route: "/workspace" }
-    );
-    sections.push({ title: "menu.sectionWorkspace", items: workspaceItems });
-  } else if (isReCamera) {
-    // Overview (camera preview) stays available in gallery mode.
     sections.push({
       title: "menu.sectionWorkspace",
-      items: [{ key: "overview", label: "menu.overview", route: "/overview" }],
+      items: [
+        { key: "overview", label: "menu.overview", route: "/overview" },
+        { key: "dashboard", label: "menu.dashboard", route: "/dashboard" },
+        { key: "workspace", label: "menu.workspace", route: "/workspace" },
+      ],
     });
   }
 

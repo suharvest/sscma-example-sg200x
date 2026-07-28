@@ -3,7 +3,6 @@ import { DeviceChannleMode, DeviceNeedRestart, ServiceStatus } from "@/enum";
 interface IDeviceInfo {
   appName: string;
   deviceName: string;
-  isReCamera: boolean;
   ip: string;
   sn: string;
   wifiIp: string;
