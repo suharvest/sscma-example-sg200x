@@ -210,11 +210,14 @@ public:
 
         std::vector<char> buffer(512);
         std::string result = "";
-        time_t start_time = time(nullptr);
+        // Monotonic, not wall clock: set_timestamp runs through this very
+        // helper, so a wall-clock deadline would see the jump the child just
+        // made and kill the command that succeeded.
+        time_t start_time = _mono_now();
         bool timed_out = false;
 
         while (true) {
-            if (time(nullptr) - start_time > timeout_sec) {
+            if (_mono_now() - start_time > timeout_sec) {
                 LOGE("Command timeout after %d seconds: %s", timeout_sec, full_cmd.c_str());
                 timed_out = true;
                 break;

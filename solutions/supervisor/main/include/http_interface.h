@@ -1,6 +1,7 @@
 #ifndef _HTTP_INTERFACE_H_
 #define _HTTP_INTERFACE_H_
 
+#include <ctime>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -154,10 +155,29 @@ protected:
     // token
     static constexpr uint32_t TOKEN_EXPIRATION_TIME = 3 * 60 * 60 * 24; // 3 days
 
+    /* Session age is measured on CLOCK_MONOTONIC, never on the wall clock.
+     * reCamera has no battery-backed RTC, so it boots somewhere near the epoch
+     * and the first thing a user does is push the browser's clock onto the
+     * device (Device -> sync from browser). With time(nullptr) that decades-wide
+     * jump makes every live session instantly older than TOKEN_EXPIRATION_TIME:
+     * the very next request after set_timestamp 401s and the user is bounced to
+     * the login page mid-flow. CLOCK_MONOTONIC is unaffected by settimeofday(),
+     * so a clock correction no longer kills the session that performed it.
+     * Trade-off: the clock resets across reboot, but so does _tokens (it is
+     * process-local in-memory state), so the two stay consistent. */
+    static time_t _mono_now()
+    {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+            return time(nullptr); // should not happen; degrade to old behaviour
+        }
+        return static_cast<time_t>(ts.tv_sec);
+    }
+
     static void save_token(std::string& token)
     {
-        _tokens[token] = time(nullptr);
-        LOGV("save_token: %s, time: %ld", token.c_str(), _tokens[token]);
+        _tokens[token] = _mono_now();
+        LOGV("save_token: %s, mono: %ld", token.c_str(), _tokens[token]);
     }
 
     static bool check_token(std::string& token)
@@ -166,7 +186,7 @@ protected:
             LOGE("Not found token");
             return false;
         }
-        if (_tokens[token] + TOKEN_EXPIRATION_TIME < time(nullptr)) {
+        if (_tokens[token] + TOKEN_EXPIRATION_TIME < _mono_now()) {
             LOGV("Expired token");
             _tokens.erase(token);
             return false;

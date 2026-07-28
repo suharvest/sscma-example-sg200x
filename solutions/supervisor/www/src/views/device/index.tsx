@@ -457,10 +457,12 @@ const DeviceTools = () => {
   const onSyncFromBrowser = async () => {
     setBrowserSyncing(true);
     try {
-      const res = await setTimestampApi(Math.floor(Date.now() / 1000));
-      if (!isOk(res)) {
-        throw new Error(res.msg || "setTimestamp failed");
-      }
+      // Timezone first, clock second. The device has no battery-backed RTC and
+      // boots near the epoch, so set_timestamp is a decades-wide jump. Older
+      // backends age sessions on the wall clock, which means the request that
+      // follows the jump 401s and bounces the user to the login page — the
+      // timezone would silently never be applied. Doing it first keeps this
+      // working regardless of which backend is on the device.
       // IANA name, validated by the backend against /usr/share/zoneinfo.
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (tz) {
@@ -472,6 +474,10 @@ const DeviceTools = () => {
         } catch {
           message.warning(t("device.timezoneNotApplied", { tz }));
         }
+      }
+      const res = await setTimestampApi(Math.floor(Date.now() / 1000));
+      if (!isOk(res)) {
+        throw new Error(res.msg || "setTimestamp failed");
       }
       message.success(t("device.syncSuccess"));
     } catch (e) {
