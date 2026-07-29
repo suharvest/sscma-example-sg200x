@@ -124,6 +124,21 @@ export const setConfigApi = async (data: {
 // `opkg install --force-reinstall` with a 120s budget — hence the 150s
 // timeout. code 0 ok, -1 failed (data.output = opkg tail), -2 busy (another
 // app operation holds the lock).
+export const uninstallAppApi = async (data: { app_id: string }) =>
+  supervisorRequest<IInstallAppResult>(
+    {
+      url: "api/appMgr/uninstallApp",
+      method: "post",
+      data,
+      // Same budget as install: opkg remove runs prerm/postrm, and the backend
+      // stops the app first when it is the active one.
+      timeout: 150000,
+    },
+    {
+      catchs: true,
+    }
+  );
+
 export const installAppApi = async (data: { path: string }) =>
   supervisorRequest<IInstallAppResult>(
     {

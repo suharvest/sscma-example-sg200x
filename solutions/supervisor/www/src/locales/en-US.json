@@ -159,7 +159,8 @@
       "downloadFailed": "Download failed: {{file}}",
       "checksumFailed": "Checksum mismatch for {{file}} — install aborted",
       "catalogUnavailable": "Cannot reach the app catalog",
-      "catalogUnavailableHint": "This computer cannot reach sensecraft-statics.seeed.cc right now. Use \"Upload .deb\" instead, or deploy from the SenseCraft App."
+      "catalogUnavailableHint": "This computer cannot reach sensecraft-statics.seeed.cc right now. Use \"Upload .deb\" instead, or deploy from the SenseCraft App.",
+      "noSpace": "Not enough storage: about {{need}} MB needed, {{free}} MB free. Remove an app or some model files first."
     },
     "drawer": {
       "description": "Description",
@@ -173,7 +174,15 @@
       "pipeline": "Pipeline (fixed, not switchable)"
     },
     "hwNotSupported": "Hardware not supported",
-    "hwMissingTooltip": "This device is missing required hardware: {{list}}"
+    "hwMissingTooltip": "This device is missing required hardware: {{list}}",
+    "uninstall": {
+      "action": "Uninstall",
+      "title": "Uninstall {{name}}?",
+      "content": "Removes the application and its config from the device. Model files are kept — other apps may share them. You can reinstall it at any time.",
+      "confirm": "Uninstall",
+      "done": "{{name}} uninstalled",
+      "failed": "Uninstall failed"
+    }
   },
   "live": {
     "title": "Live Debug",

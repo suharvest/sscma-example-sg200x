@@ -25,6 +25,7 @@ import {
   switchAppApi,
   stopAppApi,
   installAppApi,
+  uninstallAppApi,
 } from "@/api/app";
 import { IAppInfo, IInstallAppResult } from "@/api/app/app";
 import {
@@ -34,7 +35,12 @@ import {
   sha256Hex,
   type ICatalogApp,
 } from "@/api/app/catalog";
-import { uploadFiles, ensureDirectory } from "@/api/files";
+import {
+  uploadFiles,
+  ensureDirectory,
+  getStorageInfo,
+  removeEntry,
+} from "@/api/files";
 import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import { resolveRtspUrl } from "@/utils/appStream";
@@ -105,7 +111,7 @@ const InstallAppModal = ({
   // "we have a File" is the same code path as a manual .deb upload.
   const [tab, setTab] = useState<"cloud" | "upload">("cloud");
   const [catalog, setCatalog] = useState<ICatalogApp[] | null>(null);
-  const [catalogError, setCatalogError] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [downloadLabel, setDownloadLabel] = useState("");
   const [downloadPercent, setDownloadPercent] = useState(0);
@@ -134,10 +140,10 @@ const InstallAppModal = ({
     fetchCatalog(ac.signal)
       .then((c) => {
         setCatalog(c.apps);
-        setCatalogError(false);
+        setCatalogError("");
       })
-      .catch(() => {
-        setCatalogError(true);
+      .catch((e: Error) => {
+        setCatalogError(e?.message || "unknown error");
         setTab("upload");
       })
       .finally(() => setCatalogLoading(false));
@@ -194,7 +200,16 @@ const InstallAppModal = ({
       });
       const data = res.data as IInstallAppResult | undefined;
       setOutput(data?.output || "");
-      if (isOk(res)) return true;
+      if (isOk(res)) {
+        // opkg has unpacked it; the staged copy is dead weight from here on.
+        // Only on success — a failed install keeps the file so a retry does
+        // not re-download it, and so it is still there to inspect.
+        await removeEntry(
+          "local",
+          `${INSTALL_UPLOAD_DIR}/${file.name}`
+        ).catch(() => undefined);
+        return true;
+      }
       setStage("failed");
       setErrorMsg(
         isBusy(res) ? t("apps.install.busy") : res.msg || t("apps.install.failed")
@@ -210,6 +225,26 @@ const InstallAppModal = ({
   const handleCloudInstall = async (app: ICatalogApp) => {
     setErrorMsg("");
     setOutput("");
+
+    // Refuse before downloading rather than after. Everything an app installs
+    // lands on the same storage as the staged package (the /usr and /etc
+    // overlays keep their upperdir under /userdata), so one number covers
+    // both. The margin is deliberately generous: opkg unpacks on top of the
+    // copy we upload, so both exist at once, and the .deb is compressed.
+    const needed = appDownloadSize(app) * 3 + 8 * 1024 * 1024;
+    const info = await getStorageInfo("local");
+    // A null reply means an older supervisor without the endpoint; skip the
+    // check rather than block the install on a missing feature.
+    if (info && info.free > 0 && info.free < needed) {
+      setStage("failed");
+      setErrorMsg(
+        t("apps.install.noSpace", {
+          need: (needed / 1e6).toFixed(0),
+          free: (info.free / 1e6).toFixed(0),
+        })
+      );
+      return;
+    }
 
     // Models first, then the package. The .deb's postinst may look for the
     // files it needs, and the app is startable the moment install returns —
@@ -342,7 +377,14 @@ const InstallAppModal = ({
                   type="info"
                   showIcon
                   message={t("apps.install.catalogUnavailable")}
-                  description={t("apps.install.catalogUnavailableHint")}
+                  description={
+                    <>
+                      <div>{t("apps.install.catalogUnavailableHint")}</div>
+                      <div className="rc-mono text-12 text-muted mt-8 break-all">
+                        {catalogError}
+                      </div>
+                    </>
+                  }
                 />
               ) : (
                 <div className="flex flex-col gap-8 max-h-[340px] overflow-auto">
@@ -570,6 +612,39 @@ const Applications = () => {
       okText: t("common.activate"),
       cancelText: t("common.cancel"),
       onOk: doActivate,
+    });
+  };
+
+  const onUninstall = (app: IAppInfo) => {
+    const label = pickLocalized(app, "name") || app.id;
+    modal.confirm({
+      title: t("apps.uninstall.title", { name: label }),
+      icon: <ExclamationCircleOutlined />,
+      content: t("apps.uninstall.content"),
+      okText: t("apps.uninstall.confirm"),
+      okButtonProps: { danger: true },
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        setSwitching(app.id);
+        try {
+          const res = await uninstallAppApi({ app_id: app.id });
+          if (isOk(res)) {
+            message.success(t("apps.uninstall.done", { name: label }));
+          } else if (isBusy(res)) {
+            message.error(t("apps.install.busy"));
+          } else {
+            // opkg's own words are far more useful than a generic failure —
+            // "depends on" and "not installed" both land here.
+            const out = (res.data as IInstallAppResult | undefined)?.output;
+            message.error(out?.trim() || res.msg || t("apps.uninstall.failed"));
+          }
+        } catch (e) {
+          message.error(t("apps.uninstall.failed"));
+        } finally {
+          setSwitching(null);
+          fetchList(true);
+        }
+      },
     });
   };
 
@@ -837,6 +912,20 @@ const Applications = () => {
                     <Button size="small" onClick={() => setDetailApp(app)}>
                       {t("common.details")}
                     </Button>
+                    {/* Built-in apps have no package to remove; only the ones
+                        that came from a .deb can be uninstalled. */}
+                    {!noderedMode && (
+                      <Button
+                        size="small"
+                        danger
+                        className="ml-auto"
+                        loading={switching === app.id}
+                        disabled={switching !== null && switching !== app.id}
+                        onClick={() => onUninstall(app)}
+                      >
+                        {t("apps.uninstall.action")}
+                      </Button>
+                    )}
                   </div>
                 </div>
               );

@@ -60,9 +60,19 @@ export const appDownloadSize = (app: ICatalogApp): number =>
  * browser-cached copy would offer a version that no longer exists.
  */
 export const fetchCatalog = async (signal?: AbortSignal): Promise<ICatalog> => {
-  const res = await fetch(CATALOG_URL, { cache: "no-store", signal });
+  // Surface *why* it failed. No internet, a corporate proxy, a DNS block and a
+  // CDN outage all look the same to the user otherwise, and the fix differs
+  // for each — the caller renders this text.
+  let res: Response;
+  try {
+    res = await fetch(CATALOG_URL, { cache: "no-store", signal });
+  } catch (e) {
+    throw new Error(
+      `${(e as Error)?.message || "network error"} — ${CATALOG_URL}`
+    );
+  }
   if (!res.ok) {
-    throw new Error(`catalog HTTP ${res.status}`);
+    throw new Error(`HTTP ${res.status} — ${CATALOG_URL}`);
   }
   const data = (await res.json()) as ICatalog;
   if (!data || !Array.isArray(data.apps)) {

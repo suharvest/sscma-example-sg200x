@@ -60,6 +60,35 @@ export const makeDirectory = async (storage: StorageType, path: string) => {
   return res.data;
 };
 
+// 存储空间信息。用于在下载/上传前判断放不放得下——装到一半才失败，
+// 用户已经等了几十兆的下载。
+//
+// 注意这里只有一个数字就够了：应用装到 /usr、/etc、/usr/local，这些都是
+// overlay 挂载，upperdir 在 /userdata/.overlay_fs 下。482MB 的 /dev/root 是
+// 只读基础镜像，不吸收任何安装。所以暂存的 deb 和 opkg 解包出来的东西消耗
+// 的是同一块存储。
+export interface IStorageInfo {
+  storage: string;
+  path: string;
+  total: number;
+  free: number;
+}
+
+export const getStorageInfo = async (
+  storage: StorageType = "local"
+): Promise<IStorageInfo | null> => {
+  const res = await supervisorRequest<IStorageInfo>(
+    {
+      url: `/api/fileMgr/storageInfo`,
+      method: "get",
+      params: { storage },
+    },
+    { catchs: true }
+  );
+  // 老版本 supervisor 没有这个接口：返回 null，调用方跳过检查而不是报错。
+  return isOk(res) ? (res.data as IStorageInfo) : null;
+};
+
 // 确保目录存在：目录已存在时不视为错误（供应用安装等流程在上传前调用）。
 export const ensureDirectory = async (
   storage: StorageType,

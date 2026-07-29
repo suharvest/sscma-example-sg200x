@@ -158,7 +158,8 @@
       "downloadFailed": "下载失败：{{file}}",
       "checksumFailed": "校验失败：{{file}} 与官方校验和不符，已中止安装",
       "catalogUnavailable": "连不上应用目录",
-      "catalogUnavailableHint": "这台电脑当前无法访问 sensecraft-statics.seeed.cc。可改用「上传 .deb」，或用 SenseCraft App 部署。"
+      "catalogUnavailableHint": "这台电脑当前无法访问 sensecraft-statics.seeed.cc。可改用「上传 .deb」，或用 SenseCraft App 部署。",
+      "noSpace": "存储空间不足：约需 {{need}} MB，当前可用 {{free}} MB。请先卸载不用的应用或清理模型文件。"
     },
     "drawer": {
       "description": "描述",
@@ -172,7 +173,15 @@
       "pipeline": "流水线（固定，不可切换）"
     },
     "hwNotSupported": "硬件不支持",
-    "hwMissingTooltip": "此设备缺少所需硬件：{{list}}"
+    "hwMissingTooltip": "此设备缺少所需硬件：{{list}}",
+    "uninstall": {
+      "action": "卸载",
+      "title": "卸载 {{name}}？",
+      "content": "将从设备上移除该应用及其配置文件。模型文件会保留（其他应用可能在用）。之后可随时重新安装。",
+      "confirm": "卸载",
+      "done": "{{name}} 已卸载",
+      "failed": "卸载失败"
+    }
   },
   "live": {
     "title": "实时调试",

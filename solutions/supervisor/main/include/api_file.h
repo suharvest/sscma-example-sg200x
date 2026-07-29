@@ -4,6 +4,7 @@
 #include "api_base.h"
 #include <algorithm>
 #include <filesystem>
+#include <sys/statvfs.h>
 #include <fstream>
 
 class api_file : public api_base {
@@ -615,6 +616,53 @@ private:
         return API_STATUS_OK;
     }
 
+    // Free/total bytes of a storage, so a caller can refuse a transfer it
+    // knows will not fit instead of discovering it after the upload.
+    //
+    // Worth being precise about what "full" means here: the .deb an app
+    // installs lands in /usr, /etc and /usr/local, all of which are overlay
+    // mounts whose upperdir is /userdata/.overlay_fs. The 482MB /dev/root is
+    // the read-only base image and never absorbs an install. So both the
+    // staged package AND everything opkg unpacks from it consume the SAME
+    // storage this reports -- one number is enough, and reading /dev/root
+    // would be actively misleading (it shows ~47MB free on a used device
+    // while gigabytes are actually available).
+    static api_status_t storageInfo(request_t req, response_t res) {
+        try {
+            std::string storage = getParam(req, "storage");
+            std::string effectiveStorage = storage.empty() ? "local" : storage;
+
+            if (!isValidStorage(effectiveStorage)) {
+                response(res, -1, "Invalid storage parameter. Use 'local' or 'sd'.");
+                return API_STATUS_OK;
+            }
+            if (effectiveStorage == "sd" && !isSDAvailable()) {
+                response(res, -1, "SD card not available.");
+                return API_STATUS_OK;
+            }
+
+            const std::string root = getFullPath("/", effectiveStorage);
+            struct statvfs st {};
+            if (statvfs(root.c_str(), &st) != 0) {
+                response(res, -1, "Failed to read storage info");
+                return API_STATUS_OK;
+            }
+
+            // f_bavail, not f_bfree: the reserved-for-root blocks are not
+            // available to the uploads this number is used to gate.
+            const uint64_t frsize = st.f_frsize ? st.f_frsize : st.f_bsize;
+            nlohmann::json data;
+            data["storage"] = effectiveStorage;
+            data["path"] = root;
+            data["total"] = static_cast<uint64_t>(st.f_blocks) * frsize;
+            data["free"] = static_cast<uint64_t>(st.f_bavail) * frsize;
+            response(res, 0, "OK", data);
+        } catch (const std::exception& e) {
+            response(res, -1, std::string("Failed to read storage info: ") + e.what());
+        }
+        return API_STATUS_OK;
+    }
+
     // Get file/directory info
     static api_status_t info(request_t req, response_t res) {
         try {
@@ -695,6 +743,7 @@ public:
             REG_API(download);  // GET  /api/file/download
             REG_API(rename);    // POST /api/file/rename
             REG_API(info);      // GET  /api/file/info
+            REG_API(storageInfo); // GET  /api/fileMgr/storageInfo
         } catch (const std::exception& e) {
             // Handle constructor errors
         }

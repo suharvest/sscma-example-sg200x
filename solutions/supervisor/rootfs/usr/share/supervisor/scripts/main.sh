@@ -1471,6 +1471,44 @@ function app_install() {
     rm -f "$out"
     return 0
 }
+# app_uninstall <package> : remove an application package with opkg.
+#
+# The package name comes from the gallery manifest id, which every reCamera
+# app keeps equal to its opkg package name. The C++ side validates it against
+# the same [a-z0-9-] whitelist app ids already use, so it cannot carry shell
+# metacharacters; re-checked here because this script may be driven by another
+# caller.
+#
+# Deliberately NOT --force-removal-of-dependent-packages: if something depends
+# on this package, refusing is the correct answer, and opkg says so in output
+# the console surfaces.
+#
+# Output protocol matches app_install: "EXIT:<code>" then the tail of opkg's
+# output.
+function app_uninstall() {
+    local pkg="$2"
+    case "$pkg" in
+    "" | *[!a-z0-9-]*)
+        echo "EXIT:1"
+        echo "rejected: package name must match [a-z0-9-]"
+        return 1
+        ;;
+    esac
+    # Refuse to remove the console itself: it is the process serving the
+    # request, and taking it out leaves the device with no way to manage apps.
+    if [ "$pkg" = "supervisor" ]; then
+        echo "EXIT:1"
+        echo "rejected: refusing to uninstall the supervisor itself"
+        return 1
+    fi
+    local out="$WORK_DIR/app_uninstall.out"
+    _app_run_timeout 120 opkg remove "$pkg" >"$out" 2>&1
+    local ret=$?
+    echo "EXIT:$ret"
+    tail -c 2048 "$out" 2>/dev/null
+    rm -f "$out"
+    return 0
+}
 # app manager
 ##################################################
 

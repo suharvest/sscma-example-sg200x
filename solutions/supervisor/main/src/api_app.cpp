@@ -120,6 +120,7 @@ api_app::api_app()
     REG_API(setConfig);
     REG_API(getIntegrationDoc);
     REG_API(installApp);
+    REG_API(uninstallApp);
     REG_API(getHaConfig);
     REG_API(setHaConfig);
     REG_API(testHaConnection);
@@ -1269,6 +1270,104 @@ api_status_t api_app::installApp(request_t req, response_t res)
             return API_STATUS_OK;
         },
         // poll thread: release the op gate whatever happened.
+        []() { op_release(); },
+        res);
+}
+
+// POST /api/appMgr/uninstallApp  body: {app_id}
+//
+// opkg remove for a gallery application. The package name is the app id: every
+// reCamera app keeps its opkg package, its init script suffix and its manifest
+// id the same, which is also what makes the install catalog able to tell what
+// is already on the device.
+//
+// The app is stopped first when it is the active one. Removing the binary out
+// from under a running process leaves an orphan still holding the camera --
+// and since its init script goes away with the package, nothing is left that
+// knows how to stop it.
+api_status_t api_app::uninstallApp(request_t req, response_t res)
+{
+    static constexpr size_t MAX_OUTPUT_TAIL = 2048;
+
+    auto&& body = parse_body(req);
+    std::string app_id = body.value("app_id", "");
+    if (!valid_app_id(app_id)) {
+        response(res, -1, "Invalid app_id");
+        return API_STATUS_OK;
+    }
+    if (app_id == "supervisor") {
+        response(res, -1, "Refusing to uninstall the console itself");
+        return API_STATUS_OK;
+    }
+
+    if (in_nodered_mode()) {
+        response(res, CODE_NODERED_MODE, MSG_NODERED_MODE);
+        return API_STATUS_OK;
+    }
+
+    if (!op_try_acquire()) {
+        response(res, -2, "busy: another app operation is in progress");
+        return API_STATUS_OK;
+    }
+
+    // Stop it first if it is the one running, and clear the persisted
+    // selection: leaving state.json pointing at a package that no longer
+    // exists makes app_restore fail on every boot.
+    json state = read_state();
+    const bool was_active = (jstr(state, "active_app") == app_id);
+    std::string active_script = jstr(state, "active_script");
+
+    auto out = std::make_shared<std::string>();
+    return submit_async(
+        [out, app_id, was_active, active_script]() {
+            if (was_active && !active_script.empty()) {
+                app_op stop_op;
+                sh_stop(active_script, stop_op);
+            }
+            *out = script_timeout(130, "app_uninstall", app_id);
+        },
+        [out, app_id, was_active](json& res) -> api_status_t {
+            int exit_code = -1;
+            std::string opkg_out = *out;
+            if (out->rfind("EXIT:", 0) == 0) {
+                size_t nl = out->find('\n');
+                std::string code_str = out->substr(5, (nl == std::string::npos ? out->size() : nl) - 5);
+                try {
+                    exit_code = std::stoi(code_str);
+                } catch (const std::exception&) {
+                    exit_code = -1;
+                }
+                opkg_out = (nl == std::string::npos) ? "" : out->substr(nl + 1);
+            }
+            if (opkg_out.size() > MAX_OUTPUT_TAIL) {
+                opkg_out = opkg_out.substr(opkg_out.size() - MAX_OUTPUT_TAIL);
+            }
+
+            if (exit_code == 0 && was_active) {
+                // Only after opkg succeeded: on failure the app is still
+                // installed and the selection is still valid.
+                json st = read_state();
+                st["active_app"] = nullptr;
+                st["active_script"] = "";
+                write_state(st);
+                _state = app_state::STOPPED;
+            }
+
+            json data = json::object();
+            data["app_id"] = app_id;
+            data["exit_code"] = exit_code;
+            data["output"] = opkg_out;
+            data["apps_count"] = (int)load_manifests().size();
+
+            if (exit_code == 0) {
+                response(res, 0, STR_OK, data);
+            } else if (exit_code == 124) {
+                response(res, -1, "opkg remove timed out (120s)", data);
+            } else {
+                response(res, -1, "opkg remove failed (exit " + std::to_string(exit_code) + ")", data);
+            }
+            return API_STATUS_OK;
+        },
         []() { op_release(); },
         res);
 }

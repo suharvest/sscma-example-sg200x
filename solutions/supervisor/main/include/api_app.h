@@ -43,6 +43,7 @@ private:
     static api_status_t setConfig(request_t req, response_t res);
     static api_status_t getIntegrationDoc(request_t req, response_t res);
     static api_status_t installApp(request_t req, response_t res);
+    static api_status_t uninstallApp(request_t req, response_t res);
     // Home Assistant MQTT integration (/userdata/local/ha.conf, see ha_config.h)
     static api_status_t getHaConfig(request_t req, response_t res);
     static api_status_t setHaConfig(request_t req, response_t res);
