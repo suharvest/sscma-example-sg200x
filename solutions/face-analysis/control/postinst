@@ -6,6 +6,7 @@ echo "Installing Face Analysis Application..."
 
 # Create models directory if not exists
 mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
 
 # Set permissions
 chmod +x /usr/local/bin/face-analysis
@@ -24,6 +25,27 @@ echo "Configuration file: /etc/face-analysis.conf"
 echo ""
 echo "RTSP stream: rtsp://<device_ip>:554/live"
 echo "MQTT topic: recamera/face-analysis/results"
+
+# Register with the supervisor app gallery. The console scans
+# /usr/share/supervisor/apps/ (built-ins) and /userdata/local/apps/ (installed
+# apps); /usr/share/face-analysis/ is neither, so the manifest and the integration docs
+# have to be copied across or the app never appears.
+#
+# This manifest used to ship inside the supervisor package instead. That made
+# the console advertise face-analysis on devices where it was not installed, with an
+# Enable button that could only fail ("init script not found"). It travels with
+# the application now, so the gallery lists exactly what is installed.
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/face-analysis
+mkdir -p "$APPS_DIR"
+for f in face-analysis.json face-analysis.md face-analysis.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    else
+        echo "WARNING: $SHARE_DIR/$f missing, not registered"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/face-analysis.json"
 
 # Migration: remove the auto-start (S-prefixed) script from older package
 # layouts. Gallery apps must NOT start at boot — only the supervisor's

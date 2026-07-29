@@ -102,7 +102,7 @@
     "subtitle": "每个应用都是一套完整的场景方案。同一时间只能有一个应用占用摄像头。",
     "loadError": "无法加载应用列表。当前固件可能不支持 appMgr 服务。",
     "noApps": "尚未安装应用",
-    "noAppsHint": "安装方案包（.deb）后，应用将在此处注册显示。",
+    "noAppsHint": "用 SenseCraft App 一键部署，或点右上角「安装应用」上传方案包（.deb）。",
     "sceneFirmware": "固件",
     "sceneGeneral": "通用",
     "active": "运行中",

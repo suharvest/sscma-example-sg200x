@@ -5,5 +5,50 @@ if [ -f /etc/init.d/S93sscma-supervisor ]; then
     /etc/init.d/S93sscma-supervisor stop
 fi
 
-exit 0
+# --------------------------------------------------------------------------
+# Migration: rescue the manifests of apps that are installed but do not carry
+# their own.
+#
+# Up to 0.3.x this package shipped gallery manifests for face-analysis,
+# ppocr-reader, retail-vision and yolo-detector. That made the console
+# advertise all four on every device, installed or not, with an Enable button
+# that could only fail ("init script not found"). They now travel with their
+# own application packages instead.
+#
+# The catch is the upgrade path. opkg deletes files the old version owned and
+# the new one does not, so those four manifests disappear during this install.
+# For face-analysis and yolo-detector that was the ONLY copy: a device running
+# an older build of either app would keep the binary and the init script, and
+# silently lose the app from the gallery.
+#
+# So before opkg unpacks anything, copy the manifest of any app that is
+# actually installed (its init script exists) into the user directory, which
+# this package does not own and will not touch. The next upgrade of the app
+# itself overwrites it with the version it ships.
+#
+# preinst is the only hook that can do this -- by postinst time the files are
+# already gone.
+# --------------------------------------------------------------------------
+BUILTIN_DIR=/usr/share/supervisor/apps
+USER_DIR=/userdata/local/apps
 
+for id in face-analysis ppocr-reader retail-vision yolo-detector; do
+    [ -f "$BUILTIN_DIR/$id.json" ] || continue
+    # Only for apps that are really here; an advertised-but-absent app is
+    # exactly what this change is removing.
+    [ -f "/etc/init.d/K92$id" ] || [ -f "/etc/init.d/S92$id" ] || continue
+
+    mkdir -p "$USER_DIR"
+    for ext in json md zh.md; do
+        src="$BUILTIN_DIR/$id.$ext"
+        dst="$USER_DIR/$id.$ext"
+        # Never clobber a manifest the app itself installed -- that one is
+        # newer than this built-in copy by definition.
+        if [ -f "$src" ] && [ ! -f "$dst" ]; then
+            cp -f "$src" "$dst" || true
+        fi
+    done
+    echo "Migrated gallery manifest for installed app: $id"
+done
+
+exit 0

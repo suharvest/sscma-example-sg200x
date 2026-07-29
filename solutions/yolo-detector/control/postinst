@@ -27,6 +27,27 @@ echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
 echo "MQTT topic:      recamera/yolo-detector/results"
 echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
 
+# Register with the supervisor app gallery. The console scans
+# /usr/share/supervisor/apps/ (built-ins) and /userdata/local/apps/ (installed
+# apps); /usr/share/yolo-detector/ is neither, so the manifest and the integration docs
+# have to be copied across or the app never appears.
+#
+# This manifest used to ship inside the supervisor package instead. That made
+# the console advertise yolo-detector on devices where it was not installed, with an
+# Enable button that could only fail ("init script not found"). It travels with
+# the application now, so the gallery lists exactly what is installed.
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/yolo-detector
+mkdir -p "$APPS_DIR"
+for f in yolo-detector.json yolo-detector.md yolo-detector.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    else
+        echo "WARNING: $SHARE_DIR/$f missing, not registered"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/yolo-detector.json"
+
 # Migration: remove the auto-start (S-prefixed) script from older package
 # layouts. Gallery apps must NOT start at boot — only the supervisor's
 # app_restore starts the single active application (K-prefix is skipped

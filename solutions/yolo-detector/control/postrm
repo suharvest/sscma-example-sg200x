@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Post-removal script for yolo-detector
+# Deregister from the app gallery so the console stops listing an application
+# that is no longer installed.
+
+rm -f /userdata/local/apps/yolo-detector.json
+rm -f /userdata/local/apps/yolo-detector.md
+rm -f /userdata/local/apps/yolo-detector.zh.md
+
+exit 0

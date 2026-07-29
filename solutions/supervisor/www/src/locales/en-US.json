@@ -102,7 +102,7 @@
     "subtitle": "Each application is a complete scene solution. Only one application can hold the camera at a time.",
     "loadError": "Could not load the application list. The appMgr service may be unavailable on this firmware.",
     "noApps": "No applications installed",
-    "noAppsHint": "Install a solution package (.deb) to register applications here.",
+    "noAppsHint": "Deploy one from the SenseCraft App, or upload a solution package (.deb) with Install App.",
     "sceneFirmware": "Firmware",
     "sceneGeneral": "General",
     "active": "Active",
