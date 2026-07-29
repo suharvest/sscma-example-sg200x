@@ -118,13 +118,32 @@ scripts/check-manifest-versions.sh --fix    # 按 project(VERSION) 就地改正
 
 > 2026-07-29 首次跑这个脚本，**十个应用里九个在漂**：卡片显示 0.1.0 而装上的包是 0.2.0；`face-analysis` 和 `yolo-detector` 的 manifest 版本甚至比任何存在过的包都高（1.0.0 / 1.1.0 对 0.4.0 / 0.5.0）。这个字段从来没人维护过，因为没有任何东西会在它错的时候出声。
 
-### 5. control 脚本的执行位
+### 5. 发布：改了版本号不等于发布了
+
+**deb 上传到 CDN 是发布链路里唯一没有脚本兜底的一步**，也是唯一靠人记得的一步。
+
+> 2026-07-29 的真实代价：supervisor 0.5.0 / 0.5.1 / 0.5.2 各自构建、scp 装到设备、真机验证通过——而 CDN 上始终是 0.4.1。所有从 SenseCraft App 部署的用户拿到的都是没有这三版功能的 console，**而且没有任何地方会报错**：ecosystem 的 yaml 写 0.4.1，CDN 上也确实有 0.4.1，两者完美自洽，只是一起陈旧。
+
+所以有效的检查不是「URL 通不通」或「校验和对不对」（当时都是对的），而是**「ecosystem 发的版本，是不是我们真正在构建的版本」**。这个问题跨两个仓库，正因如此才一直没人问。
+
+```bash
+scripts/release-app.py --check          # 所有应用：构建版本 vs ecosystem 发布版本
+scripts/release-app.py <app>            # 发布一个：上传 + 回验 + 改 device yaml
+```
+
+`--check` 是护栏，**bump 完版本号、发布之前各跑一次**。发布会把包下载回来比对 sha256 —— `ossutil` 说成功和字节真的取得到不是一回事。
+
+solutions 仓路径用 `$SENSECRAFT_SOLUTIONS` 指定。
+
+> 还有一层脚本管不到：**CDN 边缘缓存**。源站更新后边缘会按 TTL 挂着旧副本一段时间（实测 `X-Cache: TCP_MEM_HIT`，`Age` 持续增长，加 query 参数也击穿不了——这个 CDN 的缓存键忽略 query string）。发完不要立刻断言"用户能拿到新版"，要么等，要么用 aliyun CLI 主动刷新。
+
+### 6. control 脚本的执行位
 
 `cmake/package.cmake` 把 `control/{preinst,postinst,prerm,postrm}` 打进 deb。**这些文件在 git 里必须是 `+x`**，否则设备上 `opkg` 报 126。
 
 > Docker Desktop 的挂载缓存会吃掉 `chmod`。改过权限后 `git update-index --chmod=+x`，并重启容器再打包。
 
-### 6. main/CMakeLists.txt
+### 7. main/CMakeLists.txt
 
 ```cmake
 file(GLOB_RECURSE srcs ${CMAKE_CURRENT_LIST_DIR}/*.c ${CMAKE_CURRENT_LIST_DIR}/*.cpp)
@@ -241,6 +260,7 @@ md5sum ./usr/local/bin/<id>          # 与设备上 md5sum /usr/local/bin/<id> �
 - [ ] 接了打码 → 快照路径也遮了（否则 ONVIF 抓图是原图）
 - [ ] 检测框跨模块传递用了 `geometry::InferBox` / `StreamBox`
 - [ ] 集成文档里写的开关、默认值、命令行参数**与代码一致**
+- [ ] 发布过了 → `scripts/release-app.py --check` 干净（改了版本号却没发布，yaml 和 CDN 会一起陈旧，任何 URL/校验和检查都发现不了）
 - [ ] 装完在 console 里能看到、能切换、切换后画面正常
 
 > 最后一条不能靠"应该没问题"。**文档说谎比没文档更贵**：`face-analysis` 的集成指南曾长期写着"默认打码模糊，`--no-blur` 关闭"，而实际默认关闭、那个参数早已删除——用户照着找不到，只会得出"功能坏了"的结论。
