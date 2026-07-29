@@ -124,7 +124,7 @@ def cmd_check(solutions_repo: Path) -> int:
     return 0
 
 
-def cmd_publish(solution: str, solutions_repo: Path, dry_run: bool) -> int:
+def cmd_publish(solution: str, solutions_repo: Path, dry_run: bool, publish_content: bool) -> int:
     version = built_version(solution)
     if not version:
         print(f"error: no project({solution} VERSION ...) in its CMakeLists.txt", file=sys.stderr)
@@ -188,12 +188,66 @@ def cmd_publish(solution: str, solutions_repo: Path, dry_run: bool) -> int:
     yaml_path.write_text(new_text, encoding="utf-8")
     print(f"  {yaml_path.name}: {old_version} -> {version} (+ sha256)")
 
-    print("\nNext:")
+    if not publish_content:
+        print("\nNext (or re-run with --publish-content to chain these):")
+        print(f"  cd {solutions_repo}")
+        print("  uv run --package sensecraft-solutionctl solutionctl validate solutions/recamera_ecosystem --spec-dir spec --check-urls")
+        print("  uv run python scripts/generate_recamera_catalog.py          # console install catalog")
+        print("  uv run python scripts/generate_solution_manifest.py         # OTA content + bundled_hashes")
+        print("  git add -p && git commit && open a PR")
+        return 0
+
+    return run_content_publish(solutions_repo)
+
+
+def run_content_publish(solutions_repo: Path) -> int:
+    """Validate, then regenerate both published artefacts derived from the YAML.
+
+    The dependency runs one way only: this script edits the device YAML, so the
+    solution zip and the install catalog are downstream of it and must be
+    rebuilt after. Neither generator can call this one — they would be
+    republishing content that had not been produced yet.
+
+    The OTA content publish is deliberately NOT chained here. Its generator
+    refuses to run while solutions/ has uncommitted paths, because its zips are
+    built from the working tree — publishing before the commit would ship
+    content that is not in git. This script has just rewritten the device YAML,
+    so that guard would fire every time. The correct order is:
+
+        release-app.py <app> --publish-content   # upload, YAML, validate, catalog
+        git commit                               # the version bump
+        generate_solution_manifest.py            # OTA content, from committed state
+
+    The catalog is chained because it is derived from the YAML this script just
+    changed and has no such guard.
+    """
+    steps = [
+        (["uv", "run", "--package", "sensecraft-solutionctl", "solutionctl", "validate",
+          "solutions/recamera_ecosystem", "--spec-dir", "spec", "--check-urls"], "validate"),
+        (["uv", "run", "python", "scripts/generate_recamera_catalog.py"], "install catalog"),
+    ]
+    # Strip the variables that hijack `uv run`'s interpreter choice. An active
+    # conda/venv in the calling shell leaks through subprocess and makes uv
+    # resolve to that interpreter instead of the solutions project's, which
+    # fails in confusing ways far from the cause (an argparse TypeError from a
+    # different Python, in the observed case).
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "PYTHONHOME", "PYTHONPATH")}
+
+    for cmd, label in steps:
+        print(f"\n=== {label} ===")
+        r = subprocess.run(cmd, cwd=solutions_repo, env=env)
+        if r.returncode != 0:
+            print(f"\n{label} failed (exit {r.returncode}).", file=sys.stderr)
+            return r.returncode
+
+    print("\nUploaded, YAML updated, catalog republished. Still to do, in order:")
     print(f"  cd {solutions_repo}")
-    print("  uv run --package sensecraft-solutionctl solutionctl validate solutions/recamera_ecosystem --spec-dir spec --check-urls")
-    print("  uv run python scripts/generate_recamera_catalog.py          # console install catalog")
-    print("  uv run python scripts/generate_solution_manifest.py         # OTA content + bundled_hashes")
-    print("  git add -p && git commit && open a PR")
+    print("  git add -p && git commit                              # the version bump")
+    print("  uv run python scripts/generate_solution_manifest.py   # OTA content, from the commit")
+    print("  git add solutions/bundled_hashes.json && git commit && open a PR")
+    print("\nThe OTA step is after the commit on purpose: its zips come from the")
+    print("working tree, so publishing first would ship content that is not in git.")
     return 0
 
 
@@ -202,6 +256,10 @@ def main() -> int:
     ap.add_argument("app", nargs="?", help="solution to publish (omit with --check)")
     ap.add_argument("--check", action="store_true", help="report built-vs-published drift for every app")
     ap.add_argument("--dry-run", action="store_true", help="publish: show what would happen")
+    ap.add_argument("--publish-content", action="store_true",
+                    help="after updating the YAML, also validate and regenerate the "
+                         "install catalog (the OTA content publish stays manual: it "
+                         "must run from a committed tree)")
     ap.add_argument("--solutions-repo", type=Path, default=DEFAULT_SOLUTIONS_REPO)
     args = ap.parse_args()
 
@@ -213,7 +271,7 @@ def main() -> int:
 
     if args.check or not args.app:
         return cmd_check(repo)
-    return cmd_publish(args.app, repo, args.dry_run)
+    return cmd_publish(args.app, repo, args.dry_run, args.publish_content)
 
 
 if __name__ == "__main__":

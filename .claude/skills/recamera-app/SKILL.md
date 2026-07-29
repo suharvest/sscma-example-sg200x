@@ -127,11 +127,23 @@ scripts/check-manifest-versions.sh --fix    # 按 project(VERSION) 就地改正
 所以有效的检查不是「URL 通不通」或「校验和对不对」（当时都是对的），而是**「ecosystem 发的版本，是不是我们真正在构建的版本」**。这个问题跨两个仓库，正因如此才一直没人问。
 
 ```bash
-scripts/release-app.py --check          # 所有应用：构建版本 vs ecosystem 发布版本
-scripts/release-app.py <app>            # 发布一个：上传 + 回验 + 改 device yaml
+scripts/release-app.py --check                      # 所有应用：构建版本 vs ecosystem 发布版本
+scripts/release-app.py <app> --publish-content      # 上传 + 回验 + 改 yaml + validate + 重生成 catalog
 ```
 
 `--check` 是护栏，**bump 完版本号、发布之前各跑一次**。发布会把包下载回来比对 sha256 —— `ossutil` 说成功和字节真的取得到不是一回事。
+
+**发布顺序不能颠倒，而且 OTA 那一步有意留在脚本外：**
+
+```
+release-app.py <app> --publish-content    上传、改 yaml、validate、catalog
+git commit                                 版本号那次提交
+generate_solution_manifest.py              OTA 内容，从已提交的状态打包
+```
+
+`generate_solution_manifest.py` 拒绝在 `solutions/` 有未提交路径时运行——它的 zip 从工作区打包，先发布就等于发出没进 git 的内容。而 release 刚刚改写了 device yaml，所以那个守卫每次都会拦。**这是对的，别绕过它。**
+
+反过来也不成立：generate 不能调 release，那会去发布还没产生的内容。依赖是单向的。
 
 solutions 仓路径用 `$SENSECRAFT_SOLUTIONS` 指定。
 
