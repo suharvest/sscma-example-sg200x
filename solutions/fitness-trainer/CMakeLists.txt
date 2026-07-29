@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(fitness-trainer VERSION 0.2.1 LANGUAGES C CXX)
+project(fitness-trainer VERSION 0.2.2 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 

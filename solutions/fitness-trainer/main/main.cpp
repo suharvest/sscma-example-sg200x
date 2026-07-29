@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <sys/stat.h>
 
 #include <atomic>
 #include <chrono>
@@ -35,8 +36,10 @@ using namespace fitness;
 #define TAG "fitness-trainer"
 
 static struct {
-    // Ships with the supervisor; the app does not package a model of its own.
-    std::string model_path = "/usr/share/supervisor/models/yolo11n_pose_cv181x_int8.cvimodel";
+    // Empty = search the candidate list below. An explicit -m / MODEL_PATH
+    // wins and is used verbatim: if an operator names a file, failing loudly
+    // beats silently running a different model than the one they asked for.
+    std::string model_path;
 
     std::string mqtt_host = "localhost";
     int mqtt_port = 1883;
@@ -60,6 +63,31 @@ static struct {
     int cli_target_reps = 0;
     int cli_target_sets = 0;
 } g_config;
+
+// Where to look for the pose model, in order.
+//
+// This app is the only one in the gallery that ships no model of its own: it
+// uses the YOLO11n-Pose that comes with the reCamera console, which is the
+// official Ultralytics build and would only be duplicated by packaging a
+// second copy. The cost of that choice is this list -- a device whose console
+// predates the model, or one where it was installed separately, must still
+// find it. /userdata is checked too because that is where both the SenseCraft
+// deployer and the console's cloud install put model files.
+static const char* MODEL_CANDIDATES[] = {
+    "/usr/share/supervisor/models/yolo11n_pose_cv181x_int8.cvimodel",
+    "/userdata/local/models/yolo11n_pose_cv181x_int8.cvimodel",
+};
+
+// First candidate that exists, or empty when none do.
+static std::string findPoseModel() {
+    for (const char* p : MODEL_CANDIDATES) {
+        struct stat st;
+        if (::stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
+            return p;
+        }
+    }
+    return std::string();
+}
 
 static const char* APP_CONFIG_PATH = "/userdata/local/apps/fitness-trainer.config.json";
 
@@ -387,6 +415,22 @@ int main(int argc, char** argv) {
     const AppConfig& cfg = g_watcher->loadInitial();
 
     MA_LOGI(TAG, "Starting Fitness Trainer");
+
+    if (g_config.model_path.empty()) {
+        g_config.model_path = findPoseModel();
+        if (g_config.model_path.empty()) {
+            // Name every path tried: "model not found" without the list sends
+            // people looking in the wrong directory.
+            MA_LOGE(TAG, "No pose model found. Looked in:");
+            for (const char* p : MODEL_CANDIDATES) {
+                MA_LOGE(TAG, "  %s", p);
+            }
+            MA_LOGE(TAG, "Install a reCamera console that ships yolo11n-pose, or set "
+                         "MODEL_PATH in /etc/fitness-trainer.conf to a YOLO pose cvimodel.");
+            cleanup();
+            return 1;
+        }
+    }
     MA_LOGI(TAG, "Model: %s", g_config.model_path.c_str());
 
     if (!applyExercise(cfg, false)) { cleanup(); return 1; }

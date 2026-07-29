@@ -39,13 +39,15 @@ DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
 [ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
 [ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
 
-# Pose model. Ships with the supervisor, so the app deb carries no model of its
-# own; MODEL_PATH in the conf file overrides. The supervisor's appMgr setModel
-# writes the same override file the other gallery apps use.
-DEFAULT_MODEL=/usr/share/supervisor/models/yolo11n_pose_cv181x_int8.cvimodel
+# Pose model. Pass -m ONLY when there is a specific file to name. The binary searches its
+# own candidate list (console models dir, then /userdata/local/models) and
+# reports every path it tried when none exist. Passing a hard-coded default
+# here would defeat that: -m is treated as an explicit choice and used
+# verbatim, so a device whose console predates yolo11n-pose would fail with
+# "cannot load" instead of falling back to the copy under /userdata.
 MODEL_OVERRIDE_FILE=/userdata/local/apps/fitness-trainer.model
-MODEL="${MODEL_PATH:-$DEFAULT_MODEL}"
-if [ -f "$MODEL_OVERRIDE_FILE" ]; then
+MODEL="${MODEL_PATH:-}"
+if [ -z "$MODEL" ] && [ -f "$MODEL_OVERRIDE_FILE" ]; then
     OVERRIDE=$(head -n 1 "$MODEL_OVERRIDE_FILE" 2>/dev/null)
     if [ -n "$OVERRIDE" ] && [ -f "$OVERRIDE" ]; then
         echo "Using model override: $OVERRIDE"
@@ -54,7 +56,7 @@ if [ -f "$MODEL_OVERRIDE_FILE" ]; then
         echo "WARNING: model override file present but model not found: $OVERRIDE"
     fi
 fi
-DAEMON_OPTS="$DAEMON_OPTS -m $MODEL"
+[ -n "$MODEL" ] && DAEMON_OPTS="$DAEMON_OPTS -m $MODEL"
 
 # Exercise selection normally comes from the console-managed config file
 # (/userdata/local/apps/fitness-trainer.config.json). EXERCISE_MODE here is an
