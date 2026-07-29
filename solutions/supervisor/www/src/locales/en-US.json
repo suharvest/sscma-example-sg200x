@@ -149,7 +149,17 @@
       "uploadFailed": "Failed to upload the package",
       "output": "Installer output",
       "installAnother": "Install another",
-      "close": "Close"
+      "close": "Close",
+      "fromCloud": "Install from cloud",
+      "fromFile": "Upload .deb",
+      "installAction": "Install",
+      "installed": "Installed",
+      "withModels": "{{count}} model(s) included",
+      "downloading": "Downloading {{file}} … (fetched by your browser; the camera needs no internet)",
+      "downloadFailed": "Download failed: {{file}}",
+      "checksumFailed": "Checksum mismatch for {{file}} — install aborted",
+      "catalogUnavailable": "Cannot reach the app catalog",
+      "catalogUnavailableHint": "This computer cannot reach sensecraft-statics.seeed.cc right now. Use \"Upload .deb\" instead, or deploy from the SenseCraft App."
     },
     "drawer": {
       "description": "Description",

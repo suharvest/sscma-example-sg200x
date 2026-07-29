@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Modal, Progress, Spin, Tooltip, Upload } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Modal,
+  Progress,
+  Spin,
+  Tabs,
+  Tooltip,
+  Upload,
+} from "antd";
 import type { UploadFile, UploadProps } from "antd";
 import {
   ReloadOutlined,
@@ -17,11 +27,18 @@ import {
   installAppApi,
 } from "@/api/app";
 import { IAppInfo, IInstallAppResult } from "@/api/app/app";
+import {
+  appDownloadSize,
+  downloadToFile,
+  fetchCatalog,
+  sha256Hex,
+  type ICatalogApp,
+} from "@/api/app/catalog";
 import { uploadFiles, ensureDirectory } from "@/api/files";
 import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import { resolveRtspUrl } from "@/utils/appStream";
-import { pickLocalized } from "@/utils/appLocale";
+import { pickLocalized, pickLocalizedText } from "@/utils/appLocale";
 import { getAppTags } from "@/utils/appTags";
 import IntegrationDoc from "@/components/integration-doc";
 import useConfigStore from "@/store/config";
@@ -44,6 +61,8 @@ function statusText(app: IAppInfo, isActive: boolean): string {
 
 /* ------------------------------------------------------------------ */
 /* Install App modal: chunked upload (fileMgr) -> appMgr/installApp    */
+/* plus "install from cloud": browser fetches the package on the device's */
+/* behalf, then the same upload -> install tail runs unchanged.          */
 /* ------------------------------------------------------------------ */
 
 /** Upload destination, relative to the fileMgr "local" storage (/userdata). */
@@ -52,16 +71,25 @@ const MAX_DEB_SIZE = 200 * 1024 * 1024; // keep in sync with backend installApp
 /** Backend passes the path through a quoted shell arg — same whitelist. */
 const SAFE_NAME_RE = /^[A-Za-z0-9._+-]+$/;
 
-type InstallStage = "idle" | "uploading" | "installing" | "success" | "failed";
+type InstallStage =
+  | "idle"
+  | "downloading"
+  | "uploading"
+  | "installing"
+  | "success"
+  | "failed";
 
 const InstallAppModal = ({
   open,
   onClose,
   onInstalled,
+  installedIds,
 }: {
   open: boolean;
   onClose: () => void;
   onInstalled: () => void;
+  /** Package ids already on the device — catalog rows for these are disabled. */
+  installedIds: Set<string>;
 }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -71,7 +99,21 @@ const InstallAppModal = ({
   const [errorMsg, setErrorMsg] = useState("");
   const [output, setOutput] = useState("");
 
-  const busy = stage === "uploading" || stage === "installing";
+  // --- Install from cloud -------------------------------------------------
+  // The device has no route to the internet over USB, so the browser fetches
+  // the package and pushes it over the existing upload API. Everything after
+  // "we have a File" is the same code path as a manual .deb upload.
+  const [tab, setTab] = useState<"cloud" | "upload">("cloud");
+  const [catalog, setCatalog] = useState<ICatalogApp[] | null>(null);
+  const [catalogError, setCatalogError] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [downloadLabel, setDownloadLabel] = useState("");
+  const [downloadPercent, setDownloadPercent] = useState(0);
+
+  const busy =
+    stage === "downloading" ||
+    stage === "uploading" ||
+    stage === "installing";
 
   const reset = () => {
     setStage("idle");
@@ -79,7 +121,28 @@ const InstallAppModal = ({
     setUploadPercent(0);
     setErrorMsg("");
     setOutput("");
+    setDownloadLabel("");
+    setDownloadPercent(0);
   };
+
+  // Load the catalog when the modal opens. A failure is expected and not an
+  // error state: a machine without internet simply gets the upload tab.
+  useEffect(() => {
+    if (!open || catalog || catalogLoading) return;
+    const ac = new AbortController();
+    setCatalogLoading(true);
+    fetchCatalog(ac.signal)
+      .then((c) => {
+        setCatalog(c.apps);
+        setCatalogError(false);
+      })
+      .catch(() => {
+        setCatalogError(true);
+        setTab("upload");
+      })
+      .finally(() => setCatalogLoading(false));
+    return () => ac.abort();
+  }, [open, catalog, catalogLoading]);
 
   const close = () => {
     if (busy) return; // never abandon a running install silently
@@ -103,50 +166,130 @@ const InstallAppModal = ({
     return false; // valid: keep in the list, upload manually on Install
   };
 
-  const handleInstall = async () => {
-    const raw = fileList[0]?.originFileObj;
-    if (!raw) return;
-
-    // Stage 1: chunked upload to local:/apps_upload/ (existing fileMgr
-    // protocol — 1MB offset chunks — reused as-is via uploadFiles()).
+  /**
+   * Push an already-in-memory File to the device, then opkg install it.
+   * Shared by the upload tab and the cloud tab — the only difference between
+   * them is where the bytes came from.
+   */
+  const uploadAndInstall = async (file: File): Promise<boolean> => {
     setStage("uploading");
     setUploadPercent(0);
-    setErrorMsg("");
-    setOutput("");
     try {
       await ensureDirectory("local", INSTALL_UPLOAD_DIR);
       const dt = new DataTransfer();
-      dt.items.add(raw);
+      dt.items.add(file);
       await uploadFiles("local", INSTALL_UPLOAD_DIR, dt.files, (info) => {
         setUploadPercent(info.currentFileProgress);
       });
     } catch (e) {
       setStage("failed");
       setErrorMsg(t("apps.install.uploadFailed"));
-      return;
+      return false;
     }
 
-    // Stage 2: opkg install on the device (up to ~2 minutes).
     setStage("installing");
     try {
       const res = await installAppApi({
-        path: `/userdata/${INSTALL_UPLOAD_DIR}/${raw.name}`,
+        path: `/userdata/${INSTALL_UPLOAD_DIR}/${file.name}`,
       });
       const data = res.data as IInstallAppResult | undefined;
       setOutput(data?.output || "");
-      if (isOk(res)) {
-        setStage("success");
-        onInstalled();
-      } else if (isBusy(res)) {
-        setStage("failed");
-        setErrorMsg(t("apps.install.busy"));
-      } else {
-        setStage("failed");
-        setErrorMsg(res.msg || t("apps.install.failed"));
-      }
+      if (isOk(res)) return true;
+      setStage("failed");
+      setErrorMsg(
+        isBusy(res) ? t("apps.install.busy") : res.msg || t("apps.install.failed")
+      );
+      return false;
     } catch (e) {
       setStage("failed");
       setErrorMsg(t("apps.install.failed"));
+      return false;
+    }
+  };
+
+  const handleCloudInstall = async (app: ICatalogApp) => {
+    setErrorMsg("");
+    setOutput("");
+
+    // Models first, then the package. The .deb's postinst may look for the
+    // files it needs, and the app is startable the moment install returns —
+    // arriving with half its models is a worse failure than a slow install.
+    const files = [...app.models, app.package];
+    const downloaded: { file: File; target: string | null }[] = [];
+
+    setStage("downloading");
+    for (let i = 0; i < files.length; i++) {
+      const entry = files[i];
+      setDownloadLabel(`${entry.filename} (${i + 1}/${files.length})`);
+      setDownloadPercent(0);
+      try {
+        const file = await downloadToFile(entry, (loaded, total) => {
+          setDownloadPercent(total ? Math.round((loaded / total) * 100) : 0);
+        });
+        // Verify before anything reaches the device: a truncated download
+        // would otherwise be installed and fail somewhere far less obvious.
+        // An empty digest means WebCrypto is unavailable (the console is
+        // served over plain HTTP, where crypto.subtle exists on localhost
+        // only) — that is "cannot verify", not "mismatch".
+        if (entry.sha256) {
+          const got = await sha256Hex(file);
+          if (got && got !== entry.sha256) {
+            setStage("failed");
+            setErrorMsg(t("apps.install.checksumFailed", { file: entry.filename }));
+            return;
+          }
+        }
+        downloaded.push({ file, target: entry.target_path || null });
+      } catch (e) {
+        setStage("failed");
+        setErrorMsg(t("apps.install.downloadFailed", { file: entry.filename }));
+        return;
+      }
+    }
+
+    // Models go straight to their directory under /userdata (gigabytes free),
+    // not to the upload staging dir on the cramped root partition.
+    for (const item of downloaded) {
+      if (!item.target) continue;
+      setStage("uploading");
+      setUploadPercent(0);
+      const rel = item.target.replace(/^\/userdata\/?/, "");
+      try {
+        await ensureDirectory("local", rel);
+        const dt = new DataTransfer();
+        dt.items.add(item.file);
+        await uploadFiles("local", rel, dt.files, (info) => {
+          setUploadPercent(info.currentFileProgress);
+        });
+      } catch (e) {
+        setStage("failed");
+        setErrorMsg(t("apps.install.uploadFailed"));
+        return;
+      }
+    }
+
+    const pkg = downloaded.find((d) => !d.target);
+    if (!pkg) {
+      setStage("failed");
+      setErrorMsg(t("apps.install.failed"));
+      return;
+    }
+    if (await uploadAndInstall(pkg.file)) {
+      setStage("success");
+      onInstalled();
+    }
+  };
+
+  const handleInstall = async () => {
+    const raw = fileList[0]?.originFileObj;
+    if (!raw) return;
+    setErrorMsg("");
+    setOutput("");
+    // Same upload -> install tail the cloud tab uses; the only difference is
+    // that these bytes came from the user's disk instead of the CDN.
+    if (await uploadAndInstall(raw as File)) {
+      setStage("success");
+      onInstalled();
     }
   };
 
@@ -162,13 +305,15 @@ const InstallAppModal = ({
         stage === "idle" ? (
           <>
             <Button onClick={close}>{t("common.cancel")}</Button>
-            <Button
-              type="primary"
-              disabled={!fileList.length}
-              onClick={handleInstall}
-            >
-              {t("apps.install.start")}
-            </Button>
+            {tab === "upload" && (
+              <Button
+                type="primary"
+                disabled={!fileList.length}
+                onClick={handleInstall}
+              >
+                {t("apps.install.start")}
+              </Button>
+            )}
           </>
         ) : busy ? null : (
           <>
@@ -181,22 +326,114 @@ const InstallAppModal = ({
       }
     >
       {stage === "idle" && (
-        <div className="flex flex-col gap-12">
-          <p className="text-muted text-13 m-0">{t("apps.install.hint")}</p>
-          <Upload.Dragger
-            accept=".deb"
-            maxCount={1}
-            fileList={fileList}
-            beforeUpload={beforeUpload}
-            onRemove={() => setFileList([])}
-            onChange={({ fileList: fl }) => setFileList(fl.slice(-1))}
-          >
-            <p className="ant-upload-drag-icon">
-              <InboxOutlined />
-            </p>
-            <p className="ant-upload-text">{t("apps.install.selectFile")}</p>
-          </Upload.Dragger>
-          <Alert type="warning" showIcon message={t("apps.install.trust")} />
+        <Tabs
+          activeKey={tab}
+          onChange={(k) => setTab(k as "cloud" | "upload")}
+          items={[
+            {
+              key: "cloud",
+              label: t("apps.install.fromCloud"),
+              children: catalogLoading ? (
+                <div className="py-24 text-center">
+                  <Spin />
+                </div>
+              ) : catalogError ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={t("apps.install.catalogUnavailable")}
+                  description={t("apps.install.catalogUnavailableHint")}
+                />
+              ) : (
+                <div className="flex flex-col gap-8 max-h-[340px] overflow-auto">
+                  {(catalog || []).map((app) => {
+                    const installed = installedIds.has(app.id);
+                    const mb = appDownloadSize(app) / 1e6;
+                    return (
+                      <div
+                        key={app.id}
+                        className="rc-card-surface p-12 flex items-start gap-12"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-14">
+                            {pickLocalizedText(app.name, app.name_zh)}
+                          </div>
+                          <div className="text-muted text-12 mt-2 line-clamp-2">
+                            {pickLocalizedText(
+                              app.description,
+                              app.description_zh
+                            )}
+                          </div>
+                          <div className="text-muted text-12 mt-4 rc-mono">
+                            {mb > 0 ? `${mb.toFixed(1)} MB` : ""}
+                            {app.models.length
+                              ? ` · ${t("apps.install.withModels", {
+                                  count: app.models.length,
+                                })}`
+                              : ""}
+                          </div>
+                        </div>
+                        <Button
+                          size="small"
+                          type={installed ? "default" : "primary"}
+                          disabled={installed}
+                          onClick={() => handleCloudInstall(app)}
+                        >
+                          {installed
+                            ? t("apps.install.installed")
+                            : t("apps.install.installAction")}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ),
+            },
+            {
+              key: "upload",
+              label: t("apps.install.fromFile"),
+              children: (
+                <div className="flex flex-col gap-12">
+                  <p className="text-muted text-13 m-0">
+                    {t("apps.install.hint")}
+                  </p>
+                  <Upload.Dragger
+                    accept=".deb"
+                    maxCount={1}
+                    fileList={fileList}
+                    beforeUpload={beforeUpload}
+                    onRemove={() => setFileList([])}
+                    onChange={({ fileList: fl }) => setFileList(fl.slice(-1))}
+                  >
+                    <p className="ant-upload-drag-icon">
+                      <InboxOutlined />
+                    </p>
+                    <p className="ant-upload-text">
+                      {t("apps.install.selectFile")}
+                    </p>
+                  </Upload.Dragger>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={t("apps.install.trust")}
+                  />
+                </div>
+              ),
+            },
+          ]}
+        />
+      )}
+
+      {stage === "downloading" && (
+        <div className="py-8">
+          <div className="text-13 mb-8">
+            {t("apps.install.downloading", { file: downloadLabel })}
+          </div>
+          <Progress
+            percent={downloadPercent}
+            status="active"
+            showInfo={downloadPercent > 0}
+          />
         </div>
       )}
 
@@ -364,6 +601,14 @@ const Applications = () => {
     });
   };
 
+  // Catalog rows for apps already on the device are shown as installed rather
+  // than hidden — a missing row reads as "not offered", which is what the
+  // built-in-manifest problem looked like from the user's side.
+  const installedIds = useMemo(
+    () => new Set(apps.map((a) => a.id)),
+    [apps]
+  );
+
   const sortedApps = useMemo(() => {
     return [...apps].sort((a, b) => {
       if (a.id === activeId) return -1;
@@ -425,6 +670,7 @@ const Applications = () => {
         open={installOpen}
         onClose={() => setInstallOpen(false)}
         onInstalled={() => fetchList(true)}
+        installedIds={installedIds}
       />
 
       <Spin spinning={loading}>

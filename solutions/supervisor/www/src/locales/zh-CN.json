@@ -148,7 +148,17 @@
       "uploadFailed": "安装包上传失败",
       "output": "安装输出",
       "installAnother": "继续安装",
-      "close": "关闭"
+      "close": "关闭",
+      "fromCloud": "从云端安装",
+      "fromFile": "上传 .deb",
+      "installAction": "安装",
+      "installed": "已安装",
+      "withModels": "含 {{count}} 个模型",
+      "downloading": "正在下载 {{file}}…（由浏览器代取，摄像头无需联网）",
+      "downloadFailed": "下载失败：{{file}}",
+      "checksumFailed": "校验失败：{{file}} 与官方校验和不符，已中止安装",
+      "catalogUnavailable": "连不上应用目录",
+      "catalogUnavailableHint": "这台电脑当前无法访问 sensecraft-statics.seeed.cc。可改用「上传 .deb」，或用 SenseCraft App 部署。"
     },
     "drawer": {
       "description": "描述",
