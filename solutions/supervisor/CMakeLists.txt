@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.5.0)
 
 project(
     supervisor
-    VERSION 0.3.3
+    VERSION 0.3.4
     LANGUAGES C CXX
 )
 
