@@ -65,7 +65,7 @@ export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3
   "models": [],                         // 可切换的备选模型
   "pipeline": [ { "name": "...", "path": "...", "task": "..." } ],  // 固定流水线，仅展示
   "requires": ["gimbal"],               // 硬件依赖，白名单外的键会被丢弃并告警
-  "version": "0.1.0",
+  "version": "0.1.0",                   // 打包时会被 project(VERSION) 覆盖，见下节
   "author": "Seeed Studio"
 }
 ```
@@ -97,13 +97,34 @@ done
 
 > `[ -f ]` 保护会让缺失文件**静默跳过**。`facemesh-reader` 的 `postinst` 拷了一年多不存在的 `.md`，结果 console 里那一页一直是空白，没人报过。**加了就要确认文件真的在。**
 
-### 4. control 脚本的执行位
+### 4. 版本号只有一个真相：`project(<id> VERSION ...)`
+
+deb 的版本来自 solution 顶层 `CMakeLists.txt` 的 `project(<id> VERSION x.y.z)` —— CPack 用它拼包名，opkg 记录它。**manifest 里的 `version` 不是第二个真相，它是一份抄件**，console 拿它渲染卡片上的版本号。
+
+所以 `cmake/package.cmake` 在打包时会用 `PROJECT_VERSION` **覆盖** manifest 的 `version` 字段（那条 `install()` 排在 rootfs 整目录拷贝之后，同一个目标路径后写的赢）。改源 JSON 里的版本号不影响出包结果 —— **要改版本就改 `project(VERSION)`**。构建时会打印一行确认：
+
+```
+-- Manifest version pinned to 0.2.0: fitness-trainer.json
+```
+
+生成机制够不着的是**另一份抄件**：`solutions/supervisor/rootfs/usr/share/supervisor/apps/<id>.json`。它随 supervisor 发，用来在应用还没安装时也能在画廊里展示；supervisor 构建时看不到别的 solution 的 `PROJECT_VERSION`，没有任何东西会更新它。这份是真正会烂掉的，唯一的防线是检查脚本：
+
+```bash
+scripts/check-manifest-versions.sh          # 报告漂移，有漂移则 exit 1
+scripts/check-manifest-versions.sh --fix    # 按 project(VERSION) 就地改正
+```
+
+它同时校验：应用自带 manifest 的版本 == `project(VERSION)`；supervisor 内置副本的版本 == `project(VERSION)`；两份都存在时内容必须**逐字节一致**（内置副本是拷贝，不是变体）。
+
+> 2026-07-29 首次跑这个脚本，**十个应用里九个在漂**：卡片显示 0.1.0 而装上的包是 0.2.0；`face-analysis` 和 `yolo-detector` 的 manifest 版本甚至比任何存在过的包都高（1.0.0 / 1.1.0 对 0.4.0 / 0.5.0）。这个字段从来没人维护过，因为没有任何东西会在它错的时候出声。
+
+### 5. control 脚本的执行位
 
 `cmake/package.cmake` 把 `control/{preinst,postinst,prerm,postrm}` 打进 deb。**这些文件在 git 里必须是 `+x`**，否则设备上 `opkg` 报 126。
 
 > Docker Desktop 的挂载缓存会吃掉 `chmod`。改过权限后 `git update-index --chmod=+x`，并重启容器再打包。
 
-### 5. main/CMakeLists.txt
+### 6. main/CMakeLists.txt
 
 ```cmake
 file(GLOB_RECURSE srcs ${CMAKE_CURRENT_LIST_DIR}/*.c ${CMAKE_CURRENT_LIST_DIR}/*.cpp)
@@ -214,6 +235,8 @@ md5sum ./usr/local/bin/<id>          # 与设备上 md5sum /usr/local/bin/<id> �
 - [ ] manifest 文件名 == `id`，`id` 只含 `[a-z0-9-]`
 - [ ] `postinst` 会把 `<id>.json` / `<id>.md` / `<id>.zh.md` 拷进 `/userdata/local/apps/`
 - [ ] 那三个文件**真的存在**（`.md` 缺了不会报错，只会让 console 那页空白）
+- [ ] 改过版本 → 改的是 `project(<id> VERSION ...)`，且 `scripts/check-manifest-versions.sh` 干净
+      （有 supervisor 内置副本的应用尤其要跑，那份没有任何东西会自动更新）
 - [ ] 画面里有人 → 接了 `privacy_blur`，并且 manifest 里声明了 `privacy_blur: true`
 - [ ] 接了打码 → 快照路径也遮了（否则 ONVIF 抓图是原图）
 - [ ] 检测框跨模块传递用了 `geometry::InferBox` / `StreamBox`
