@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   App,
@@ -133,8 +133,18 @@ const InstallAppModal = ({
 
   // Load the catalog when the modal opens. A failure is expected and not an
   // error state: a machine without internet simply gets the upload tab.
+  //
+  // The "have we started" flag is a ref, not state, and the effect depends on
+  // `open` alone. With `catalogLoading` in the dependency array this effect
+  // aborted its own request: setCatalogLoading(true) changed a dependency, the
+  // cleanup ran ac.abort(), the fetch rejected with AbortError, the catch
+  // switched to the upload tab, `finally` cleared the flag, and the whole
+  // thing started over — an endless loop that also yanked the tab back every
+  // time the user clicked "install from cloud".
+  const catalogRequested = useRef(false);
   useEffect(() => {
-    if (!open || catalog || catalogLoading) return;
+    if (!open || catalogRequested.current) return;
+    catalogRequested.current = true;
     const ac = new AbortController();
     setCatalogLoading(true);
     fetchCatalog(ac.signal)
@@ -143,12 +153,16 @@ const InstallAppModal = ({
         setCatalogError("");
       })
       .catch((e: Error) => {
+        // An abort is our own doing (the modal closed); do not report it as a
+        // catalog failure or the upload tab gets forced on the way out.
+        if (e?.name === "AbortError") return;
         setCatalogError(e?.message || "unknown error");
         setTab("upload");
+        catalogRequested.current = false; // allow a retry on reopen
       })
       .finally(() => setCatalogLoading(false));
     return () => ac.abort();
-  }, [open, catalog, catalogLoading]);
+  }, [open]);
 
   const close = () => {
     if (busy) return; // never abandon a running install silently
