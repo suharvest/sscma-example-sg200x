@@ -74,7 +74,8 @@ api_status_t api_user::login(request_t req, response_t res)
         return API_STATUS_OK;
     }
 
-    script(__func__); // remove first login record
+    // Do NOT clear the first-login record here: logging in with the factory password must not
+    // satisfy the forced password change. Only updatePassword() clears it.
 
     std::string token = gen_token();
     save_token(token);

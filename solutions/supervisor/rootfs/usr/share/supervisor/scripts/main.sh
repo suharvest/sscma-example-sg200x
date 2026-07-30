@@ -437,7 +437,6 @@ function _update_sshkey() {
 # APIs
 function gen_token() { dd if=/dev/random bs=64 count=1 2>/dev/null | base64 -w0; }
 function get_username() { echo $USER_NAME; }
-function login() { rm -f "$FIRST_LOGIN"; }
 
 function addSShkey() {
     local name="$2"
@@ -529,6 +528,8 @@ function updatePassword() {
         echo "$pwd"
     } | passwd "$USER_NAME" >/dev/null 2>&1
     if [ $? -eq 0 ]; then
+        # the forced first-login change is satisfied only by an actual password change
+        rm -f "$FIRST_LOGIN"
         echo "$STR_OK"
     else
         echo "$STR_FAILED"
