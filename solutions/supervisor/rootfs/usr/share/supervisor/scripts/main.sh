@@ -1434,6 +1434,22 @@ function app_restore() {
     echo "$STR_OK"
 }
 
+# _app_drop_dentry_cache : flush the kernel dentry/inode caches after a package
+# operation has added or removed files under /etc, /usr and /usr/local.
+#
+# Every top-level directory here is an overlay whose upperdir is on /userdata
+# (/etc is lowerdir=/etc, upperdir=/userdata/.overlay_fs/etc). Verified on
+# 5.10.4: a file written into the upper layer without going through the mount
+# is invisible via the merged path until the caches are dropped or the device
+# reboots -- which is exactly the "app installed but `init script not found`
+# until you reboot" report. opkg writes through the mount and does not trigger
+# it, so this is a cheap safety net (a few ms, caches refill on demand) against
+# anything else on the device that touches the upper layer directly.
+function _app_drop_dentry_cache() {
+    sync
+    echo 2 >/proc/sys/vm/drop_caches 2>/dev/null || true
+}
+
 # app_install <deb_path> : install an application package with opkg.
 # Second line of defense: the supervisor C++ (appMgr/installApp) already
 # realpath-validates the argument (under /userdata/, .deb suffix, regular
@@ -1466,6 +1482,8 @@ function app_install() {
     local out="$WORK_DIR/app_install.out"
     _app_run_timeout 120 opkg install --force-reinstall "$deb" >"$out" 2>&1
     local ret=$?
+    # Before the caller can look for the freshly installed init script.
+    _app_drop_dentry_cache
     echo "EXIT:$ret"
     tail -c 2048 "$out" 2>/dev/null
     rm -f "$out"
@@ -1504,6 +1522,10 @@ function app_uninstall() {
     local out="$WORK_DIR/app_uninstall.out"
     _app_run_timeout 120 opkg remove "$pkg" >"$out" 2>&1
     local ret=$?
+    # Removal has the mirror-image failure mode: a deleted file that still
+    # resolves (the stale dentry reports Links: 0) would let the console keep
+    # offering an app whose init script is already gone.
+    _app_drop_dentry_cache
     echo "EXIT:$ret"
     tail -c 2048 "$out" 2>/dev/null
     rm -f "$out"

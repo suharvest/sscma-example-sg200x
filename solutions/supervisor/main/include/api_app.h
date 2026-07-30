@@ -69,6 +69,9 @@ private:
     static json missing_capabilities(const json& manifest);
     static bool valid_init_script_path(const std::string& path);
     static bool check_init_script_fs(const std::string& path, std::string& err);
+    // echo 2 > /proc/sys/vm/drop_caches, throttled to once per 5s. Recovery for
+    // stale overlay lookups (see the comment on the definition).
+    static void drop_dentry_cache();
     static std::string jstr(const json& j, const std::string& key);
     static json load_manifest_file(const std::string& path);
     static json load_manifests(); // object: id -> manifest

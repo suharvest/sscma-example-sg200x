@@ -200,14 +200,65 @@ bool api_app::valid_init_script_path(const std::string& path)
     return true;
 }
 
+// Drop the kernel dentry/inode caches (echo 2 > /proc/sys/vm/drop_caches).
+//
+// Why this exists: every top-level directory on this device is an overlay
+// whose upperdir lives on /userdata (/etc is `lowerdir=/etc,
+// upperdir=/userdata/.overlay_fs/etc`). Verified on 5.10.4: a file written
+// into the upper layer *without going through the mount* is never visible via
+// /etc/init.d/ -- not even on a first-ever lookup, so it is not merely a
+// cached negative dentry -- and stays invisible until the caches are dropped
+// or the device reboots. That is the only mechanism found that matches the
+// field report "gallery apps report `init script not found` until you reboot".
+//
+// opkg writes through the mount and is NOT affected, so this is a safety net
+// for whatever else on the device touches the upper layer directly, not a fix
+// for our own install path. Throttled to once per 5s: the callers are error
+// paths, but a client can retry a failing switch in a loop and dropping the
+// caches is not free.
+void api_app::drop_dentry_cache()
+{
+    static std::mutex mtx;
+    static std::chrono::steady_clock::time_point last {}; // monotonic: survives wall-clock changes
+    {
+        std::lock_guard<std::mutex> lk(mtx);
+        auto now = std::chrono::steady_clock::now();
+        if (last.time_since_epoch().count() != 0 && now - last < std::chrono::seconds(5)) {
+            return;
+        }
+        last = now;
+    }
+    ::sync();
+    int fd = ::open("/proc/sys/vm/drop_caches", O_WRONLY);
+    if (fd < 0) {
+        LOGW("drop_caches: open failed: %s", strerror(errno));
+        return;
+    }
+    if (::write(fd, "2\n", 2) != 2) {
+        LOGW("drop_caches: write failed: %s", strerror(errno));
+    }
+    ::close(fd);
+    LOGI("dropped dentry/inode caches (stale overlay lookup)");
+}
+
 // Filesystem-level checks done right before executing an init script:
 // regular file, not a symlink, root-owned, canonical path unchanged by realpath.
 bool api_app::check_init_script_fs(const std::string& path, std::string& err)
 {
     struct stat st;
     if (lstat(path.c_str(), &st) != 0) {
-        err = "init script not found: " + path;
-        return false;
+        // ENOENT here may be a stale overlay lookup rather than a missing file
+        // (see drop_dentry_cache). Retry once with the caches dropped; if the
+        // script really is gone the second lstat fails the same way and the
+        // error the user sees is unchanged.
+        if (errno == ENOENT) {
+            drop_dentry_cache();
+        }
+        if (lstat(path.c_str(), &st) != 0) {
+            err = "init script not found: " + path;
+            return false;
+        }
+        LOGW("init script %s was hidden by a stale overlay dentry, recovered after drop_caches", path.c_str());
     }
     if (S_ISLNK(st.st_mode)) {
         err = "init script is a symlink (rejected): " + path;
