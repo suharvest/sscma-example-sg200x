@@ -13,15 +13,22 @@ export const updateUserInfoApi = async (data: { userName: string }) =>
     data,
   });
 // 修改用户密码
-export const updateUserPasswordApi = async (data: {
-  oldPassword: string;
-  newPassword: string;
-}) =>
-  supervisorRequest({
-    url: "api/userMgr/updatePassword",
-    method: "post",
-    data,
-  });
+export const updateUserPasswordApi = async (
+  data: {
+    oldPassword: string;
+    newPassword: string;
+  },
+  // pass true to handle code/msg yourself instead of the global error toast
+  catchs = false
+) =>
+  supervisorRequest(
+    {
+      url: "api/userMgr/updatePassword",
+      method: "post",
+      data,
+    },
+    { catchs }
+  );
 // 登录
 export const loginApi = async (data: { userName: string; password: string }) =>
   supervisorRequest<{ token: string; retryCount?: number }>(

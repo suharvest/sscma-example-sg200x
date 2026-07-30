@@ -22,30 +22,47 @@ const Login = () => {
   const [agreed, setAgreed] = useState(false);
   const [showAgreement, setShowAgreement] = useState(false);
   const [passwordErrorMsg, setPasswordErrorMsg] = useState<string | null>(null);
+  const [changingPassword, setChangingPassword] = useState(false);
 
   const handleChangePassword = async () => {
-    const fieldsValue = form.getFieldsValue();
-    const oldpassword = fieldsValue.oldpassword;
-    const newpassword = fieldsValue.newpassword;
-    const confirmpassword = fieldsValue.confirmpassword;
-    if (
-      oldpassword &&
-      newpassword &&
-      confirmpassword &&
-      newpassword == confirmpassword
-    ) {
-      const encryptedOldpassword = encryptPassword(oldpassword);
-      const encryptedNewPassword = encryptPassword(newpassword);
-      const response = await updateUserPasswordApi({
-        oldPassword: encryptedOldpassword,
-        newPassword: encryptedNewPassword,
-      });
+    let fieldsValue: {
+      oldpassword: string;
+      newpassword: string;
+      confirmpassword: string;
+    };
+    try {
+      // surfaces the per-field rules instead of silently doing nothing
+      fieldsValue = await form.validateFields([
+        "oldpassword",
+        "newpassword",
+        "confirmpassword",
+      ]);
+    } catch {
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const response = await updateUserPasswordApi(
+        {
+          oldPassword: encryptPassword(fieldsValue.oldpassword),
+          newPassword: encryptPassword(fieldsValue.newpassword),
+        },
+        true
+      );
       if (response.code == 0) {
         messageApi.success(t("login.changeSuccess"));
+        form.resetFields(["oldpassword", "newpassword", "confirmpassword"]);
         updateFirstLogin(false);
       } else {
-        messageApi.error(t("login.changeFailed"));
+        messageApi.error(response.msg || t("login.changeFailed"));
       }
+    } catch {
+      // supervisorRequest rejects (and stays silent on 401) -- without this the
+      // rejection escapes as an unhandled promise and the click looks like a no-op
+      messageApi.error(t("login.changeFailed"));
+    } finally {
+      setChangingPassword(false);
     }
   };
 
@@ -257,6 +274,7 @@ const Login = () => {
           <Button
             className="w-1/2 m-auto block"
             type="primary"
+            loading={changingPassword}
             onClick={handleChangePassword}
           >
             {t("common.confirm")}
