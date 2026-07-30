@@ -26,7 +26,10 @@ public:
         REG_API(deleteSShkey);
         REG_API(setSShStatus); // fixed: no auth
         REG_API_NO_AUTH(queryUserInfo); // fixed: no auth
-        REG_API(updatePassword); // security: token required (oldPassword is also verified in handler)
+        // No token: the first-login change-password dialog runs on the login page, before any
+        // token exists. Exposure equals login()'s -- the handler verifies oldPassword against
+        // /etc/shadow via check_pwd(), which also shares login's 5-try/60s lockout counter.
+        REG_API_NO_AUTH(updatePassword);
     }
 
     ~api_user()
