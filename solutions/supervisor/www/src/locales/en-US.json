@@ -175,6 +175,8 @@
     },
     "hwNotSupported": "Hardware not supported",
     "hwMissingTooltip": "This device is missing required hardware: {{list}}",
+    "orphanBadge": "Files missing",
+    "orphanTooltip": "This app's init script is no longer on the device — only a leftover entry remains. Uninstall it and install again.",
     "uninstall": {
       "action": "Uninstall",
       "title": "Uninstall {{name}}?",

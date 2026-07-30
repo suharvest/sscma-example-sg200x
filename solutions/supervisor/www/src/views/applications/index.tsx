@@ -786,6 +786,10 @@ const Applications = () => {
               const tagsLine = getAppTags(app);
               // P5: hardware dependency gating (backend appMgr/list fields).
               const hwUnsupported = app.hw_supported === false;
+              // Manifest on disk, init script gone: an orphan left by a package
+              // that was removed without cleaning up. Activating it can only
+              // return "init script not found", so offer a reinstall instead.
+              const orphan = app.installed === false;
               const missingList = (app.missing_capabilities || [])
                 .map((k) => t(`capabilities.keys.${k}`, { defaultValue: k }))
                 .join(", ");
@@ -835,6 +839,16 @@ const Applications = () => {
                             style={{ borderColor: "#D54941", color: "#D54941" }}
                           >
                             {t("apps.hwNotSupported")}
+                          </span>
+                        </Tooltip>
+                      )}
+                      {orphan && (
+                        <Tooltip title={t("apps.orphanTooltip")}>
+                          <span
+                            className="rc-badge"
+                            style={{ borderColor: "#D54941", color: "#D54941" }}
+                          >
+                            {t("apps.orphanBadge")}
                           </span>
                         </Tooltip>
                       )}
@@ -892,6 +906,15 @@ const Applications = () => {
                           {t("common.stop")}
                         </Button>
                       </>
+                    ) : orphan ? (
+                      <Tooltip title={t("apps.orphanTooltip")}>
+                        {/* span wrapper: antd Tooltip needs a non-disabled DOM target */}
+                        <span>
+                          <Button type="primary" size="small" disabled>
+                            {t("common.activate")}
+                          </Button>
+                        </span>
+                      </Tooltip>
                     ) : hwUnsupported ? (
                       <Tooltip
                         title={t("apps.hwMissingTooltip", { list: missingList })}

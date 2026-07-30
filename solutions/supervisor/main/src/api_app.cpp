@@ -685,6 +685,17 @@ api_status_t api_app::list(request_t req, response_t res)
         bool is_active = (id == active);
         item["active"] = is_active;
         item["status"] = is_active ? state_str(_state) : "stopped";
+        // Orphan detection: the gallery is built from manifests on disk, and a
+        // manifest can outlive the package that owns it -- app packages up to
+        // 0.4.x had no postrm cleanup, so `opkg remove` deleted the init script
+        // and left /userdata/local/apps/<id>.json behind. The card then offers
+        // an Activate button whose only possible outcome is "init script not
+        // found". Report the init script's presence so the frontend can offer
+        // "reinstall" instead of a button that cannot work. Plain lstat, no
+        // drop_dentry_cache(): this runs on every poll of the gallery, and a
+        // stale lookup here costs a mislabeled card, not a failed operation.
+        struct stat sst;
+        item["installed"] = ::lstat(jstr(m, "init_script").c_str(), &sst) == 0;
         // P5-A: hardware dependency check against the cached capability set.
         json missing = missing_capabilities(m);
         item["hw_supported"] = missing.empty();

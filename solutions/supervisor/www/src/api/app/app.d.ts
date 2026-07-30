@@ -84,6 +84,12 @@ export interface IAppInfo extends IAppManifest {
   hw_supported?: boolean;
   /** P5: requires[] entries the device does not have. */
   missing_capabilities?: string[];
+  /**
+   * False when the manifest is on disk but its init script is not — an orphan
+   * left behind by a package whose postrm did not clean up. Activating such an
+   * app can only fail, so the card offers a reinstall hint instead.
+   */
+  installed?: boolean;
 }
 
 export interface IAppListResult {

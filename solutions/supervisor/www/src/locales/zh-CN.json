@@ -174,6 +174,8 @@
     },
     "hwNotSupported": "硬件不支持",
     "hwMissingTooltip": "此设备缺少所需硬件：{{list}}",
+    "orphanBadge": "文件缺失",
+    "orphanTooltip": "该应用的启动脚本已不在设备上，只剩下一份残留的应用信息。请卸载后重新安装。",
     "uninstall": {
       "action": "卸载",
       "title": "卸载 {{name}}？",
