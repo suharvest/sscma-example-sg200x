@@ -541,6 +541,9 @@ const Applications = () => {
   const [switching, setSwitching] = useState<string | null>(null);
   const [apps, setApps] = useState<IAppInfo[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Which card the grid pins first. Tracks activeId but is never cleared by it
+  // going null -- see the effect below.
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [detailApp, setDetailApp] = useState<IAppInfo | null>(null);
   const [detailDocHasContent, setDetailDocHasContent] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -698,13 +701,22 @@ const Applications = () => {
     [apps]
   );
 
+  // Sorting on activeId directly made "stop" reorder the grid: current goes
+  // null, the pin collapses to plain alphabetical, and the card the user just
+  // clicked teleports out from under the cursor. Pinning is sticky instead --
+  // the last app that was active stays first until a different one takes over,
+  // so only activating something reorders anything.
+  useEffect(() => {
+    if (activeId) setPinnedId(activeId);
+  }, [activeId]);
+
   const sortedApps = useMemo(() => {
     return [...apps].sort((a, b) => {
-      if (a.id === activeId) return -1;
-      if (b.id === activeId) return 1;
+      if (a.id === pinnedId) return -1;
+      if (b.id === pinnedId) return 1;
       return (a.name || a.id).localeCompare(b.name || b.id);
     });
-  }, [apps, activeId]);
+  }, [apps, pinnedId]);
 
   return (
     <div className="py-24 pb-40">
