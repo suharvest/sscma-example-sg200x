@@ -1,0 +1,62 @@
+{
+  "id": "fall-detection",
+  "name": "Fall Detection",
+  "name_zh": "跌倒检测",
+  "scene": "Safety & Care",
+  "scene_zh": "安全看护",
+  "description": "On-device fall detection using YOLO11n-Pose, stable subject association, and a tiny learned 3.2-second pose classifier. Geometric evidence remains explainable while cross-frame confirmation reduces daily-activity false alarms. Results stream to MQTT/Home Assistant.",
+  "description_zh": "使用 YOLO11n-Pose、稳定目标关联和轻量 3.2 秒姿态分类器在设备本地检测跌倒。保留可解释的几何证据，并通过跨帧确认降低日常动作误报。结果通过 MQTT/Home Assistant 输出。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92fall-detection",
+  "image": "/apps/fall-detection.png",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/fall-detection/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "models": [
+    {
+      "name": "yolo11n-pose",
+      "path": "/usr/share/supervisor/models/yolo11n_pose_cv181x_int8.cvimodel",
+      "task": "pose"
+    }
+  ],
+  "default_model": "yolo11n-pose",
+  "config_schema": {
+    "groups": [
+      {
+        "key": "detection",
+        "title": "Detection thresholds",
+        "title_zh": "检测阈值",
+        "items": [
+          {"key": "confidence", "type": "number", "title": "Person confidence", "title_zh": "人体置信度", "min": 0.05, "max": 0.95, "step": 0.05, "default": 0.4},
+          {"key": "keypoint_confidence", "type": "number", "title": "Keypoint confidence", "title_zh": "关键点置信度", "min": 0.05, "max": 0.95, "step": 0.05, "default": 0.5},
+          {"key": "hip_drop_speed_threshold", "type": "number", "title": "Hip drop speed", "title_zh": "髋部下坠速度", "min": 0.0, "max": 2.0, "step": 0.05, "default": 0.25},
+          {"key": "hip_drop_distance_threshold", "type": "number", "title": "Minimum hip drop distance", "title_zh": "最小髋部下坠距离", "min": 0, "max": 0.5, "step": 0.005, "default": 0.02},
+          {"key": "motion_window_sec", "type": "number", "title": "Drop-to-posture window (s)", "title_zh": "下坠到转横窗口（秒）", "min": 0, "max": 5, "step": 0.1, "default": 0.75},
+          {"key": "torso_angle_threshold_deg", "type": "number", "title": "Lying torso angle (deg)", "title_zh": "躺卧躯干角度（度）", "min": 20, "max": 89, "step": 1, "default": 55},
+          {"key": "bbox_aspect_ratio_threshold", "type": "number", "title": "Lying box aspect ratio", "title_zh": "躺卧框宽高比", "min": 1.0, "max": 4.0, "step": 0.05, "default": 1.25},
+          {"key": "min_suspected_features", "type": "number", "title": "Minimum evidence features", "title_zh": "最少证据特征数", "min": 1, "max": 3, "step": 1, "default": 2}
+        ]
+      },
+      {
+        "key": "timing",
+        "title": "Temporal confirmation",
+        "title_zh": "时序确认",
+        "items": [
+          {"key": "confirmation_sec", "type": "number", "title": "Confirmation window (s)", "title_zh": "确认窗口（秒）", "min": 0, "max": 10, "step": 0.1, "default": 0.8},
+          {"key": "suspected_timeout_sec", "type": "number", "title": "Suspected timeout (s)", "title_zh": "疑似超时（秒）", "min": 0.1, "max": 30, "step": 0.1, "default": 1.5},
+          {"key": "occlusion_grace_sec", "type": "number", "title": "Post-impact occlusion grace (s)", "title_zh": "落地后遮挡宽限（秒）", "min": 0, "max": 5, "step": 0.1, "default": 0.75},
+          {"key": "recovery_torso_angle_deg", "type": "number", "title": "Upright torso angle (deg)", "title_zh": "站立躯干角度（度）", "min": 5, "max": 89, "step": 1, "default": 35},
+          {"key": "recovery_aspect_ratio", "type": "number", "title": "Upright box aspect ratio", "title_zh": "站立框宽高比", "min": 1.0, "max": 3.0, "step": 0.05, "default": 1.1},
+          {"key": "recovery_window_sec", "type": "number", "title": "Recovery window (s)", "title_zh": "恢复窗口（秒）", "min": 0, "max": 30, "step": 0.1, "default": 2.0},
+          {"key": "cooldown_sec", "type": "number", "title": "Alarm cooldown (s)", "title_zh": "报警冷却（秒）", "min": 0, "max": 60, "step": 0.5, "default": 3.0}
+        ]
+      }
+    ]
+  },
+  "version": "0.2.0",
+  "author": "Seeed Studio"
+}

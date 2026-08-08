@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.5.0)
 
 project(
     supervisor
-    VERSION 0.5.4
+    VERSION 0.5.5
     LANGUAGES C CXX
 )
 
@@ -19,7 +19,6 @@ message(STATUS "ROOT_DIR: ${ROOT_DIR}")
 include(${ROOT_DIR}/cmake/project.cmake)
 
 include(${PROJECT_DIR}/www/CMakeLists.txt)
-
 
 
 
