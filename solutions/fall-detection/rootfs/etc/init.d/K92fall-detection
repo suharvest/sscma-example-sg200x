@@ -1,0 +1,171 @@
+#!/bin/sh
+
+### BEGIN INIT INFO
+# Provides:          fall-detection
+# Required-Start:    $network $local_fs
+# Required-Stop:     $network $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Fall Detection -- temporal multi-feature pose analysis
+### END INIT INFO
+
+# K-prefixed on purpose: gallery apps must NOT start at boot. Only the
+# supervisor's app_restore starts the single active application, because the
+# camera is exclusive and two apps racing for VPSS wedges the kernel.
+
+NAME=fall-detection
+DAEMON=/usr/local/bin/fall-detection
+PIDFILE=/var/run/$NAME.pid
+LOGFILE=/var/log/$NAME.log
+
+export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
+
+DAEMON_OPTS=""
+
+# Global reCamera config (MQTT_HOST, MQTT_PORT, ...)
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+# Solution-specific overrides
+[ -f /etc/fall-detection.conf ] && . /etc/fall-detection.conf
+
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-host $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-port $MQTT_PORT"
+
+# Always passed explicitly so the app manifest stays the single source of truth
+# for the topic name.
+MQTT_TOPIC="${MQTT_TOPIC:-recamera/fall-detection/results}"
+DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
+
+[ "$DEBUG_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-debug"
+[ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+[ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
+
+# Pose model. Pass -m ONLY when there is a specific file to name. The binary searches its
+# own candidate list (console models dir, then /userdata/local/models) and
+# reports every path it tried when none exist. Passing a hard-coded default
+# here would defeat that: -m is treated as an explicit choice and used
+# verbatim, so a device whose console predates yolo11n-pose would fail with
+# "cannot load" instead of falling back to the copy under /userdata.
+MODEL_OVERRIDE_FILE=/userdata/local/apps/fall-detection.model
+MODEL="${MODEL_PATH:-}"
+if [ -z "$MODEL" ] && [ -f "$MODEL_OVERRIDE_FILE" ]; then
+    OVERRIDE=$(head -n 1 "$MODEL_OVERRIDE_FILE" 2>/dev/null)
+    if [ -n "$OVERRIDE" ] && [ -f "$OVERRIDE" ]; then
+        echo "Using model override: $OVERRIDE"
+        MODEL="$OVERRIDE"
+    else
+        echo "WARNING: model override file present but model not found: $OVERRIDE"
+    fi
+fi
+[ -n "$MODEL" ] && DAEMON_OPTS="$DAEMON_OPTS -m $MODEL"
+
+# The supervisor is deliberately NOT stopped: it is the app manager that
+# orchestrates starting and stopping this service.
+stop_conflicting_services() {
+    echo "Stopping conflicting services..."
+    for prefix in S K; do
+        [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
+        [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
+    done
+    for svc in face-analysis detection-blur ppocr-reader retail-vision yolo-detector facemesh-reader weather-classifier; do
+        for script in /etc/init.d/[SK]*${svc}; do
+            [ -x "$script" ] && "$script" stop 2>/dev/null || true
+        done
+    done
+    sleep 2
+}
+
+start() {
+    echo "Starting $NAME..."
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is already running (PID: $PID)"
+            return 1
+        fi
+        rm -f $PIDFILE
+    fi
+
+    stop_conflicting_services
+
+    start-stop-daemon -S -b -m -p $PIDFILE -a /bin/sh -- -c "exec $DAEMON $DAEMON_OPTS >> $LOGFILE 2>&1"
+    if [ $? -ne 0 ]; then
+        echo "$NAME failed to start (start-stop-daemon error)"
+        rm -f $PIDFILE
+        return 1
+    fi
+
+    # A fatal init error (missing model, camera busy) kills the daemon within
+    # the first second. Poll so a crash-on-start is never reported as success.
+    sleep 1
+    i=0
+    while [ $i -lt 3 ]; do
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+            echo "$NAME exited immediately after start"
+            rm -f $PIDFILE
+            return 1
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+    echo "OK"
+    return 0
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    if [ ! -f $PIDFILE ]; then
+        echo "$NAME is not running"
+        return 0
+    fi
+    PID=$(cat $PIDFILE 2>/dev/null)
+    if [ -z "$PID" ]; then
+        rm -f $PIDFILE
+        echo "$NAME is not running"
+        return 0
+    fi
+    # Do not report OK until the process is actually gone: releasing VPSS/VENC
+    # takes seconds, and letting the switcher start the next app early is how
+    # the camera ends up owned twice.
+    start-stop-daemon -K -p $PIDFILE -s TERM 2>/dev/null || true
+    i=0
+    while [ $i -lt 16 ]; do
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        i=$((i + 1))
+    done
+    # Never force-kill a process that owns VI/VPSS/VENC. A SIGKILL can leave
+    # the camera pipeline wedged until reboot; keep the pidfile and let the
+    # caller report the failed switch instead.
+    echo "$NAME failed to stop gracefully (PID $PID still alive)"
+    return 1
+}
+
+restart() {
+    stop
+    sleep 2
+    start
+}
+
+status() {
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is running (PID: $PID)"
+            return 0
+        fi
+        rm -f $PIDFILE
+    fi
+    echo "$NAME is not running"
+    return 1
+}
+
+case "$1" in
+    start) start; exit $? ;;
+    stop) stop; exit $? ;;
+    restart) restart; exit $? ;;
+    status) status; exit $? ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+
+exit 0

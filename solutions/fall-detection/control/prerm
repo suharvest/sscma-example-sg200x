@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# Pre-removal script for fall-detection
+
+echo "Removing Fall Detection..."
+
+for script in /etc/init.d/[SK]92fall-detection; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/fall-detection 2>/dev/null || true
+
+exit 0

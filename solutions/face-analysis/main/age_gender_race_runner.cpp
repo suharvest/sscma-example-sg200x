@@ -161,7 +161,7 @@ bool AgeGenderRaceRunner::prepareInputTensor() {
     input_type_ = input_tensor_cache_.type;
 
     const ma_shape_t s = engine_->getInputShape(0);
-    if (s.size != 4) return false;
+    if (s.size != 4 || s.dims[0] != 1) return false;
 
     if (s.dims[1] == 3 || s.dims[1] == 1) {
         input_is_chw_ = true;
@@ -174,15 +174,28 @@ bool AgeGenderRaceRunner::prepareInputTensor() {
         input_w_ = s.dims[2];
         input_c_ = s.dims[3];
     } else {
-        input_is_chw_ = true;
-        input_c_ = s.dims[1];
-        input_h_ = s.dims[2];
-        input_w_ = s.dims[3];
+        return false;
     }
 
     input_size_ = std::min(input_w_, input_h_);
     input_numel_ = shape_numel(s);
     if (input_numel_ == 0) return false;
+
+    const size_t element_size = elem_size(input_type_);
+    if (element_size == 0) return false;
+    const size_t logical_size = input_numel_ * element_size;
+    if (input_tensor_cache_.size < logical_size) return false;
+
+    // A padded CVI tensor must be representable as a uniform row stride. NHWC
+    // has H rows of W*C elements; CHW has C*H rows of W elements.
+    if (input_tensor_cache_.size > logical_size) {
+        const size_t rows = input_is_chw_ ? (size_t)input_c_ * (size_t)input_h_ : (size_t)input_h_;
+        const size_t logical_row_size = input_is_chw_ ? (size_t)input_w_ * element_size : (size_t)input_w_ * (size_t)input_c_ * element_size;
+        if (rows == 0 || input_tensor_cache_.size % rows != 0 || input_tensor_cache_.size / rows < logical_row_size) return false;
+        input_physical_.assign(input_tensor_cache_.size, 0);
+    } else {
+        input_physical_.clear();
+    }
 
     input_u8_.clear();
     input_s8_.clear();
@@ -355,6 +368,59 @@ void AgeGenderRaceRunner::packInput(const uint8_t* rgb_hwc_u8) {
     }
 }
 
+bool AgeGenderRaceRunner::submitPackedInput(AgeGenderRaceResult& out) {
+    const size_t element_size = elem_size(input_type_);
+    const size_t logical_size = input_numel_ * element_size;
+    const void* logical_data = nullptr;
+
+    switch (input_type_) {
+        case MA_TENSOR_TYPE_F32:
+            logical_data = input_f32_.data();
+            break;
+        case MA_TENSOR_TYPE_F16:
+        case MA_TENSOR_TYPE_BF16:
+            logical_data = input_u16_.data();
+            break;
+        case MA_TENSOR_TYPE_S8:
+            logical_data = input_s8_.data();
+            break;
+        case MA_TENSOR_TYPE_U8:
+            logical_data = input_u8_.data();
+            break;
+        default:
+            return false;
+    }
+
+    const void* submit_data = logical_data;
+    if (input_tensor_cache_.size != logical_size) {
+        const size_t rows = input_is_chw_ ? (size_t)input_c_ * (size_t)input_h_ : (size_t)input_h_;
+        const size_t logical_row_size = input_is_chw_ ? (size_t)input_w_ * element_size : (size_t)input_w_ * (size_t)input_c_ * element_size;
+        if (rows == 0 || input_tensor_cache_.size % rows != 0) return false;
+        const size_t physical_row_size = input_tensor_cache_.size / rows;
+        if (physical_row_size < logical_row_size || input_physical_.size() != input_tensor_cache_.size) return false;
+
+        std::fill(input_physical_.begin(), input_physical_.end(), 0);
+        const uint8_t* src = static_cast<const uint8_t*>(logical_data);
+        for (size_t row = 0; row < rows; ++row) {
+            memcpy(input_physical_.data() + row * physical_row_size,
+                   src + row * logical_row_size,
+                   logical_row_size);
+        }
+        submit_data = input_physical_.data();
+    }
+
+    ma_tensor_t tensor = {
+        .size = input_tensor_cache_.size,
+        .is_physical = false,
+        .is_variable = false,
+    };
+    tensor.data.data = const_cast<void*>(submit_data);
+
+    if (engine_->setInput(0, tensor) != MA_OK) return false;
+    if (engine_->run() != MA_OK) return false;
+    return parseOutputs(out);
+}
+
 static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob) {
     idx = -1;
     prob = 0.f;
@@ -524,69 +590,17 @@ bool AgeGenderRaceRunner::infer(const uint8_t* rgb888, int src_w, int src_h, int
     alignCropRgb(rgb888, src_w, src_h, src_stride_bytes, x1, y1, x2, y2, input_rgb_.data(), input_size_);
 
     packInput(input_rgb_.data());
-
-    ma_tensor_t tensor = {
-        .size = input_numel_ * elem_size(input_type_),
-        .is_physical = false,
-        .is_variable = false,
-    };
-    switch (input_type_) {
-        case MA_TENSOR_TYPE_F32:
-            tensor.data.data = input_f32_.data();
-            break;
-        case MA_TENSOR_TYPE_F16:
-        case MA_TENSOR_TYPE_BF16:
-            tensor.data.data = input_u16_.data();
-            break;
-        case MA_TENSOR_TYPE_S8:
-            tensor.data.data = input_s8_.data();
-            break;
-        case MA_TENSOR_TYPE_U8:
-            tensor.data.data = input_u8_.data();
-            break;
-        default:
-            return false;
-    }
-
-    engine_->setInput(0, tensor);
-    if (engine_->run() != MA_OK) return false;
-    return parseOutputs(out);
+    return submitPackedInput(out);
 }
 
-bool AgeGenderRaceRunner::inferOnAlignedRgb(const uint8_t* aligned_rgb_96x96_packed, AgeGenderRaceResult& out) {
+bool AgeGenderRaceRunner::inferOnAlignedRgb(const uint8_t* aligned_rgb_packed, AgeGenderRaceResult& out) {
     out = AgeGenderRaceResult{};
-    if (!inited_ || !engine_ || !aligned_rgb_96x96_packed) return false;
+    if (!inited_ || !engine_ || !aligned_rgb_packed) return false;
 
-    // Input must be 96x96 RGB packed (HWC, stride=96*3=288 bytes)
+    // Input must be input_size_ x input_size_ RGB packed (HWC)
     // Skip cropRgb, directly pack and run
-    packInput(aligned_rgb_96x96_packed);
-
-    ma_tensor_t tensor = {
-        .size = input_numel_ * elem_size(input_type_),
-        .is_physical = false,
-        .is_variable = false,
-    };
-    switch (input_type_) {
-        case MA_TENSOR_TYPE_F32:
-            tensor.data.data = input_f32_.data();
-            break;
-        case MA_TENSOR_TYPE_F16:
-        case MA_TENSOR_TYPE_BF16:
-            tensor.data.data = input_u16_.data();
-            break;
-        case MA_TENSOR_TYPE_S8:
-            tensor.data.data = input_s8_.data();
-            break;
-        case MA_TENSOR_TYPE_U8:
-            tensor.data.data = input_u8_.data();
-            break;
-        default:
-            return false;
-    }
-
-    engine_->setInput(0, tensor);
-    if (engine_->run() != MA_OK) return false;
-    return parseOutputs(out);
+    packInput(aligned_rgb_packed);
+    return submitPackedInput(out);
 }
 
 }  // namespace face_analysis

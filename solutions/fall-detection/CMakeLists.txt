@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(face-analysis VERSION 0.5.1 LANGUAGES C CXX)
+project(fall-detection VERSION 0.2.0 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 

@@ -169,10 +169,12 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
             if (landmark_ready_) {
                 LandmarkResult lm;
                 if (landmark_runner_.infer(frame_ptr, fw, fh, x1, y1, x2, y2, lm) && lm.ok) {
-                    // ArcFace canonical 5-point template for 112x112, scaled to 96x96
+                    const int aligned_size = agr_runner_.inputSize();
+
+                    // ArcFace canonical 5-point template for 112x112, scaled to the AGR input size
                     // Original ArcFace dst_pts (112x112): left_eye=(38.2946,51.6963), right_eye=(73.5318,51.5014),
                     //   nose=(56.0252,71.7366), left_mouth=(41.5493,92.3655), right_mouth=(70.7299,92.2041)
-                    const float s = 96.0f / 112.0f;
+                    const float s = (float)aligned_size / 112.0f;
                     const float arcface_dst[10] = {
                         38.2946f * s, 51.6963f * s,  // left_eye
                         73.5318f * s, 51.5014f * s,  // right_eye
@@ -202,11 +204,11 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
                     if (ok) {
                         // Warp aligned face from full frame
                         cv::Mat frame_mat(fh, fw, CV_8UC3, const_cast<uint8_t*>(frame_ptr));
-                        cv::Mat aligned(96, 96, CV_8UC3);
-                        cv::warpAffine(frame_mat, aligned, M, cv::Size(96, 96),
+                        cv::Mat aligned(aligned_size, aligned_size, CV_8UC3);
+                        cv::warpAffine(frame_mat, aligned, M, cv::Size(aligned_size, aligned_size),
                                       cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0));
 
-                        // Run AGR on aligned 96x96 RGB
+                        // Run AGR on the model-sized aligned RGB image
                         agr_ok = agr_runner_.inferOnAlignedRgb(aligned.data, agr) && agr.ok;
                     }
                 }

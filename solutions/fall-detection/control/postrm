@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Post-removal script for fall-detection
+# Deregister from the app gallery. The user's threshold config is left in place
+# so a reinstall keeps the chosen tuning.
+
+rm -f /userdata/local/apps/fall-detection.json
+rm -f /userdata/local/apps/fall-detection.md
+rm -f /userdata/local/apps/fall-detection.zh.md
+
+exit 0

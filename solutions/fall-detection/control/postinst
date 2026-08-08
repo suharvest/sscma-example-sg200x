@@ -1,0 +1,51 @@
+#!/bin/sh
+
+# Post-installation script for fall-detection
+
+echo "Installing Fall Detection..."
+
+mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
+
+chmod +x /usr/local/bin/fall-detection
+chmod +x /etc/init.d/K92fall-detection 2>/dev/null || true
+
+# Register with the supervisor app gallery. The console scans
+# /usr/share/supervisor/apps/ (built-ins) and /userdata/local/apps/ (installed
+# apps); /usr/share/fall-detection/ is neither, so the manifest and the
+# integration docs have to be copied across or the app never appears.
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/fall-detection
+for f in fall-detection.json fall-detection.md fall-detection.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    else
+        echo "WARNING: $SHARE_DIR/$f missing, not registered"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/fall-detection.json"
+
+# The pose model ships with the supervisor; warn rather than fail, since the
+# supervisor may simply be older than this app.
+POSE_MODEL=/usr/share/supervisor/models/yolo11n_pose_cv181x_int8.cvimodel
+if [ ! -f "$POSE_MODEL" ]; then
+    echo "WARNING: $POSE_MODEL not found."
+    echo "         Install a supervisor that ships it, or set MODEL_PATH in"
+    echo "         /etc/fall-detection.conf to a YOLO pose cvimodel."
+fi
+
+echo "Fall Detection installed successfully!"
+echo ""
+echo "Detection thresholds: console app page, or"
+echo "  /userdata/local/apps/fall-detection.config.json"
+echo "Configuration file: /etc/fall-detection.conf"
+echo ""
+echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:      recamera/fall-detection/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+# Migration guard: gallery apps must never be S-prefixed (boot autostart races
+# the supervisor for the camera).
+rm -f /etc/init.d/S92fall-detection
+
+exit 0

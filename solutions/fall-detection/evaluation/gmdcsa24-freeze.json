@@ -1,0 +1,101 @@
+{
+  "protocol": "train subjects 1-2; validate subject 3; refit subjects 1-3 after configuration freeze; test on 27 untouched subject-4 clips (10 prior smoke clips excluded)",
+  "clips_by_subject": {
+    "1": 32,
+    "2": 48,
+    "3": 43,
+    "4": 0
+  },
+  "phase": "configuration_freeze",
+  "split_sizes": {
+    "training": 80,
+    "validation": 43,
+    "test": 0,
+    "discarded_subject4_smoke": 10
+  },
+  "feature_dim": 504,
+  "window_frames": 48,
+  "stride_frames": 3,
+  "best": {
+    "variant": "pose",
+    "hidden": 16,
+    "alpha": 0.001,
+    "threshold": 0.7999999999999998,
+    "consecutive": 3,
+    "validation_f1": 0.9545454545454545,
+    "validation_balanced_accuracy": 0.9545454545454546,
+    "validation": {
+      "n": 43,
+      "tp": 21,
+      "fn": 0,
+      "tn": 20,
+      "fp": 2,
+      "accuracy": 0.9534883720930233,
+      "recall": 1.0,
+      "specificity": 0.9090909090909091,
+      "precision": 0.9130434782608695,
+      "f1": 0.9545454545454545,
+      "early_fall_alerts": 0,
+      "mean_detection_latency_sec": 0.9666666666666669,
+      "median_detection_latency_sec": 0.8999999999999999,
+      "misclassified": [
+        "subject-3/ADL/06.jsonl",
+        "subject-3/ADL/09.jsonl"
+      ]
+    }
+  },
+  "validation": {
+    "n": 43,
+    "tp": 21,
+    "fn": 0,
+    "tn": 20,
+    "fp": 2,
+    "accuracy": 0.9534883720930233,
+    "recall": 1.0,
+    "specificity": 0.9090909090909091,
+    "precision": 0.9130434782608695,
+    "f1": 0.9545454545454545,
+    "early_fall_alerts": 0,
+    "mean_detection_latency_sec": 0.9666666666666669,
+    "median_detection_latency_sec": 0.8999999999999999,
+    "misclassified": [
+      "subject-3/ADL/06.jsonl",
+      "subject-3/ADL/09.jsonl"
+    ]
+  },
+  "subject4_clean_test": null,
+  "heuristic_validation": {
+    "n": 43,
+    "tp": 7,
+    "fn": 14,
+    "tn": 22,
+    "fp": 0,
+    "accuracy": 0.6744186046511628,
+    "recall": 0.3333333333333333,
+    "specificity": 1.0,
+    "precision": 1.0,
+    "f1": 0.5,
+    "early_fall_alerts": 0,
+    "mean_detection_latency_sec": 1.3904285714285716,
+    "median_detection_latency_sec": 1.367,
+    "misclassified": [
+      "subject-3/Fall/01.jsonl",
+      "subject-3/Fall/04.jsonl",
+      "subject-3/Fall/05.jsonl",
+      "subject-3/Fall/06.jsonl",
+      "subject-3/Fall/07.jsonl",
+      "subject-3/Fall/09.jsonl",
+      "subject-3/Fall/12.jsonl",
+      "subject-3/Fall/13.jsonl",
+      "subject-3/Fall/14.jsonl",
+      "subject-3/Fall/15.jsonl",
+      "subject-3/Fall/16.jsonl",
+      "subject-3/Fall/17.jsonl",
+      "subject-3/Fall/18.jsonl",
+      "subject-3/Fall/19.jsonl"
+    ]
+  },
+  "heuristic_subject4_clean_test": null,
+  "realbiomfall_external_test": null,
+  "heuristic_realbiomfall_external_test": null
+}

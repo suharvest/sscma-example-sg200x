@@ -53,9 +53,9 @@ public:
                float x1, float y1, float x2, float y2,
                AgeGenderRaceResult& out);
 
-    // Inference on pre-aligned 96x96 RGB image (ArcFace aligned input)
+    // Inference on a pre-aligned input_size_ x input_size_ RGB image
     // Skip cropRgb, directly packInput + run + parseOutputs
-    bool inferOnAlignedRgb(const uint8_t* aligned_rgb_96x96_packed, AgeGenderRaceResult& out);
+    bool inferOnAlignedRgb(const uint8_t* aligned_rgb_packed, AgeGenderRaceResult& out);
 
 private:
     static float bf16_to_fp32(uint16_t v);
@@ -74,6 +74,7 @@ private:
 
     bool prepareInputTensor();
     void packInput(const uint8_t* rgb_hwc_u8);
+    bool submitPackedInput(AgeGenderRaceResult& out);
     bool parseOutputs(AgeGenderRaceResult& out);
     bool parseOutputsFairFace(AgeGenderRaceResult& out);
     bool parseOutputsInsightFace(AgeGenderRaceResult& out);
@@ -103,6 +104,7 @@ private:
     std::vector<int8_t> input_s8_;
     std::vector<uint16_t> input_u16_;
     std::vector<float> input_f32_;
+    std::vector<uint8_t> input_physical_;
 
     ma_tensor_t input_tensor_cache_{};
     bool inited_ = false;
