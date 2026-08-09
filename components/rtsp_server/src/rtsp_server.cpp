@@ -178,9 +178,11 @@ bool attach_metadata_track(int idx)
         return false;
     }
     UsageEnvironment* env = static_cast<UsageEnvironment*>(g_rs.ctx->env);
-    ServerMediaSession* media_session = nullptr;
-    if (!ServerMediaSession::lookupByName(*env, g_rs.attr[idx].name,
-            media_session) || media_session == nullptr) {
+    RTSPServer* server = static_cast<RTSPServer*>(g_rs.ctx->server);
+    ServerMediaSession* media_session = server != nullptr
+        ? server->lookupServerMediaSession(g_rs.attr[idx].name)
+        : nullptr;
+    if (media_session == nullptr) {
         APP_PROF_LOG_PRINT(LEVEL_ERROR,
             "rtsp: live555 session '%s' not found for metadata\n",
             g_rs.attr[idx].name);
