@@ -27,6 +27,7 @@
 #include "app_ipcam_comm.h"
 #include "app_ipcam_venc.h"
 #include "rtsp.h"
+#include <video.h>
 
 #include <liveMedia.hh>
 
@@ -227,6 +228,16 @@ void on_connect(const char* ip, CVI_VOID* arg)
 {
     (void)arg;
     APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp client connected: %s\n", ip);
+
+    /* cvi_rtsp reuses the live VENC source, so a client can join in the middle
+     * of a GOP without receiving the SPS/PPS needed to decode it. Ask every
+     * published encoder channel for a fresh IDR; the VENC emits its parameter
+     * sets with that access unit and all connected clients can resynchronise.
+     * requestVideoIDR() is non-blocking/coalesced and is already used by the
+     * debug stream for the same late-join case. */
+    for (int i = 0; i < g_rs.session_cnt; ++i) {
+        requestVideoIDR(static_cast<video_ch_index_t>(g_rs.venc_chn[i]));
+    }
 }
 
 void on_disconnect(const char* ip, CVI_VOID* arg)
