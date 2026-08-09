@@ -12,11 +12,11 @@
  *
  * File: /userdata/local/onvif.conf, shell-sourceable KEY='value' lines.
  *
- *   ONVIF_META_ENABLED=0|1        publish analytics metadata over MQTT
- *   ONVIF_META_INTERVAL_MS=200    minimum gap between metadata publishes
+ *   ONVIF_META_ENABLED=0|1        expose analytics metadata transports
+ *   ONVIF_META_INTERVAL_MS=200    minimum gap between MQTT publishes
  *   ONVIF_META_PROFILE=live0      media profile name used in the topic
  *   ONVIF_META_PREFIX=            topic prefix; empty -> device identifier
- *   ONVIF_SERVICE_ENABLED=0|1     WS-Discovery + Device/Media2 SOAP services
+ *   ONVIF_SERVICE_ENABLED=0|1     WS-Discovery + Device/Media1/Media2 SOAP
  *   ONVIF_SERVICE_PORT=8000       where those services listen
  *   ONVIF_USERNAME=               Digest credentials; empty -> anonymous
  *   ONVIF_PASSWORD=
@@ -45,8 +45,8 @@ struct OnvifMetaConfig {
      * Those two have consumers with very different appetites: Home Assistant
      * writes every state change to its recorder database, so a per-frame feed
      * is hostile to it, whereas ONVIF metadata consumers expect a per-frame
-     * scene description. Frame-accurate metadata is the RTSP metadata track's
-     * job, not this one's, so a few hertz is the right default here. */
+     * scene description. RTSP metadata is emitted at inference cadence and is
+     * not rate-limited by this MQTT-specific setting. */
     uint32_t interval_ms = 200;
 
     std::string profile = "live0";

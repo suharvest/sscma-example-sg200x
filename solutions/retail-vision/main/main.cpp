@@ -23,6 +23,7 @@
 #include "mqtt_payload.h"
 #include "app_config.h"
 #include "privacy_blur.h"
+#include "norm_box.h"
 
 using namespace ma;
 using namespace retail_vision;
@@ -357,6 +358,7 @@ static bool init_video_streaming() {
     rtsp_cfg.username = g_config.rtsp_user.empty() ? nullptr : g_config.rtsp_user.c_str();
     rtsp_cfg.password = g_config.rtsp_pass.empty() ? nullptr : g_config.rtsp_pass.c_str();
     rtsp_cfg.ch_mask = (0x01 << VIDEO_CH2);
+    rtsp_cfg.metadata_enabled = g_onvif_meta.enabled();
     if (rtsp_server_start(&rtsp_cfg) != 0) {
         MA_LOGE(TAG, "Failed to start RTSP server");
         return false;
@@ -454,15 +456,19 @@ static bool init_mqtt() {
         return false;
     }
 
-    // Rides the connection above rather than opening a second one; the switch
-    // lives in /userdata/local/onvif.conf, written by the console.
-    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
-    if (g_onvif_meta.enabled()) {
-        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
-                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
-    }
-
     return true;
+}
+
+static void init_onvif_config() {
+    /* Load independently of MQTT. The RTSP metadata track and SOAP service are
+     * useful when no broker is configured, and both must know the switch before
+     * init_video_streaming() creates the session SDP. */
+    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), "retail-vision");
+    if (g_onvif_meta.enabled()) {
+        MA_LOGI(TAG, "ONVIF metadata enabled (profile=%s, every %ums)",
+                g_onvif_meta.config().profile.c_str(),
+                g_onvif_meta.config().interval_ms);
+    }
 }
 
 static bool init_blur() {
@@ -613,7 +619,7 @@ static void process_frame() {
         debug_stream_publish_result(debug_json.c_str(), debug_json.size());
     }
 
-    // Publish MQTT
+    // Publish the existing application-specific MQTT payload.
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         auto zone = g_zone_metrics->getSnapshot();
         std::string payload = buildVisionJson(
@@ -623,32 +629,54 @@ static void process_frame() {
             g_detector->getInputWidth(), g_detector->getInputHeight());
         g_mqtt_publisher->publishResultsJson(payload);
 
-        // Additionally publish the same people in ONVIF's analytics
-        // representation, on its own topic and its own rate limit. The
-        // recamera/retail-vision/vision contract above is consumed by
-        // SenseCraft and does not change.
-        //
-        // Filled object by object rather than through onvif_meta_from_boxes so
-        // the tracker's stable track id becomes tt:Object/@ObjectId: that is
-        // what lets a VMS follow one shopper across frames instead of seeing a
-        // new object every time.
-        if (g_onvif_meta.take(timestamp_ms)) {
-            onvif_frame_t f;
-            f.utc_ms = timestamp_ms;
-            f.source = "RetailVision";
-            f.frame_w = g_config.inference_width;
-            f.frame_h = g_config.inference_height;
-            f.objects.reserve(tracked_persons.size());
-            for (const auto& p : tracked_persons) {
-                onvif_object_t o;
-                o.id = p.track_id;
-                o.cx = p.detection.x * g_config.inference_width;
-                o.cy = p.detection.y * g_config.inference_height;
-                o.w  = p.detection.w * g_config.inference_width;
-                o.h  = p.detection.h * g_config.inference_height;
-                o.classes.push_back({"Human", p.detection.score});
-                f.objects.push_back(std::move(o));
+    }
+
+    /* Build the standard analytics frame once and fan it out to both ONVIF
+     * transports. This is intentionally outside the MQTT gate: a VMS/Frigate
+     * RTSP consumer must work on a camera with MQTT disabled. Stable tracker
+     * ids become tt:Object/@ObjectId so downstream can follow one person. */
+    const bool send_onvif_rtsp = rtsp_server_metadata_enabled();
+    const bool send_onvif_mqtt = g_config.enable_mqtt && g_mqtt_publisher &&
+                                 g_onvif_meta.take(timestamp_ms);
+    if (send_onvif_rtsp || send_onvif_mqtt) {
+        onvif_frame_t f;
+        f.utc_ms = timestamp_ms;
+        f.source = "RetailVision";
+        f.frame_w = g_config.stream_width;
+        f.frame_h = g_config.stream_height;
+        f.objects.reserve(tracked_persons.size());
+
+        std::vector<geometry::InferBox> inference_boxes;
+        inference_boxes.reserve(tracked_persons.size());
+        for (const auto& p : tracked_persons) {
+            inference_boxes.push_back(geometry::InferBox::fromCenter(
+                p.detection.x, p.detection.y, p.detection.w, p.detection.h,
+                p.detection.score));
+        }
+        const std::vector<geometry::StreamBox> stream_boxes = geometry::toStream(
+            inference_boxes, g_config.inference_width, g_config.inference_height,
+            g_config.stream_width, g_config.stream_height);
+
+        for (size_t i = 0; i < tracked_persons.size(); ++i) {
+            const auto& p = tracked_persons[i];
+            const auto& box = stream_boxes[i];
+            onvif_object_t o;
+            o.id = p.track_id;
+            o.cx = box.cx * g_config.stream_width;
+            o.cy = box.cy * g_config.stream_height;
+            o.w  = box.w * g_config.stream_width;
+            o.h  = box.h * g_config.stream_height;
+            o.classes.push_back({"Human", p.detection.score});
+            f.objects.push_back(std::move(o));
+        }
+
+        if (send_onvif_rtsp) {
+            const std::string xml = onvif_meta_to_xml(f);
+            if (rtsp_server_write_metadata(xml.data(), xml.size()) != 0) {
+                MA_LOGW(TAG, "Failed to queue ONVIF RTSP metadata frame");
             }
+        }
+        if (send_onvif_mqtt) {
             g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
         }
     }
@@ -687,6 +715,8 @@ int main(int argc, char** argv) {
     g_start_time = std::chrono::steady_clock::now();
     g_fps_last_time = g_start_time;
 
+    init_onvif_config();
+
     if (!init_detector()) { cleanup(); return 1; }
     if (!init_tracker())  { cleanup(); return 1; }
     if (!init_camera())   { cleanup(); return 1; }
@@ -706,7 +736,7 @@ int main(int argc, char** argv) {
         MA_LOGW(TAG, "Privacy blur initialization failed, continuing without it");
     }
 
-    // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
+    // ONVIF discovery + Device/Media1/Media2 services. After init_video_streaming() on
     // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
     // server, so bringing this up earlier advertises zero profiles and a VMS
     // shows a camera with no video.

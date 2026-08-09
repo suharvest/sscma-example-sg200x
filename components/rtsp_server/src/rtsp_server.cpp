@@ -19,6 +19,7 @@
 #include "rtsp_server.h"
 
 #include <pthread.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -39,6 +40,10 @@ struct RtspServerState {
     CVI_RTSP_SESSION_ATTR attr[RTSP_SERVER_MAX_SESSIONS] = {};
     CVI_RTSP_STATE_LISTENER listener = {};
     VENC_CHN venc_chn[RTSP_SERVER_MAX_SESSIONS] = { 0 };
+    int width[RTSP_SERVER_MAX_SESSIONS] = { 0 };
+    int height[RTSP_SERVER_MAX_SESSIONS] = { 0 };
+    int frame_rate[RTSP_SERVER_MAX_SESSIONS] = { 0 };
+    int encoder_bitrate[RTSP_SERVER_MAX_SESSIONS] = { 0 };
     bool started[RTSP_SERVER_MAX_SESSIONS] = { false };
     int session_cnt = 0;
 
@@ -47,12 +52,153 @@ struct RtspServerState {
     unsigned int bitrate = 30720;
     std::string username;
     std::string password;
+    bool metadata_enabled = false;
 
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     bool mutex_ready = false;
 };
 
 RtspServerState g_rs;
+
+/* Producer/consumer boundary for the metadata RTP track. Inference only ever
+ * replaces this latest-value slot; live555 reads it from its own event-loop
+ * thread. This deliberately avoids calling live555 from the inference thread,
+ * which its scheduler does not support. */
+struct MetadataFrameState {
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    std::string xml;
+    uint64_t sequence = 0;
+};
+
+MetadataFrameState g_metadata;
+
+class OnvifMetadataSource final : public FramedSource {
+public:
+    static OnvifMetadataSource* createNew(UsageEnvironment& env)
+    {
+        return new OnvifMetadataSource(env);
+    }
+
+    unsigned maxFrameSize() const override { return 1024u * 1024u; }
+
+protected:
+    explicit OnvifMetadataSource(UsageEnvironment& env) : FramedSource(env)
+    {
+        pthread_mutex_lock(&g_metadata.mutex);
+        last_sequence_ = g_metadata.sequence;
+        pthread_mutex_unlock(&g_metadata.mutex);
+    }
+
+    ~OnvifMetadataSource() override
+    {
+        if (poll_task_ != nullptr) {
+            envir().taskScheduler().unscheduleDelayedTask(poll_task_);
+        }
+    }
+
+    void doGetNextFrame() override
+    {
+        std::string xml;
+        uint64_t sequence = 0;
+        pthread_mutex_lock(&g_metadata.mutex);
+        sequence = g_metadata.sequence;
+        if (sequence != last_sequence_) {
+            xml = g_metadata.xml;
+        }
+        pthread_mutex_unlock(&g_metadata.mutex);
+
+        if (sequence == last_sequence_ || xml.empty()) {
+            poll_task_ = envir().taskScheduler().scheduleDelayedTask(
+                10000, poll, this);  // 10 ms; no producer-thread live555 call
+            return;
+        }
+
+        last_sequence_ = sequence;
+        fFrameSize = std::min<unsigned>(fMaxSize, xml.size());
+        fNumTruncatedBytes = static_cast<unsigned>(xml.size()) - fFrameSize;
+        memcpy(fTo, xml.data(), fFrameSize);
+        gettimeofday(&fPresentationTime, nullptr);
+        if (fPresentationTime.tv_sec < last_presentation_.tv_sec ||
+            (fPresentationTime.tv_sec == last_presentation_.tv_sec &&
+             fPresentationTime.tv_usec <= last_presentation_.tv_usec)) {
+            fPresentationTime = last_presentation_;
+            if (++fPresentationTime.tv_usec >= 1000000) {
+                ++fPresentationTime.tv_sec;
+                fPresentationTime.tv_usec = 0;
+            }
+        }
+        last_presentation_ = fPresentationTime;
+        fDurationInMicroseconds = 0;
+        FramedSource::afterGetting(this);
+    }
+
+private:
+    static void poll(void* opaque)
+    {
+        OnvifMetadataSource* source = static_cast<OnvifMetadataSource*>(opaque);
+        source->poll_task_ = nullptr;
+        source->doGetNextFrame();
+    }
+
+    uint64_t last_sequence_ = 0;
+    TaskToken poll_task_ = nullptr;
+    struct timeval last_presentation_ = {};
+};
+
+class OnvifMetadataSubsession final : public OnDemandServerMediaSubsession {
+public:
+    static OnvifMetadataSubsession* createNew(UsageEnvironment& env)
+    {
+        return new OnvifMetadataSubsession(env);
+    }
+
+protected:
+    explicit OnvifMetadataSubsession(UsageEnvironment& env)
+        : OnDemandServerMediaSubsession(env, True) {}
+
+    FramedSource* createNewStreamSource(unsigned, unsigned& est_bitrate) override
+    {
+        est_bitrate = 128;
+        return OnvifMetadataSource::createNew(envir());
+    }
+
+    RTPSink* createNewRTPSink(Groupsock* groupsock,
+        unsigned char payload_type, FramedSource*) override
+    {
+        return SimpleRTPSink::createNew(envir(), groupsock, payload_type,
+            90000, "application", "vnd.onvif.metadata", 1,
+            False, True);
+    }
+};
+
+bool attach_metadata_track(int idx)
+{
+    if (g_rs.ctx == nullptr || g_rs.ctx->env == nullptr || idx < 0 ||
+        idx >= g_rs.session_cnt) {
+        return false;
+    }
+    UsageEnvironment* env = static_cast<UsageEnvironment*>(g_rs.ctx->env);
+    ServerMediaSession* media_session = nullptr;
+    if (!ServerMediaSession::lookupByName(*env, g_rs.attr[idx].name,
+            media_session) || media_session == nullptr) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR,
+            "rtsp: live555 session '%s' not found for metadata\n",
+            g_rs.attr[idx].name);
+        return false;
+    }
+    OnvifMetadataSubsession* metadata = OnvifMetadataSubsession::createNew(*env);
+    if (metadata == nullptr || !media_session->addSubsession(metadata)) {
+        if (metadata != nullptr) Medium::close(metadata);
+        APP_PROF_LOG_PRINT(LEVEL_ERROR,
+            "rtsp: failed to attach ONVIF metadata to '%s'\n",
+            g_rs.attr[idx].name);
+        return false;
+    }
+    APP_PROF_LOG_PRINT(LEVEL_INFO,
+        "rtsp: ONVIF metadata track attached to '%s'\n",
+        g_rs.attr[idx].name);
+    return true;
+}
 
 /* PAYLOAD_TYPE_E -> CVI_RTSP_VIDEO_CODEC. Returns false on an unsupported
  * type (the old APP_RTSP_VCODEC_CHK macro returned CVI_FAILURE from inside the
@@ -124,6 +270,7 @@ void rtsp_server_config_init(rtsp_server_config_t* cfg)
     cfg->username = nullptr;
     cfg->password = nullptr;
     cfg->ch_mask = 0;
+    cfg->metadata_enabled = false;
 }
 
 int rtsp_server_start(const rtsp_server_config_t* cfg)
@@ -146,6 +293,7 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
     g_rs.bitrate = cfg->bitrate > 0 ? cfg->bitrate : def.bitrate;
     g_rs.username = cfg->username ? cfg->username : "";
     g_rs.password = cfg->password ? cfg->password : "";
+    g_rs.metadata_enabled = cfg->metadata_enabled;
 
     /* Channel selection: bit i -> channel i, packed in ascending order. */
     g_rs.session_cnt = 0;
@@ -167,6 +315,10 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
         g_rs.attr[i].video.bitrate = g_rs.bitrate;
 
         APP_VENC_CHN_CFG_S* chn_cfg = &venc->astVencChnCfg[g_rs.venc_chn[i]];
+        g_rs.width[i] = static_cast<int>(chn_cfg->u32Width);
+        g_rs.height[i] = static_cast<int>(chn_cfg->u32Height);
+        g_rs.frame_rate[i] = static_cast<int>(chn_cfg->u32DstFrameRate);
+        g_rs.encoder_bitrate[i] = static_cast<int>(chn_cfg->u32BitRate);
         if (!codec_of(chn_cfg->enType, &g_rs.attr[i].video.codec)) {
             APP_PROF_LOG_PRINT(LEVEL_ERROR,
                 "rtsp: VencChn_%d payload type %d unsupported\n",
@@ -208,6 +360,7 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
      * inside the context does not exist before it. */
     install_auth();
 
+    bool metadata_attach_ok = true;
     pthread_mutex_lock(&g_rs.mutex);
     for (int i = 0; i < g_rs.session_cnt; i++) {
         snprintf(g_rs.attr[i].name, sizeof(g_rs.attr[i].name), "%s%d",
@@ -215,6 +368,9 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
         g_rs.attr[i].reuseFirstSource = 1;
         CVI_RTSP_CreateSession(g_rs.ctx, &g_rs.attr[i], &g_rs.session[i]);
         g_rs.started[i] = true;
+        if (g_rs.metadata_enabled && !attach_metadata_track(i)) {
+            metadata_attach_ok = false;
+        }
         APP_PROF_LOG_PRINT(LEVEL_INFO, "======rtsp start [VencChn%d  %s]  ======\n",
             g_rs.venc_chn[i], g_rs.attr[i].name);
     }
@@ -223,6 +379,13 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
     g_rs.listener.onDisconnect = on_disconnect;
     CVI_RTSP_SetListener(g_rs.ctx, &g_rs.listener);
     pthread_mutex_unlock(&g_rs.mutex);
+
+    if (!metadata_attach_ok) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR,
+            "rtsp: configured ONVIF metadata track could not be created\n");
+        rtsp_server_stop();
+        return CVI_FAILURE;
+    }
 
     return CVI_SUCCESS;
 }
@@ -259,6 +422,11 @@ void rtsp_server_stop(void)
     }
     g_rs.ctx = nullptr;
     g_rs.session_cnt = 0;
+    g_rs.metadata_enabled = false;
+    pthread_mutex_lock(&g_metadata.mutex);
+    g_metadata.xml.clear();
+    ++g_metadata.sequence;
+    pthread_mutex_unlock(&g_metadata.mutex);
 }
 
 int rtsp_server_video_handler(void* pData, void* pArgs, void* pUserData)
@@ -318,9 +486,47 @@ const char* rtsp_server_session_name(int idx)
     return g_rs.attr[idx].name;
 }
 
+int rtsp_server_width(int idx)
+{
+    return idx >= 0 && idx < g_rs.session_cnt ? g_rs.width[idx] : 0;
+}
+
+int rtsp_server_height(int idx)
+{
+    return idx >= 0 && idx < g_rs.session_cnt ? g_rs.height[idx] : 0;
+}
+
+int rtsp_server_frame_rate(int idx)
+{
+    return idx >= 0 && idx < g_rs.session_cnt ? g_rs.frame_rate[idx] : 0;
+}
+
+int rtsp_server_encoder_bitrate(int idx)
+{
+    return idx >= 0 && idx < g_rs.session_cnt ? g_rs.encoder_bitrate[idx] : 0;
+}
+
 bool rtsp_server_auth_enabled(void)
 {
     return !g_rs.username.empty() && !g_rs.password.empty();
+}
+
+bool rtsp_server_metadata_enabled(void)
+{
+    return g_rs.ctx != nullptr && g_rs.metadata_enabled;
+}
+
+int rtsp_server_write_metadata(const char* xml, size_t len)
+{
+    if (!rtsp_server_metadata_enabled() || xml == nullptr || len == 0 ||
+        len > 1024u * 1024u) {
+        return -1;
+    }
+    pthread_mutex_lock(&g_metadata.mutex);
+    g_metadata.xml.assign(xml, len);
+    ++g_metadata.sequence;
+    pthread_mutex_unlock(&g_metadata.mutex);
+    return 0;
 }
 
 int rtsp_server_url(char* buf, size_t buflen, const char* host, int idx)

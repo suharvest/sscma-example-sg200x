@@ -5,7 +5,7 @@
 
 /*
  * onvif_service: the device-level half of ONVIF -- discovery, and later the
- * Device and Media2 SOAP services.
+ * Device plus Media1/Media2 SOAP services.
  *
  * Split from components/onvif_meta on purpose. Everything here answers
  * questions about the *device*: serial number, RTSP endpoint, snapshot URL,

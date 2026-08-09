@@ -1,5 +1,5 @@
 /*
- * ONVIF Device and Media2 SOAP services over HTTP.
+ * ONVIF Device plus Media1/Media2 SOAP services over HTTP.
  *
  * Transport is libwebsockets, on its own context and its own thread. The
  * reasoning is in docs/onvif-implementation-spec.md 14.9.1: lws is statically
@@ -297,29 +297,54 @@ std::string snapshot_uri(const std::string& ip)
 }
 
 /* Video source and encoder configuration, as one profile's worth of XML.
- * Resolution is not queried from the encoder: this component does not depend on
- * the video path (that is what keeps it linkable anywhere), and every client
- * that matters re-reads the real resolution from the SDP once it opens the
- * stream. Advertising the common case is better than advertising nothing. */
-std::string video_config_xml(const std::string& token)
+ * Values come from rtsp_server's running VENC session, so SOAP and SDP describe
+ * the same stream. Fallbacks only cover a request during partial startup. */
+std::string video_config_xml(const std::string& token, int idx)
 {
+    const int width = rtsp_server_width(idx) > 0 ? rtsp_server_width(idx) : 1920;
+    const int height = rtsp_server_height(idx) > 0 ? rtsp_server_height(idx) : 1080;
+    const int frame_rate = rtsp_server_frame_rate(idx) > 0
+        ? rtsp_server_frame_rate(idx) : 30;
+    const int bitrate = rtsp_server_encoder_bitrate(idx) > 0
+        ? rtsp_server_encoder_bitrate(idx) : 4096;
     std::string x;
     x += "<tt:VideoSourceConfiguration token=\"vsc0\">";
     x += "<tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount>";
     x += "<tt:SourceToken>vs0</tt:SourceToken>";
-    x += "<tt:Bounds x=\"0\" y=\"0\" width=\"1920\" height=\"1080\"/>";
+    x += "<tt:Bounds x=\"0\" y=\"0\" width=\"" + std::to_string(width) +
+         "\" height=\"" + std::to_string(height) + "\"/>";
     x += "</tt:VideoSourceConfiguration>";
     x += "<tt:VideoEncoderConfiguration token=\"vec_" + xml_escape(token) + "\">";
     x += "<tt:Name>" + xml_escape(token) + "</tt:Name><tt:UseCount>1</tt:UseCount>";
     x += "<tt:Encoding>H264</tt:Encoding>";
-    x += "<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>";
+    x += "<tt:Resolution><tt:Width>" + std::to_string(width) +
+         "</tt:Width><tt:Height>" + std::to_string(height) +
+         "</tt:Height></tt:Resolution>";
     x += "<tt:Quality>5</tt:Quality>";
-    x += "<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit>"
+    x += "<tt:RateControl><tt:FrameRateLimit>" + std::to_string(frame_rate) +
+         "</tt:FrameRateLimit>"
          "<tt:EncodingInterval>1</tt:EncodingInterval>"
-         "<tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl>";
+         "<tt:BitrateLimit>" + std::to_string(bitrate) +
+         "</tt:BitrateLimit></tt:RateControl>";
     x += "<tt:H264><tt:GovLength>30</tt:GovLength><tt:H264Profile>High</tt:H264Profile></tt:H264>";
     x += "<tt:SessionTimeout>PT60S</tt:SessionTimeout>";
     x += "</tt:VideoEncoderConfiguration>";
+    return x;
+}
+
+std::string metadata_config_xml(const std::string& token)
+{
+    if (!rtsp_server_metadata_enabled()) return "";
+    std::string x;
+    x += "<tt:MetadataConfiguration token=\"meta_" + xml_escape(token) + "\">";
+    x += "<tt:Name>ONVIF Metadata</tt:Name><tt:UseCount>1</tt:UseCount>";
+    x += "<tt:Analytics>true</tt:Analytics>";
+    x += "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type>"
+         "<tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address>"
+         "<tt:Port>0</tt:Port><tt:TTL>0</tt:TTL>"
+         "<tt:AutoStart>false</tt:AutoStart></tt:Multicast>";
+    x += "<tt:SessionTimeout>PT60S</tt:SessionTimeout>";
+    x += "</tt:MetadataConfiguration>";
     return x;
 }
 
@@ -497,6 +522,15 @@ std::string op_get_services(const std::string& ip, bool include_capability)
     x += "<tds:Version><tt:Major>2</tt:Major><tt:Minor>50</tt:Minor></tds:Version>";
     x += "</tds:Service>";
 
+    /* Media1 remains the compatibility service used by onvif-zeep and many
+     * established VMS clients. It points at the same endpoint as Media2; the
+     * dispatcher selects the response shape from the request namespace. */
+    x += "<tds:Service>";
+    x += "<tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>";
+    x += "<tds:XAddr>" + url + "</tds:XAddr>";
+    x += "<tds:Version><tt:Major>2</tt:Major><tt:Minor>50</tt:Minor></tds:Version>";
+    x += "</tds:Service>";
+
     x += "<tds:Service>";
     x += "<tds:Namespace>http://www.onvif.org/ver20/media/wsdl</tds:Namespace>";
     x += "<tds:XAddr>" + url + "</tds:XAddr>";
@@ -580,7 +614,7 @@ std::string op_get_network_interfaces()
 }
 
 /* ------------------------------------------------------------------------ */
-/* Media2 service                                                            */
+/* Media1 / Media2 services                                                   */
 /* ------------------------------------------------------------------------ */
 
 std::string op_get_profiles(const std::string& token_filter)
@@ -593,11 +627,33 @@ std::string op_get_profiles(const std::string& token_filter)
         x += "<tr2:Profiles token=\"" + xml_escape(tok) + "\" fixed=\"true\">";
         x += "<tr2:Name>" + xml_escape(tok) + "</tr2:Name>";
         x += "<tr2:Configurations>";
-        x += video_config_xml(tok);
+        x += video_config_xml(tok, i);
+        x += metadata_config_xml(tok);
         x += "</tr2:Configurations>";
         x += "</tr2:Profiles>";
     }
     x += "</tr2:GetProfilesResponse>";
+    return x;
+}
+
+/* Media1 uses direct configuration children and wraps the URI in MediaUri.
+ * Frigate's onvif-zeep client intentionally uses this older, still ubiquitous
+ * service, so returning a Media2-shaped body to a Media1 request makes the
+ * profile look empty even though the XML itself is well formed. */
+std::string op_get_profiles_media1(const std::string& token_filter)
+{
+    std::string x = "<trt:GetProfilesResponse>";
+    const int n = profile_count();
+    for (int i = 0; i < n; ++i) {
+        const std::string tok = profile_token(i);
+        if (!token_filter.empty() && token_filter != tok) continue;
+        x += "<trt:Profiles token=\"" + xml_escape(tok) + "\" fixed=\"true\">";
+        x += "<tt:Name>" + xml_escape(tok) + "</tt:Name>";
+        x += video_config_xml(tok, i);
+        x += metadata_config_xml(tok);
+        x += "</trt:Profiles>";
+    }
+    x += "</trt:GetProfilesResponse>";
     return x;
 }
 
@@ -617,6 +673,24 @@ std::string op_get_stream_uri(const std::string& ip, const std::string& token)
            "</tr2:Uri></tr2:GetStreamUriResponse>";
 }
 
+std::string op_get_stream_uri_media1(const std::string& ip,
+    const std::string& token)
+{
+    int idx = 0;
+    const int n = profile_count();
+    for (int i = 0; i < n; ++i) {
+        if (profile_token(i) == token) { idx = i; break; }
+    }
+    const std::string uri = stream_uri(ip, idx);
+    if (uri.empty()) return "";
+    return "<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>" +
+           xml_escape(uri) +
+           "</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>"
+           "<tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>"
+           "<tt:Timeout>PT60S</tt:Timeout></trt:MediaUri>"
+           "</trt:GetStreamUriResponse>";
+}
+
 std::string op_get_snapshot_uri(const std::string& ip)
 {
     const std::string uri = snapshot_uri(ip);
@@ -627,11 +701,14 @@ std::string op_get_snapshot_uri(const std::string& ip)
 
 std::string op_get_video_source_configurations()
 {
+    const int width = rtsp_server_width(0) > 0 ? rtsp_server_width(0) : 1920;
+    const int height = rtsp_server_height(0) > 0 ? rtsp_server_height(0) : 1080;
     std::string x = "<tr2:GetVideoSourceConfigurationsResponse>";
     x += "<tr2:Configurations token=\"vsc0\">";
     x += "<tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount>";
     x += "<tt:SourceToken>vs0</tt:SourceToken>";
-    x += "<tt:Bounds x=\"0\" y=\"0\" width=\"1920\" height=\"1080\"/>";
+    x += "<tt:Bounds x=\"0\" y=\"0\" width=\"" + std::to_string(width) +
+         "\" height=\"" + std::to_string(height) + "\"/>";
     x += "</tr2:Configurations>";
     x += "</tr2:GetVideoSourceConfigurationsResponse>";
     return x;
@@ -643,12 +720,21 @@ std::string op_get_video_encoder_configurations()
     const int n = profile_count();
     for (int i = 0; i < n; ++i) {
         const std::string tok = profile_token(i);
+        const int width = rtsp_server_width(i) > 0 ? rtsp_server_width(i) : 1920;
+        const int height = rtsp_server_height(i) > 0 ? rtsp_server_height(i) : 1080;
+        const int frame_rate = rtsp_server_frame_rate(i) > 0
+            ? rtsp_server_frame_rate(i) : 30;
+        const int bitrate = rtsp_server_encoder_bitrate(i) > 0
+            ? rtsp_server_encoder_bitrate(i) : 4096;
         x += "<tr2:Configurations token=\"vec_" + xml_escape(tok) + "\">";
         x += "<tt:Name>" + xml_escape(tok) + "</tt:Name><tt:UseCount>1</tt:UseCount>";
         x += "<tt:Encoding>H264</tt:Encoding>";
-        x += "<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>";
-        x += "<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit>"
-             "<tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl>";
+        x += "<tt:Resolution><tt:Width>" + std::to_string(width) +
+             "</tt:Width><tt:Height>" + std::to_string(height) +
+             "</tt:Height></tt:Resolution>";
+        x += "<tt:RateControl><tt:FrameRateLimit>" + std::to_string(frame_rate) +
+             "</tt:FrameRateLimit><tt:BitrateLimit>" + std::to_string(bitrate) +
+             "</tt:BitrateLimit></tt:RateControl>";
         x += "</tr2:Configurations>";
     }
     x += "</tr2:GetVideoEncoderConfigurationsResponse>";
@@ -699,13 +785,21 @@ std::string dispatch(const std::string& body, const std::string& ip, int* http_s
     if (has_op(body, "GetScopes"))             return envelope(op_get_scopes());
     if (has_op(body, "GetNetworkInterfaces"))  return envelope(op_get_network_interfaces());
 
-    /* Media2 */
-    if (has_op(body, "GetProfiles")) return envelope(op_get_profiles(tag_value(body, "Token")));
+    /* Media1 and Media2 share this HTTP endpoint. Namespace declarations are
+     * the one reliable discriminator because clients may choose any prefix. */
+    const bool media1 = body.find("http://www.onvif.org/ver10/media/wsdl") !=
+                        std::string::npos;
+    if (has_op(body, "GetProfiles")) {
+        const std::string token = tag_value(body, "Token");
+        return envelope(media1 ? op_get_profiles_media1(token)
+                               : op_get_profiles(token));
+    }
     if (has_op(body, "GetStreamUri")) {
         std::string tok = tag_value(body, "ProfileToken");
         if (tok.empty()) tok = tag_value(body, "Token");
         if (tok.empty() && profile_count() > 0) tok = profile_token(0);
-        const std::string r = op_get_stream_uri(ip, tok);
+        const std::string r = media1 ? op_get_stream_uri_media1(ip, tok)
+                                     : op_get_stream_uri(ip, tok);
         if (r.empty()) {
             *http_status = 400;
             return soap_fault("Sender", "InvalidArgVal", "no such profile");
