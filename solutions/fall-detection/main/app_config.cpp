@@ -26,6 +26,10 @@ void read_int(const json& cfg, const char* key, int& out, int lo, int hi) {
     out = v;
 }
 
+void read_bool(const json& cfg, const char* key, bool& out) {
+    if (cfg.contains(key) && cfg[key].is_boolean()) out = cfg[key].get<bool>();
+}
+
 void read_float(const json& cfg, const char* key, float& out, float lo, float hi) {
     if (!cfg.contains(key) || !cfg[key].is_number()) return;
     const float v = cfg[key].get<float>();
@@ -56,6 +60,7 @@ bool load_app_config(const std::string& path, AppConfig& out) {
 
     read_float(cfg, "confidence", out.confidence, 0.05f, 0.95f);
     read_float(cfg, "keypoint_confidence", out.keypoint_confidence, 0.05f, 0.95f);
+    read_bool(cfg, "temporal_confirmation_required", out.detector.temporal_confirmation_required);
     read_float(cfg, "hip_drop_speed_threshold", out.detector.hip_drop_speed_threshold, 0.0f, 5.0f);
     read_float(cfg, "hip_drop_distance_threshold", out.detector.hip_drop_distance_threshold, 0.0f, 1.0f);
     read_float(cfg, "motion_window_sec", out.detector.motion_window_sec, 0.0f, 5.0f);

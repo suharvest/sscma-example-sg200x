@@ -38,6 +38,7 @@ struct FallObservation {
 // manifest.  No fall decision is made from a single feature or a single
 // frame: evidence is scored and must remain present for confirmation_sec.
 struct FallConfig {
+    bool temporal_confirmation_required = true;
     float hip_drop_speed_threshold = 0.25f;  // normalised y units / second
     float hip_drop_distance_threshold = 0.02f;  // from last non-horizontal pose
     float motion_window_sec = 0.75f;         // drop may precede horizontal pose
@@ -46,8 +47,8 @@ struct FallConfig {
     int min_suspected_features = 2;          // of speed, torso, aspect ratio
     float confirmation_sec = 0.80f;
     float suspected_timeout_sec = 1.50f;
-    // Pose can disappear immediately after impact near the floor. A
-    // motion-triggered candidate may confirm through this short gap.
+    // Retain track/state continuity through a short pose gap. Missing pose
+    // never confirms a new event; confirmation requires a valid current pose.
     float occlusion_grace_sec = 0.75f;
     float recovery_torso_angle_deg = 35.0f;
     float recovery_aspect_ratio = 1.10f;

@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <sscma.h>
 
@@ -35,11 +36,11 @@ public:
     void setThreshold(float person_score);
     void setKeypointThreshold(float kpt_score) { kpt_threshold_ = kpt_score; }
 
-    // Returns one stable subject, or nullptr when nobody passes the threshold.
-    // Once acquired, association uses box overlap instead of re-picking the
-    // highest score every frame, preventing two nearby people from silently
-    // splicing their poses into one temporal sequence.
-    const Subject* detectPrimary(ma_img_t* img);
+    // Returns every person that passes the confidence threshold.  Association
+    // and per-person temporal state deliberately live outside the inference
+    // wrapper (see multi_tracker.h), so a second person can never be silently
+    // discarded or spliced into the first person's history.
+    const std::vector<Subject>& detectAll(ma_img_t* img);
 
     int inputWidth() const { return input_width_; }
     int inputHeight() const { return input_height_; }
@@ -50,11 +51,7 @@ public:
 private:
     std::unique_ptr<ma::engine::EngineCVI> engine_;
     ma::model::PoseDetector* model_ = nullptr;
-    Subject primary_;
-    bool has_primary_ = false;
-    geometry::InferBox tracked_box_;
-    bool have_tracked_box_ = false;
-    int tracking_misses_ = 0;
+    std::vector<Subject> subjects_;
 
     float threshold_ = 0.40f;
     float kpt_threshold_ = 0.50f;

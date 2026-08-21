@@ -27,6 +27,7 @@ int main() {
     cfg.occlusion_grace_sec = 0.8f;
     cfg.recovery_window_sec = 0.8f;
     cfg.cooldown_sec = 1.0f;
+    cfg.temporal_confirmation_required = false;
     FallDetector detector(cfg);
 
     // Upright -> rapid hip drop + torso rotation + wide box -> persistent
@@ -43,8 +44,8 @@ int main() {
     assert(out.state == FallState::Fallen && out.fall_event);
     assert(out.event_id == 1 && out.fall_detected);
 
-    // A recent strong lying pose can finish a motion-triggered confirmation
-    // through a short post-impact occlusion.
+    // Occlusion retains the candidate but cannot originate an event. A valid
+    // current observation is required for the final transition.
     FallDetector occluded(cfg);
     occluded.update(frame(0.0, 0.50f, 10.0f, 0.65f));
     out = occluded.update(frame(0.20, 0.70f, 68.0f, 1.45f));
@@ -52,6 +53,11 @@ int main() {
     FallObservation missing;
     missing.timestamp_sec = 0.85;
     out = occluded.update(missing);
+    assert(out.state == FallState::Suspected && !out.fall_event && out.event_id == 0);
+    auto visible_again = frame(0.95, 0.74f, 70.0f, 1.50f);
+    visible_again.temporal_available = true;
+    visible_again.temporal_positive = true;
+    out = occluded.update(visible_again);
     assert(out.state == FallState::Fallen && out.fall_event && out.event_id == 1);
 
     // Bending alone is not enough: one feature must not create a fall.
@@ -79,8 +85,8 @@ int main() {
     // claim a newly observed fall.
     FallDetector initial(cfg);
     out = initial.update(frame(0.0, 0.75f, 72.0f, 1.55f));
-    assert(out.state == FallState::Fallen);
-    assert(!out.fall_event && out.event_id == 0);
+    assert(out.state == FallState::Normal);
+    assert(!out.fall_detected && !out.fall_event && out.event_id == 0);
 
     // Recovery needs an upright posture for the full window. A brief stand-up
     // followed by another lying frame returns to Fallen and does not create a
@@ -104,7 +110,9 @@ int main() {
     // When the learned temporal gate is available, geometry may expose a
     // Suspected state but cannot emit an alarm on its own. This is the path
     // that rejects deliberate lie-down/push-up transitions in v0.2.
-    FallDetector gated(cfg);
+    FallConfig learned_cfg = cfg;
+    learned_cfg.temporal_confirmation_required = true;
+    FallDetector gated(learned_cfg);
     auto upright = frame(0.0, 0.50f, 10.0f, 0.65f);
     upright.temporal_available = true;
     gated.update(upright);
@@ -122,8 +130,19 @@ int main() {
     assert(out.state == FallState::Fallen && out.fall_event && out.event_id == 1);
     assert(std::fabs(out.diagnostics.temporal_probability - 0.91f) < 1e-5f);
 
-    // Post-impact pose loss can still complete a learned transition, while an
-    // ordinary disappearance (temporal_positive=false) never creates one.
+    // Default deployment policy requires the learned temporal gate; geometry
+    // alone remains suspected. Legacy geometry confirmation is opt-in above.
+    FallConfig strict_cfg = cfg;
+    strict_cfg.temporal_confirmation_required = true;
+    FallDetector strict(strict_cfg);
+    strict.update(frame(0.0, 0.50f, 10.0f, 0.65f));
+    out = strict.update(frame(0.25, 0.72f, 65.0f, 1.45f));
+    assert(out.state == FallState::Suspected && !out.fall_event);
+    out = strict.update(frame(1.25, 0.75f, 72.0f, 1.55f));
+    assert(out.state == FallState::Suspected && !out.fall_event);
+
+    // Pose loss never completes a learned transition, even if the temporal
+    // window remains positive from previous frames.
     FallDetector lost_pose(cfg);
     upright.timestamp_sec = 0.0;
     lost_pose.update(upright);
@@ -136,7 +155,7 @@ int main() {
     no_pose.temporal_positive = true;
     no_pose.temporal_probability = 0.88f;
     out = lost_pose.update(no_pose);
-    assert(out.fall_event && out.state == FallState::Fallen);
+    assert(!out.fall_event && out.state == FallState::Normal);
 
     std::cout << "fall_detector_test: all scenarios passed\n";
     return 0;

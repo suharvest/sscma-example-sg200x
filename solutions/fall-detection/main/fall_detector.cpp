@@ -104,10 +104,12 @@ FallOutput FallDetector::update(const FallObservation& o) {
     }
 
     if (!o.valid) {
-        // A person often becomes partly occluded by the floor or furniture
-        // immediately after impact. Confirm only a candidate that started
-        // with rapid downward motion and had a strong lying pose shortly
-        // before tracking was lost. A generic disappearance never alarms.
+        // Missing/invalid pose may retain an already-established state, but it
+        // must never originate a new fall event. Live SG2002 testing showed
+        // that sparse keypoints and short-lived duplicate tracks can leave a
+        // high temporal probability behind after the person disappears. A
+        // valid current observation is therefore required at the transition
+        // into Fallen; occlusion is continuity, not confirmation evidence.
         diagnostics_.hip_drop_speed = 0.0f;
         diagnostics_.hip_drop_distance = max_drop_distance_;
         diagnostics_.torso_angle_deg = 0.0f;
@@ -118,27 +120,9 @@ FallOutput FallDetector::update(const FallObservation& o) {
         diagnostics_.upright_posture = false;
         diagnostics_.temporal_positive = o.temporal_positive;
         diagnostics_.temporal_probability = o.temporal_probability;
-        if (initialized_ && state_ == FallState::Normal && o.temporal_available &&
-            o.temporal_positive && o.timestamp_sec >= cooldown_until_sec_) {
-            state_ = FallState::Fallen;
-            recovery_since_sec_ = -1.0;
-            cooldown_until_sec_ = o.timestamp_sec + config_.cooldown_sec;
-            ++event_id_;
-            out.fall_event = true;
-        }
         if (state_ == FallState::Suspected && suspected_since_sec_ >= 0.0) {
             const double suspected_for = o.timestamp_sec - suspected_since_sec_;
-            const bool recent_strong_pose = last_strong_evidence_sec_ >= 0.0 &&
-                o.timestamp_sec - last_strong_evidence_sec_ <= config_.occlusion_grace_sec;
-            if (motion_triggered_ && recent_strong_pose &&
-                max_drop_distance_ >= config_.hip_drop_distance_threshold &&
-                suspected_for >= config_.confirmation_sec) {
-                state_ = FallState::Fallen;
-                recovery_since_sec_ = -1.0;
-                cooldown_until_sec_ = o.timestamp_sec + config_.cooldown_sec;
-                ++event_id_;
-                out.fall_event = true;
-            } else if (suspected_for > config_.suspected_timeout_sec) {
+            if (suspected_for > config_.suspected_timeout_sec) {
                 state_ = FallState::Normal;
                 suspected_since_sec_ = -1.0;
                 last_strong_evidence_sec_ = -1.0;
@@ -169,13 +153,9 @@ FallOutput FallDetector::update(const FallObservation& o) {
         }
 
         if (!initialized_) {
-            // A camera may start while a person is already on the floor. Treat
-            // that posture as the baseline (state is informative), but do not
-            // emit a false edge event or allocate an event id.
+            // A camera may start while a person is already on the floor. With
+            // no preceding history, posture alone is not a fall.
             initialized_ = true;
-            if (isLying(o)) {
-                state_ = FallState::Fallen;
-            }
         } else {
             const int evidence = diagnostics_.evidence_features;
             const bool lying = diagnostics_.lying_posture;
@@ -184,14 +164,6 @@ FallOutput FallDetector::update(const FallObservation& o) {
 
             switch (state_) {
                 case FallState::Normal:
-                    if (!cooldown && o.temporal_available && o.temporal_positive) {
-                        state_ = FallState::Fallen;
-                        recovery_since_sec_ = -1.0;
-                        cooldown_until_sec_ = o.timestamp_sec + config_.cooldown_sec;
-                        ++event_id_;
-                        out.fall_event = true;
-                        break;
-                    }
                     // Horizontal posture alone is not a fall: sleeping,
                     // push-ups, and a deliberate lie-down can look identical.
                     // Arm only on rapid descent plus a horizontal-posture cue.
@@ -220,7 +192,7 @@ FallOutput FallDetector::update(const FallObservation& o) {
                     if (lying && enough_evidence) {
                         last_strong_evidence_sec_ = o.timestamp_sec;
                     }
-                    if (!o.temporal_available && motion_triggered_ && lying && enough_evidence &&
+                    if (!config_.temporal_confirmation_required && motion_triggered_ && lying && enough_evidence &&
                         max_drop_distance_ >= config_.hip_drop_distance_threshold &&
                         o.timestamp_sec - suspected_since_sec_ >= config_.confirmation_sec) {
                         state_ = FallState::Fallen;

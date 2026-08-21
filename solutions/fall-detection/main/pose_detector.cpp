@@ -8,18 +8,6 @@
 namespace fall {
 namespace {
 
-float boxIou(const geometry::InferBox& a, const geometry::InferBox& b) {
-    const float left = std::max(a.left(), b.left());
-    const float top = std::max(a.top(), b.top());
-    const float right = std::min(a.right(), b.right());
-    const float bottom = std::min(a.bottom(), b.bottom());
-    const float intersection = std::max(0.0f, right - left) * std::max(0.0f, bottom - top);
-    const float area_a = std::max(0.0f, a.w) * std::max(0.0f, a.h);
-    const float area_b = std::max(0.0f, b.w) * std::max(0.0f, b.h);
-    const float union_area = area_a + area_b - intersection;
-    return union_area > 1e-8f ? intersection / union_area : 0.0f;
-}
-
 geometry::InferBox resultBox(const ma_keypoint3f_t& result) {
     return geometry::InferBox::fromCenter(result.box.x, result.box.y,
                                           result.box.w, result.box.h,
@@ -84,17 +72,17 @@ void PoseDetector::setThreshold(float person_score) {
     }
 }
 
-const Subject* PoseDetector::detectPrimary(ma_img_t* img) {
-    has_primary_ = false;
+const std::vector<Subject>& PoseDetector::detectAll(ma_img_t* img) {
+    subjects_.clear();
     inference_failed_ = false;
     if (!initialized_ || model_ == nullptr || img == nullptr) {
-        return nullptr;
+        return subjects_;
     }
 
     if (model_->run(img) != MA_OK) {
         inference_failed_ = true;
         MA_LOGE(TAG, "Pose inference failed");
-        return nullptr;
+        return subjects_;
     }
 
     std::vector<const ma_keypoint3f_t*> candidates;
@@ -102,42 +90,25 @@ const Subject* PoseDetector::detectPrimary(ma_img_t* img) {
         if (kp.box.score < threshold_) continue;
         candidates.push_back(&kp);
     }
-    if (candidates.empty()) {
-        if (++tracking_misses_ > 5) have_tracked_box_ = false;
-        return nullptr;
+    subjects_.reserve(candidates.size());
+    keypoint_count_ = 0;
+    for (const auto* candidate : candidates) {
+        Subject subject;
+        // YOLO pose heads emit box centre coordinates; say so at the only
+        // place that knows, so nothing downstream has to guess.
+        subject.box = resultBox(*candidate);
+        subject.score = candidate->box.score;
+        subject.pose = Pose(candidate->pts, input_width_, input_height_, kpt_threshold_);
+        keypoint_count_ = std::max(keypoint_count_, static_cast<int>(candidate->pts.size()));
+        subjects_.push_back(std::move(subject));
     }
 
-    const ma_keypoint3f_t* best = nullptr;
-    if (have_tracked_box_) {
-        float best_iou = 0.0f;
-        for (const auto* candidate : candidates) {
-            const float iou = boxIou(tracked_box_, resultBox(*candidate));
-            if (best == nullptr || iou > best_iou) {
-                best = candidate;
-                best_iou = iou;
-            }
-        }
-        // A few blank associations are safer than feeding another person's
-        // pose into a 3.2-second history. Reacquire after a short grace period.
-        if (best_iou < 0.05f && ++tracking_misses_ <= 3) return nullptr;
-    }
-    if (best == nullptr || tracking_misses_ > 3) {
-        best = *std::max_element(candidates.begin(), candidates.end(),
-            [](const auto* a, const auto* b) { return a->box.score < b->box.score; });
-    }
-    tracking_misses_ = 0;
-
-    keypoint_count_ = static_cast<int>(best->pts.size());
-
-    // YOLO pose heads emit box centre coordinates; say so at the only place
-    // that knows, so nothing downstream has to guess.
-    primary_.box = resultBox(*best);
-    tracked_box_ = primary_.box;
-    have_tracked_box_ = true;
-    primary_.score = best->box.score;
-    primary_.pose = Pose(best->pts, input_width_, input_height_, kpt_threshold_);
-    has_primary_ = true;
-    return &primary_;
+    // Keep output deterministic for the MQTT/debug consumers. The tracker
+    // still performs a global box assignment, so this ordering is only a
+    // presentation detail and never selects a single analysis subject.
+    std::sort(subjects_.begin(), subjects_.end(),
+              [](const Subject& a, const Subject& b) { return a.score > b.score; });
+    return subjects_;
 }
 
 }  // namespace fall
