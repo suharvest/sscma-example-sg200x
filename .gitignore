@@ -8,3 +8,7 @@ install/
 *.deb
 CLAUDE.md
 tools/face-analysis-debugger/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
