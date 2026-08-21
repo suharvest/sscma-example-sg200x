@@ -1,7 +1,7 @@
 # Fall Detection — integration guide
 
-Fall Detection runs YOLO11n-Pose on the reCamera TPU, associates one stable
-subject, and feeds a 3.2-second COCO-17 pose history to a tiny learned temporal
+Fall Detection runs YOLO11n-Pose on the reCamera TPU, associates stable
+multi-person tracks, and feeds each 3.2-second COCO-17 pose history to a tiny learned temporal
 classifier. Geometric hip, torso and box features remain visible and drive the
 explainable `suspected`/recovery states; the classifier confirms the alarm.
 Inference is fully local and requires no cloud service.
@@ -15,9 +15,8 @@ The states are `normal`, `suspected`, `fallen`, and `recovering`:
 - `recovering` — an upright posture has been seen, but it must persist for the
   recovery window before returning to `normal`.
 
-If the first frame already shows a person lying down, the app reports state
-`fallen` but intentionally emits no `fall_event`; there was no observable
-transition after startup.
+If the first frame already shows a person lying down, the app remains `normal`:
+there is no observable transition history, so posture alone is not a fall.
 
 ## Configuration
 
@@ -29,6 +28,7 @@ configurable (the manifest lists ranges and defaults):
 |---|---:|---|
 | `confidence` | 0.40 | YOLO person score threshold |
 | `keypoint_confidence` | 0.50 | COCO-17 keypoint visibility threshold |
+| `temporal_confirmation_required` | true | Require valid current pose plus learned temporal confirmation; false enables legacy geometry-only confirmation |
 | `hip_drop_speed_threshold` | 0.25 | Downward hip velocity in normalised frame units/s |
 | `hip_drop_distance_threshold` | 0.02 | Net hip descent from the last non-horizontal pose |
 | `motion_window_sec` | 0.75 | Maximum delay from rapid drop to horizontal posture |
@@ -37,7 +37,7 @@ configurable (the manifest lists ranges and defaults):
 | `min_suspected_features` | 2 | Required active features (speed, torso, aspect) |
 | `confirmation_sec` | 0.80 | Evidence persistence before event |
 | `suspected_timeout_sec` | 1.50 | How long a pending suspicion may wait |
-| `occlusion_grace_sec` | 0.75 | Confirm through a short post-impact pose occlusion |
+| `occlusion_grace_sec` | 0.75 | Retain track/state through a short pose gap; never confirms a new event |
 | `recovery_torso_angle_deg` | 35 | Upright torso-angle limit |
 | `recovery_aspect_ratio` | 1.10 | Upright width/height limit |
 | `recovery_window_sec` | 2.00 | Upright persistence before normal |
@@ -53,7 +53,8 @@ Example:
 
 One JSON document is published per processed frame on
 `recamera/fall-detection/results`. Discovery entities include **Fall Detected**,
-**Fall State**, **Fall Event ID**, **Person Count**, and **Person Present**.
+**Fall State**, **Fall Event ID**, **Person Count**, **Fallen Count**, and
+**Person Present**.
 
 ```json
 {
@@ -62,11 +63,23 @@ One JSON document is published per processed frame on
   "fall_detected": true,
   "fall_event": true,
   "event_id": 7,
+  "event_id_scope": "stream_global_event_id",
   "state": "fallen",
   "person_detected": true,
   "person_count": 1,
   "fallen_count": 1,
   "tracking": true,
+  "persons": [
+    {
+      "track_id": 3,
+      "person_detected": true,
+      "state": "fallen",
+      "event_id": 2,
+      "features": {"temporal_probability": 0.91},
+      "keypoints": [{"points": [[0.5, 0.2]], "edges": []}],
+      "pose17": [[0.5, 0.2, 0.99]]
+    }
+  ],
   "features": {
     "hip_y": 0.74,
     "hip_drop_speed": 0.81,
@@ -93,10 +106,22 @@ without rerunning inference.
 - Snapshot: `http://<device_ip>:8001/snapshot.jpg`
 
 Use a fixed view that keeps the whole person and both shoulders/hips in frame.
-The app intentionally tracks one subject. It acquires the highest-confidence
-person, then associates subsequent boxes by overlap instead of switching to
-the highest score every frame. `person_count` is consequently 0 or 1 and
-`fallen_count` is 0 or 1. Full multi-person fall analysis is not claimed.
+The app returns every pose person and associates boxes with a lightweight
+IoU/centre-distance tracker. Each `track_id` owns an independent temporal
+history and fall state machine, so nearby people cannot splice their histories.
+Short detector gaps remain in `persons[]` as `person_detected:false` tracks,
+allowing post-impact occlusion confirmation; tracks are retired after the
+configured timeout. Legacy top-level fields are aggregates: `fall_detected`
+and `fall_event` are OR across retained tracks, `person_count` is the number of
+currently visible people, `fallen_count` counts retained fallen states, and
+`state` is the most severe state. Top-level `event_id` is a stream-global
+sequence (`event_id_scope:"stream_global_event_id"`); each `persons[]` item has
+its own per-track `event_id`.
+
+Each `persons[]` item includes `track_id`, `state`, `event_id`, `features`,
+`keypoints` and stable COCO-17 `pose17` data. The MQTT payload also keeps the
+legacy top-level fields for existing consumers. The debug `/results` payload
+contains one skeleton group per visible person.
 
 The init script is `K92fall-detection` (K-prefix). The supervisor owns camera
 start/stop and app selection, so the script does not autostart at boot. Before
@@ -118,6 +143,25 @@ c++ -std=c++17 -I solutions/fall-detection/main \
 /tmp/fall_detector_test
 ```
 
+The association and aggregate contracts are also host-testable without a
+device:
+
+```bash
+c++ -std=c++17 -I solutions/fall-detection/main \
+  solutions/fall-detection/main/box_tracker.cpp \
+  components/geometry/src/norm_box.cpp \
+  solutions/fall-detection/tests/multi_person_tracker_test.cpp \
+  -I components/geometry/include -o /tmp/multi_person_tracker_test
+/tmp/multi_person_tracker_test
+
+c++ -std=c++17 -I solutions/fall-detection/main \
+  solutions/fall-detection/main/fall_detector.cpp \
+  solutions/fall-detection/main/payload_aggregate.cpp \
+  solutions/fall-detection/tests/payload_aggregate_test.cpp \
+  -o /tmp/payload_aggregate_test
+/tmp/payload_aggregate_test
+```
+
 For NPU end-to-end checks with an open video or public dataset, use the
 offline RGB evaluator. It loads the same cvimodel, `PoseDetector`, feature
 extraction, and `FallDetector` as the live path, while skipping camera/RTSP,
@@ -133,7 +177,8 @@ fall-detection --model /path/to/yolo11n_pose_cv181x_int8.cvimodel \
 ```
 
 Each frame produces one JSON line; the final `summary` line contains `frames`,
-`events`, `last_state`, and `fall_detected`. Exit code 0 means all complete
+the stream-global `events`, edge-bearing `event_edges`, `last_state`, and
+`fall_detected`. Exit code 0 means all complete
 frames were processed; 2 means the file was missing, empty, or ended mid-frame;
 1 indicates model initialisation failure and 3 indicates an NPU inference error. This makes the command suitable for
 CI or a labeled public clip without claiming that a single clip is a benchmark.

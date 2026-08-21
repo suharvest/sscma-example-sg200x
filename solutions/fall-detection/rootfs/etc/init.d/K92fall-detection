@@ -18,7 +18,7 @@ DAEMON=/usr/local/bin/fall-detection
 PIDFILE=/var/run/$NAME.pid
 LOGFILE=/var/log/$NAME.log
 
-export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
+export LD_LIBRARY_PATH=/usr/lib/fall-detection:/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
 
 DAEMON_OPTS=""
 

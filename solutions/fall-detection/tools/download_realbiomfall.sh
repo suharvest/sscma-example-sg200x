@@ -6,15 +6,23 @@ set -eu
 out=${1:-/tmp/realbiomfall}
 mkdir -p "$out"
 
+file_md5() {
+    if command -v md5sum >/dev/null 2>&1; then
+        md5sum "$1" | awk '{print $1}'
+    else
+        md5 -q "$1"
+    fi
+}
+
 download() {
     name=$1
     md5_expected=$2
-    if [ ! -f "$out/$name" ] || [ "$(md5 -q "$out/$name")" != "$md5_expected" ]; then
+    if [ ! -f "$out/$name" ] || [ "$(file_md5 "$out/$name")" != "$md5_expected" ]; then
         curl -fL --retry 5 --retry-delay 2 \
             -o "$out/$name.part" "https://zenodo.org/records/11620083/files/$name"
         mv "$out/$name.part" "$out/$name"
     fi
-    [ "$(md5 -q "$out/$name")" = "$md5_expected" ] || {
+    [ "$(file_md5 "$out/$name")" = "$md5_expected" ] || {
         echo "checksum mismatch: $name" >&2
         exit 1
     }
