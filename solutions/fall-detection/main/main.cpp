@@ -1,15 +1,15 @@
 // fall-detection -- temporal multi-feature fall detection on reCamera.
 //
-// Pipeline: camera -> YOLO11-Pose (TPU) -> temporal geometric features ->
-// tiny learned temporal gate -> FallDetector state machine -> MQTT / debug
-// WebSocket, with the scene going out over RTSP untouched. One primary subject
-// is associated by box overlap so nearby people cannot splice pose histories.
+// Pipeline: camera -> YOLO11-Pose (TPU) -> lightweight multi-person box
+// association -> one temporal feature/classifier state per person -> MQTT /
+// debug WebSocket, with the scene going out over RTSP untouched.
 
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -30,9 +30,9 @@
 
 #include "app_config.h"
 #include "fall_detector.h"
+#include "multi_tracker.h"
 #include "pose_detector.h"
 #include "result_payload.h"
-#include "temporal_classifier.h"
 
 using namespace ma;
 using namespace fall;
@@ -97,10 +97,17 @@ static std::string findPoseModel() {
 
 static const char* APP_CONFIG_PATH = "/userdata/local/apps/fall-detection.config.json";
 
+static int trackerMissLimit(float timeout_sec) {
+    // The detector channel normally runs at 15 fps. Keep the frame guard at
+    // least three seconds for scheduler jitter, but derive it from the
+    // configured wall-clock timeout so a deliberately longer grace period is
+    // not cut short by a fixed miss count.
+    return std::max(45, static_cast<int>(std::ceil(std::max(0.0f, timeout_sec) * 15.0f)));
+}
+
 static std::atomic<bool> g_running(true);
 static PoseDetector* g_pose_detector = nullptr;
-static std::unique_ptr<FallDetector> g_detector_state;
-static std::unique_ptr<TemporalClassifier> g_temporal_classifier;
+static std::unique_ptr<MultiPersonTracker> g_tracker;
 static ha_mqtt::MqttPublisher* g_mqtt = nullptr;
 static Camera* g_camera = nullptr;
 static ConfigWatcher* g_watcher = nullptr;
@@ -265,6 +272,8 @@ static bool init_mqtt() {
                      "{{ value_json.event_id }}", "", "", ""},
         EntityConfig{EntityType::Sensor, "person_count", "Person Count",
                      "{{ value_json.person_count }}", "", "", "measurement"},
+        EntityConfig{EntityType::Sensor, "fallen_count", "Fallen Count",
+                     "{{ value_json.fallen_count }}", "", "", "measurement"},
         EntityConfig{EntityType::BinarySensor, "person_present", "Person Present",
                      "{{ 'ON' if value_json.person_detected else 'OFF' }}",
                      "occupancy", "", ""},
@@ -283,52 +292,10 @@ static void cleanup() {
     if (g_debug_started) { debug_stream_destroy(); g_debug_started = false; }
     if (g_video_started) { deinitRtsp(); deinitVideo(); g_video_started = false; }
     if (g_mqtt) { g_mqtt->deinit(); delete g_mqtt; g_mqtt = nullptr; }
-    g_detector_state.reset();
-    g_temporal_classifier.reset();
+    g_tracker.reset();
     if (g_pose_detector) { delete g_pose_detector; g_pose_detector = nullptr; }
     if (g_watcher) { delete g_watcher; g_watcher = nullptr; }
     MA_LOGI(TAG, "Cleanup completed");
-}
-
-static bool midpoint(const Pose& pose, Joint a, Joint b, Point2f& out) {
-    const bool va = pose.visible(a);
-    const bool vb = pose.visible(b);
-    if (!va && !vb) return false;
-    if (va && vb) {
-        out.x = (pose.at(a).x + pose.at(b).x) * 0.5f;
-        out.y = (pose.at(a).y + pose.at(b).y) * 0.5f;
-    } else {
-        out = va ? pose.at(a) : pose.at(b);
-    }
-    return true;
-}
-
-static FallObservation makeObservation(const Subject* subject, double now_sec,
-                                       int infer_h) {
-    FallObservation observation;
-    observation.timestamp_sec = now_sec;
-    if (subject == nullptr || subject->pose.empty() || infer_h <= 0 || subject->box.h <= 1e-4f) {
-        return observation;
-    }
-
-    Point2f hips;
-    Point2f shoulders;
-    if (!midpoint(subject->pose, Joint::LeftHip, Joint::RightHip, hips) ||
-        !midpoint(subject->pose, Joint::LeftShoulder, Joint::RightShoulder, shoulders)) {
-        return observation;
-    }
-
-    const float dy = hips.y - shoulders.y;
-    const float dx = hips.x - shoulders.x;
-    const float torso_angle = std::atan2(std::fabs(dx), std::fabs(dy)) * 180.0f / 3.14159265358979323846f;
-    if (!std::isfinite(torso_angle)) return observation;
-
-    observation.valid = true;
-    observation.hip_y = hips.y / static_cast<float>(infer_h);
-    observation.torso_angle_deg = torso_angle;
-    observation.bbox_aspect_ratio = subject->box.w / subject->box.h;
-    observation.person_score = subject->score;
-    return observation;
 }
 
 static void process_frame() {
@@ -344,7 +311,7 @@ static void process_frame() {
     const double now_sec = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - g_start_time).count() / 1000.0;
 
-    const Subject* subject = g_pose_detector->detectPrimary(&frame);
+    const auto& detections = g_pose_detector->detectAll(&frame);
 
     // Offer the raw frame for /snapshot.jpg before returnFrame() invalidates
     // frame.data. Cheap (one atomic load) unless a client asked recently.
@@ -356,59 +323,54 @@ static void process_frame() {
 
     const int feature_height = g_pose_detector->inputHeight() > 0
         ? g_pose_detector->inputHeight() : g_config.inference_height;
-    FallObservation observation = makeObservation(subject, now_sec, feature_height);
     const int feature_width = g_pose_detector->inputWidth() > 0
         ? g_pose_detector->inputWidth() : g_config.inference_width;
-    const TemporalPrediction temporal = g_temporal_classifier->update(
-        makeTemporalFrame(subject ? &subject->pose : nullptr, observation,
-                          feature_width, feature_height), now_sec);
-    observation.temporal_available = true;
-    observation.temporal_positive = temporal.positive;
-    observation.temporal_probability = temporal.probability;
-    FallOutput output = g_detector_state->update(observation);
+    const auto tracks = g_tracker->update(detections, now_sec, feature_width, feature_height);
 
     PayloadContext ctx;
     ctx.timestamp_ms = static_cast<uint64_t>(timestamp_ms);
     ctx.frame_id = g_frame_id;
     ctx.inference_time_ms = static_cast<float>(inference_ms);
-    ctx.person_detected = (subject != nullptr);
-    ctx.person_count = subject != nullptr ? 1 : 0;
-    ctx.fallen_count = output.fall_detected ? 1 : 0;
+    ctx.person_detected = g_tracker->activeCount() > 0;
+    ctx.person_count = g_tracker->activeCount();
     ctx.infer_w = g_pose_detector->inputWidth() > 0 ? g_pose_detector->inputWidth() : g_config.inference_width;
     ctx.infer_h = feature_height;
     ctx.stream_w = g_config.stream_width;
     ctx.stream_h = g_config.stream_height;
+    ctx.global_event_id = g_tracker->globalEventId();
+    ctx.global_event_id_valid = true;
+    ctx.persons.clear();
+    for (const auto* track : tracks) ctx.persons.push_back(track);
 
     if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
-        // No boxes: a rectangle round the athlete carries no information the
-        // skeleton does not, and the label riding on it can slide off the
-        // bottom of frame exactly when it matters. The
-        // skeleton and a corner-pinned card go out in the extra members.
+        // No boxes: the skeleton groups carry the useful multi-person overlay
+        // and a corner-pinned card goes out in the extra members.
         const std::vector<debug_stream_box_t> no_boxes;
         const std::string json = debug_stream_build_results(
             ctx.timestamp_ms, ctx.frame_id, ctx.inference_time_ms,
             g_config.stream_width, g_config.stream_height, no_boxes, nullptr,
-            buildDebugExtraJson(ctx, output, observation, subject ? &subject->pose : nullptr));
+            buildDebugExtraJson(ctx));
         debug_stream_publish_result(json.c_str(), json.size());
     }
 
     if (g_config.enable_mqtt && g_mqtt) {
-        const std::string payload = buildResultJson(ctx, output, observation, subject ? &subject->pose : nullptr);
+        const std::string payload = buildResultJson(ctx);
         g_mqtt->publishResultsJson(payload);
     }
 
-    if (output.fall_event) {
-        MA_LOGI(TAG, "Fall event id=%llu (temporal=%.3f hip_speed=%.3f torso=%.1f aspect=%.2f)",
-                static_cast<unsigned long long>(output.event_id),
-                output.diagnostics.temporal_probability, output.diagnostics.hip_drop_speed,
-                output.diagnostics.torso_angle_deg,
-                output.diagnostics.bbox_aspect_ratio);
-    } else if (g_config.verbose) {
-        MA_LOGI(TAG, "Frame %u: %s state=%s hip_speed=%.3f torso=%.1f aspect=%.2f inference=%lldms",
-                g_frame_id, ctx.person_detected ? "person" : "no person",
-                fallStateName(output.state), output.diagnostics.hip_drop_speed,
-                output.diagnostics.torso_angle_deg, output.diagnostics.bbox_aspect_ratio,
-                inference_ms);
+    for (const auto* track : tracks) {
+        if (track == nullptr || !track->output.fall_event) continue;
+        MA_LOGI(TAG, "Fall event track=%llu event_id=%llu (temporal=%.3f hip_speed=%.3f torso=%.1f aspect=%.2f)",
+                static_cast<unsigned long long>(track->track_id),
+                static_cast<unsigned long long>(track->output.event_id),
+                track->output.diagnostics.temporal_probability,
+                track->output.diagnostics.hip_drop_speed,
+                track->output.diagnostics.torso_angle_deg,
+                track->output.diagnostics.bbox_aspect_ratio);
+    }
+    if (g_config.verbose) {
+        MA_LOGI(TAG, "Frame %u: active=%d retained=%zu inference=%lldms",
+                g_frame_id, ctx.person_count, tracks.size(), inference_ms);
     }
 
     // Console setConfig restarts the app; this also handles out-of-band edits
@@ -419,7 +381,10 @@ static void process_frame() {
                 fresh.detector.torso_angle_threshold_deg,
                 fresh.detector.bbox_aspect_ratio_threshold,
                 fresh.detector.confirmation_sec);
-        g_detector_state->setConfig(fresh.detector);
+        g_tracker->setFallConfig(fresh.detector);
+        const float tracker_timeout = std::max(2.0f,
+            fresh.detector.occlusion_grace_sec + fresh.detector.suspected_timeout_sec + 0.5f);
+        g_tracker->setTimeout(tracker_timeout, trackerMissLimit(tracker_timeout));
         g_pose_detector->setThreshold(fresh.confidence);
         g_pose_detector->setKeypointThreshold(fresh.keypoint_confidence);
     }
@@ -427,8 +392,8 @@ static void process_frame() {
     g_frame_id++;
 }
 
-// Evaluate a contiguous RGB888 recording with exactly the same PoseDetector
-// and makeObservation/FallDetector path as the live camera. This is intended
+// Evaluate a contiguous RGB888 recording with exactly the same PoseDetector,
+// multi-person association and per-track FallDetector path as the live camera. This is intended
 // for reproducible public-video or dataset checks on a device with the NPU:
 // ffmpeg can produce the input (`-pix_fmt rgb24 -f rawvideo`). No camera,
 // RTSP, debug WebSocket, or MQTT service is touched in this mode.
@@ -448,7 +413,10 @@ static int run_offline_rgb() {
 
     std::vector<std::uint8_t> buffer(static_cast<std::size_t>(frame_bytes));
     std::uint32_t frame_id = 0;
-    FallOutput last_output;
+    std::uint64_t last_event_id = 0;
+    std::uint64_t last_event_edge_count = 0;
+    FallState last_state = FallState::Normal;
+    bool last_fall_detected = false;
     std::size_t frames = 0;
     while (g_running.load()) {
         input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(frame_bytes));
@@ -468,50 +436,70 @@ static int run_offline_rgb() {
         image.data = buffer.data();
 
         const double now_sec = static_cast<double>(frame_id) / g_config.offline_fps;
-        const Subject* subject = g_pose_detector->detectPrimary(&image);
+        const auto& detections = g_pose_detector->detectAll(&image);
         if (g_pose_detector->inferenceFailed()) {
             std::cerr << "pose inference failed at offline frame " << frame_id << "\n";
             return 3;
         }
         const int feature_height = g_pose_detector->inputHeight() > 0
             ? g_pose_detector->inputHeight() : g_config.offline_height;
-        const FallObservation observation = makeObservation(subject, now_sec, feature_height);
-        FallObservation classified_observation = observation;
         const int feature_width = g_pose_detector->inputWidth() > 0
             ? g_pose_detector->inputWidth() : g_config.offline_width;
-        const TemporalPrediction temporal = g_temporal_classifier->update(
-            makeTemporalFrame(subject ? &subject->pose : nullptr, observation,
-                              feature_width, feature_height), now_sec);
-        classified_observation.temporal_available = true;
-        classified_observation.temporal_positive = temporal.positive;
-        classified_observation.temporal_probability = temporal.probability;
-        last_output = g_detector_state->update(classified_observation);
+        const auto tracks = g_tracker->update(detections, now_sec,
+                                               feature_width, feature_height);
 
         PayloadContext ctx;
         ctx.timestamp_ms = static_cast<std::uint64_t>(now_sec * 1000.0 + 0.5);
         ctx.frame_id = frame_id;
         ctx.inference_time_ms = 0.0f;  // offline source has no wall-clock budget
-        ctx.person_detected = subject != nullptr;
-        ctx.person_count = subject != nullptr ? 1 : 0;
-        ctx.fallen_count = last_output.fall_detected ? 1 : 0;
+        ctx.person_detected = g_tracker->activeCount() > 0;
+        ctx.person_count = g_tracker->activeCount();
         ctx.infer_w = g_pose_detector->inputWidth() > 0 ? g_pose_detector->inputWidth() : g_config.offline_width;
         ctx.infer_h = feature_height;
         ctx.stream_w = g_config.offline_width;
         ctx.stream_h = g_config.offline_height;
+        ctx.global_event_id = g_tracker->globalEventId();
+        ctx.global_event_id_valid = true;
+        ctx.persons.clear();
+        for (const auto* track : tracks) ctx.persons.push_back(track);
+
+        FallState frame_state = FallState::Normal;
+        bool frame_fall_detected = false;
+        for (const auto* track : tracks) {
+            if (track == nullptr) continue;
+            last_event_id = std::max(last_event_id, track->output.event_id);
+            frame_fall_detected = frame_fall_detected || track->output.fall_detected;
+            auto severity = [](FallState state) {
+                switch (state) {
+                    case FallState::Fallen: return 3;
+                    case FallState::Recovering: return 2;
+                    case FallState::Suspected: return 1;
+                    case FallState::Normal: return 0;
+                }
+                return 0;
+            };
+            if (severity(track->output.state) > severity(frame_state)) {
+                frame_state = track->output.state;
+            }
+        }
+        last_event_id = g_tracker->globalEventId();
+        last_event_edge_count = g_tracker->eventEdgeCount();
+        last_state = frame_state;
+        last_fall_detected = frame_fall_detected;
 
         // JSONL is intentionally one result per input frame. Include the
         // stable COCO-17 feature vector so the exact NPU output can train and
         // replay a temporal classifier without running pose inference again.
-        std::cout << buildResultJson(ctx, last_output, classified_observation,
-                                     subject ? &subject->pose : nullptr) << '\n';
+        std::cout << buildResultJson(ctx) << '\n';
         ++frames;
         ++frame_id;
     }
 
     std::cout << "{\"summary\":{\"frames\":" << frames
-              << ",\"events\":" << last_output.event_id
-              << ",\"last_state\":\"" << fallStateName(last_output.state)
-              << "\",\"fall_detected\":" << (last_output.fall_detected ? "true" : "false")
+              << ",\"events\":" << last_event_id
+              << ",\"event_edges\":" << last_event_edge_count
+              << ",\"last_state\":\"" << fallStateName(last_state)
+              << "\",\"fall_detected\":" << (last_fall_detected ? "true" : "false")
               << "}}\n";
     std::cout.flush();
     return frames > 0 ? 0 : 2;
@@ -546,8 +534,16 @@ int main(int argc, char** argv) {
     }
     MA_LOGI(TAG, "Model: %s", g_config.model_path.c_str());
 
-    g_detector_state = std::make_unique<FallDetector>(cfg.detector);
-    g_temporal_classifier = std::make_unique<TemporalClassifier>();
+    TrackerConfig tracker_config;
+    tracker_config.fall = cfg.detector;
+    // Keep a track long enough for FallDetector's post-impact occlusion grace
+    // and suspected timeout, while bounding stale-track memory on a quiet
+    // camera. The frame cap covers the normal 15 fps stream as well as brief
+    // scheduling jitter.
+    tracker_config.timeout_sec = std::max(2.0f,
+        cfg.detector.occlusion_grace_sec + cfg.detector.suspected_timeout_sec + 0.5f);
+    tracker_config.max_missed_frames = trackerMissLimit(tracker_config.timeout_sec);
+    g_tracker = std::make_unique<MultiPersonTracker>(tracker_config);
     g_pose_detector = new PoseDetector();
     if (!g_pose_detector->init(g_config.model_path)) { cleanup(); return 1; }
     g_pose_detector->setThreshold(cfg.confidence);
@@ -570,7 +566,7 @@ int main(int argc, char** argv) {
 
     g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
 
-    MA_LOGI(TAG, "Fall detection running (stable primary-person tracking + temporal classifier)");
+    MA_LOGI(TAG, "Fall detection running (multi-person IoU/center tracking + per-person temporal classifiers)");
     MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
     MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
 
