@@ -660,13 +660,22 @@ std::string op_get_profiles_media1(const std::string& token_filter)
 /* Media2's GetStreamUri returns a bare Uri element, unlike Media1 which wrapped
  * it in MediaUri with timeout and invalid-after fields. Sending the Media1
  * shape here parses as an empty URI on strict clients. */
-std::string op_get_stream_uri(const std::string& ip, const std::string& token)
+/* -1 when the token names no profile. Falling back to profile 0 instead would
+ * hand the client a URI for a stream it did not ask for, which reads as success
+ * and is only noticed later as the wrong resolution or channel. */
+int profile_index(const std::string& token)
 {
-    int idx = 0;
     const int n = profile_count();
     for (int i = 0; i < n; ++i) {
-        if (profile_token(i) == token) { idx = i; break; }
+        if (profile_token(i) == token) return i;
     }
+    return -1;
+}
+
+std::string op_get_stream_uri(const std::string& ip, const std::string& token)
+{
+    const int idx = profile_index(token);
+    if (idx < 0) return "";
     const std::string uri = stream_uri(ip, idx);
     if (uri.empty()) return "";
     return "<tr2:GetStreamUriResponse><tr2:Uri>" + xml_escape(uri) +
@@ -676,11 +685,8 @@ std::string op_get_stream_uri(const std::string& ip, const std::string& token)
 std::string op_get_stream_uri_media1(const std::string& ip,
     const std::string& token)
 {
-    int idx = 0;
-    const int n = profile_count();
-    for (int i = 0; i < n; ++i) {
-        if (profile_token(i) == token) { idx = i; break; }
-    }
+    const int idx = profile_index(token);
+    if (idx < 0) return "";
     const std::string uri = stream_uri(ip, idx);
     if (uri.empty()) return "";
     return "<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>" +
