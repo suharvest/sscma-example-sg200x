@@ -73,6 +73,17 @@ struct MetadataFrameState {
 
 MetadataFrameState g_metadata;
 
+/* Single source of truth for the metadata frame ceiling. It bounds three
+ * things that used to disagree: what rtsp_server_write_metadata() accepts,
+ * what the source advertises through maxFrameSize(), and how large live555
+ * sizes its OutPacketBuffer. live555's default OutPacketBuffer::maxSize is
+ * 60000, so a source advertising more than that had its frames silently
+ * truncated into non-well-formed XML. Kept at 128 KiB rather than the 1 MiB
+ * the source used to advertise because the buffer is allocated per RTP sink
+ * and this value is already two orders of magnitude above a realistic ONVIF
+ * analytics frame. */
+constexpr unsigned kMetadataMaxFrameSize = 128u * 1024u;
+
 class OnvifMetadataSource final : public FramedSource {
 public:
     static OnvifMetadataSource* createNew(UsageEnvironment& env)
@@ -80,7 +91,7 @@ public:
         return new OnvifMetadataSource(env);
     }
 
-    unsigned maxFrameSize() const override { return 1024u * 1024u; }
+    unsigned maxFrameSize() const override { return kMetadataMaxFrameSize; }
 
 protected:
     explicit OnvifMetadataSource(UsageEnvironment& env) : FramedSource(env)
@@ -114,9 +125,21 @@ protected:
             return;
         }
 
+        /* Drop rather than truncate: half an XML document is not parseable by
+         * any receiver, so a partial frame is worse than a missing one. */
+        if (xml.size() > fMaxSize) {
+            APP_PROF_LOG_PRINT(LEVEL_ERROR,
+                "rtsp: dropping %u-byte ONVIF metadata frame, sink buffer is %u bytes\n",
+                static_cast<unsigned>(xml.size()), fMaxSize);
+            last_sequence_ = sequence;
+            poll_task_ = envir().taskScheduler().scheduleDelayedTask(
+                10000, poll, this);
+            return;
+        }
+
         last_sequence_ = sequence;
-        fFrameSize = std::min<unsigned>(fMaxSize, xml.size());
-        fNumTruncatedBytes = static_cast<unsigned>(xml.size()) - fFrameSize;
+        fFrameSize = static_cast<unsigned>(xml.size());
+        fNumTruncatedBytes = 0;
         memcpy(fTo, xml.data(), fFrameSize);
         gettimeofday(&fPresentationTime, nullptr);
         if (fPresentationTime.tv_sec < last_presentation_.tv_sec ||
@@ -133,11 +156,26 @@ protected:
         FramedSource::afterGetting(this);
     }
 
+    /* Without this the 10 ms poll keeps firing after the sink has stopped
+     * reading and calls afterGetting() on a source that is no longer
+     * delivering, which live555 treats as a fatal internal error. */
+    void doStopGettingFrames() override
+    {
+        if (poll_task_ != nullptr) {
+            envir().taskScheduler().unscheduleDelayedTask(poll_task_);
+            poll_task_ = nullptr;
+        }
+        FramedSource::doStopGettingFrames();
+    }
+
 private:
     static void poll(void* opaque)
     {
         OnvifMetadataSource* source = static_cast<OnvifMetadataSource*>(opaque);
         source->poll_task_ = nullptr;
+        /* Guards the race where the task was already dequeued for execution
+         * when doStopGettingFrames() ran, so unscheduling could not cancel it. */
+        if (!source->isCurrentlyAwaitingData()) return;
         source->doGetNextFrame();
     }
 
@@ -172,6 +210,14 @@ protected:
     }
 };
 
+/* Runs on the application thread after CVI_RTSP_Start(), so it touches live555
+ * objects while the event loop is already running -- the same window
+ * install_auth() below uses. Deferring it with scheduleDelayedTask() would not
+ * fix that: live555's delay queue is itself only safe to mutate from the event
+ * loop, and the caller needs the success/failure result synchronously to decide
+ * whether to abort startup. Doing it properly needs an event trigger created
+ * before the loop starts plus a handshake back, which is a larger change than
+ * this file should carry on its own. */
 bool attach_metadata_track(int idx)
 {
     if (g_rs.ctx == nullptr || g_rs.ctx->env == nullptr || idx < 0 ||
@@ -188,6 +234,12 @@ bool attach_metadata_track(int idx)
             "rtsp: live555 session '%s' not found for metadata\n",
             g_rs.attr[idx].name);
         return false;
+    }
+    /* Global to live555 and read when each RTP sink allocates its buffer, so
+     * it has to be raised before the subsession exists. Only ever raised: a
+     * larger value already configured elsewhere stays. */
+    if (OutPacketBuffer::maxSize < kMetadataMaxFrameSize) {
+        OutPacketBuffer::maxSize = kMetadataMaxFrameSize;
     }
     OnvifMetadataSubsession* metadata = OnvifMetadataSubsession::createNew(*env);
     if (metadata == nullptr || !media_session->addSubsession(metadata)) {
@@ -234,9 +286,28 @@ void on_connect(const char* ip, CVI_VOID* arg)
      * published encoder channel for a fresh IDR; the VENC emits its parameter
      * sets with that access unit and all connected clients can resynchronise.
      * requestVideoIDR() is non-blocking/coalesced and is already used by the
-     * debug stream for the same late-join case. */
-    for (int i = 0; i < g_rs.session_cnt; ++i) {
-        requestVideoIDR(static_cast<video_ch_index_t>(g_rs.venc_chn[i]));
+     * debug stream for the same late-join case.
+     *
+     * This callback runs on the live555 event-loop thread while session_cnt
+     * and venc_chn[] are written by the application thread, so take a copy
+     * under g_rs.mutex and drop the lock before calling into the VENC. Holding
+     * it across requestVideoIDR() would put a foreign subsystem's locks
+     * underneath ours on this path only. */
+    int cnt = 0;
+    VENC_CHN chn[RTSP_SERVER_MAX_SESSIONS] = { 0 };
+    if (g_rs.mutex_ready) {
+        pthread_mutex_lock(&g_rs.mutex);
+    }
+    cnt = std::min(g_rs.session_cnt, RTSP_SERVER_MAX_SESSIONS);
+    for (int i = 0; i < cnt; ++i) {
+        chn[i] = g_rs.venc_chn[i];
+    }
+    if (g_rs.mutex_ready) {
+        pthread_mutex_unlock(&g_rs.mutex);
+    }
+
+    for (int i = 0; i < cnt; ++i) {
+        requestVideoIDR(static_cast<video_ch_index_t>(chn[i]));
     }
 }
 
@@ -430,12 +501,20 @@ void rtsp_server_stop(void)
     APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp server destroyed\n");
 
     if (g_rs.mutex_ready) {
+        /* Clear the fields other threads read under this lock while the lock
+         * still exists, then retire it. */
+        pthread_mutex_lock(&g_rs.mutex);
+        g_rs.ctx = nullptr;
+        g_rs.session_cnt = 0;
+        g_rs.metadata_enabled = false;
+        pthread_mutex_unlock(&g_rs.mutex);
         pthread_mutex_destroy(&g_rs.mutex);
         g_rs.mutex_ready = false;
+    } else {
+        g_rs.ctx = nullptr;
+        g_rs.session_cnt = 0;
+        g_rs.metadata_enabled = false;
     }
-    g_rs.ctx = nullptr;
-    g_rs.session_cnt = 0;
-    g_rs.metadata_enabled = false;
     pthread_mutex_lock(&g_metadata.mutex);
     g_metadata.xml.clear();
     ++g_metadata.sequence;
@@ -526,13 +605,21 @@ bool rtsp_server_auth_enabled(void)
 
 bool rtsp_server_metadata_enabled(void)
 {
-    return g_rs.ctx != nullptr && g_rs.metadata_enabled;
+    /* Called from the inference thread; ctx and metadata_enabled are cleared
+     * by rtsp_server_stop() on the application thread under g_rs.mutex. */
+    if (!g_rs.mutex_ready) {
+        return false;
+    }
+    pthread_mutex_lock(&g_rs.mutex);
+    const bool enabled = g_rs.ctx != nullptr && g_rs.metadata_enabled;
+    pthread_mutex_unlock(&g_rs.mutex);
+    return enabled;
 }
 
 int rtsp_server_write_metadata(const char* xml, size_t len)
 {
     if (!rtsp_server_metadata_enabled() || xml == nullptr || len == 0 ||
-        len > 1024u * 1024u) {
+        len > kMetadataMaxFrameSize) {
         return -1;
     }
     pthread_mutex_lock(&g_metadata.mutex);
