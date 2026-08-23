@@ -14,14 +14,26 @@
  * invention. It does couple us to the live555 ABI bundled inside
  * libcvi_rtsp.so (2020.07.21) -- another reason that library is due for
  * replacement.
+ *
+ * Reaching through that void* also means obeying live555's threading rule: its
+ * objects belong to the event loop, and triggerEvent() is the only entry point
+ * another thread may use. Both mutations this file makes -- the auth database
+ * and each session's ONVIF metadata subsession -- are therefore queued onto the
+ * loop and waited for; see LoopExecutor below.
  */
 
 #include "rtsp_server.h"
 
 #include <pthread.h>
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "app_ipcam_comm.h"
@@ -34,6 +46,46 @@
 #define RS_TAG "rtsp_server"
 
 namespace {
+
+/* Every live555 object inside CVI_RTSP_CTX belongs to the event-loop thread
+ * that CVI_RTSP_Start() spawns; only triggerEvent() may be called from
+ * anywhere else. So the two mutations this file needs -- installing the auth
+ * database and creating a session plus its metadata subsession -- are packaged
+ * as requests, handed to the loop through an event trigger, and waited for.
+ *
+ * Verified against the shipped SDK (libcvi_rtsp.so, riscv64, disassembled):
+ *   - CVI_RTSP_Create() fills ctx->server, ctx->env and ctx->scheduler before
+ *     returning, so the trigger can be created while the loop is still stopped
+ *     (createEventTrigger() is not itself thread-safe).
+ *   - CVI_RTSP_Start() pthread_create()s a thread whose body is
+ *     scheduler->doEventLoop(&ctx->stop).
+ *   - CVI_RTSP_Stop() sets ctx->stop and pthread_join()s that thread, so after
+ *     it returns the trigger can be deleted with no callback in flight.
+ *   - The scheduler is built with a 10 ms granularity, which is what bounds
+ *     how long select() can sit on a triggerEvent() from another thread. */
+struct LoopRequest {
+    enum Op { InstallAuth, CreateSessionAndAttach };
+
+    Op op = InstallAuth;
+    int idx = -1;
+
+    std::mutex mutex;
+    std::condition_variable done;
+    bool completed = false;
+    bool cancelled = false;
+    int result = CVI_FAILURE;
+};
+
+struct LoopExecutor {
+    TaskScheduler* scheduler = nullptr;
+    EventTriggerId trigger_id = 0;
+
+    /* Its own lock, never nested with g_rs.mutex: the handler pops a request
+     * and releases this before running it. */
+    std::mutex mutex;
+    std::deque<std::shared_ptr<LoopRequest>> queue;
+    bool accepting = false;
+};
 
 struct RtspServerState {
     CVI_RTSP_CTX* ctx = nullptr;
@@ -57,6 +109,8 @@ struct RtspServerState {
 
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     bool mutex_ready = false;
+
+    LoopExecutor loop;
 };
 
 RtspServerState g_rs;
@@ -210,14 +264,9 @@ protected:
     }
 };
 
-/* Runs on the application thread after CVI_RTSP_Start(), so it touches live555
- * objects while the event loop is already running -- the same window
- * install_auth() below uses. Deferring it with scheduleDelayedTask() would not
- * fix that: live555's delay queue is itself only safe to mutate from the event
- * loop, and the caller needs the success/failure result synchronously to decide
- * whether to abort startup. Doing it properly needs an event trigger created
- * before the loop starts plus a handshake back, which is a larger change than
- * this file should carry on its own. */
+/* Event-loop thread only: reached from the trigger handler, in the same
+ * callback that created the session, so no DESCRIBE can be answered between
+ * the two. */
 bool attach_metadata_track(int idx)
 {
     if (g_rs.ctx == nullptr || g_rs.ctx->env == nullptr || idx < 0 ||
@@ -317,26 +366,254 @@ void on_disconnect(const char* ip, CVI_VOID* arg)
     APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp client disconnected: %s\n", ip);
 }
 
-/* Install a live555 auth database on the server hidden inside CVI_RTSP_CTX. */
-void install_auth(void)
+/* Event-loop thread only. Install a live555 auth database on the server hidden
+ * inside CVI_RTSP_CTX. Runs before any session is published, so there is no
+ * window in which a stream exists without its credentials. */
+int install_auth_on_loop(void)
 {
-    if (g_rs.username.empty() || g_rs.password.empty() || g_rs.ctx == nullptr) {
-        return;
+    if (g_rs.username.empty() || g_rs.password.empty()) {
+        return CVI_SUCCESS;  // no credentials configured is not a failure
+    }
+    if (g_rs.ctx == nullptr) {
+        return CVI_FAILURE;
     }
     RTSPServer* server = static_cast<RTSPServer*>(g_rs.ctx->server);
     if (server == nullptr) {
-        APP_PROF_LOG_PRINT(LEVEL_WARN, "rtsp: no live555 server, auth not installed\n");
-        return;
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "rtsp: no live555 server, auth not installed\n");
+        return CVI_FAILURE;
     }
     UserAuthenticationDatabase* auth = new (std::nothrow) UserAuthenticationDatabase();
     if (auth == nullptr) {
         APP_PROF_LOG_PRINT(LEVEL_ERROR, "rtsp: out of memory installing auth\n");
-        return;
+        return CVI_FAILURE;
     }
     auth->addUserRecord(g_rs.username.c_str(), g_rs.password.c_str());
     server->setAuthenticationDatabase(auth);
     APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp: authentication enabled for user '%s'\n",
         g_rs.username.c_str());
+    return CVI_SUCCESS;
+}
+
+/* Event-loop thread only. Creating the session and attaching its metadata
+ * subsession happen in one callback; only once both succeeded is the session
+ * published to the other threads, so a DESCRIBE either misses the stream
+ * entirely or sees it complete. */
+int create_session_on_loop(int idx)
+{
+    if (g_rs.ctx == nullptr || idx < 0 || idx >= g_rs.session_cnt) {
+        return CVI_FAILURE;
+    }
+    CVI_RTSP_SESSION* session = nullptr;
+    CVI_S32 ret = CVI_RTSP_CreateSession(g_rs.ctx, &g_rs.attr[idx], &session);
+    if (ret < 0 || session == nullptr) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR,
+            "rtsp: CVI_RTSP_CreateSession('%s') failed: %d\n",
+            g_rs.attr[idx].name, ret);
+        return CVI_FAILURE;
+    }
+    if (g_rs.metadata_enabled && !attach_metadata_track(idx)) {
+        CVI_RTSP_DestroySession(g_rs.ctx, session);
+        return CVI_FAILURE;
+    }
+
+    /* The only place this file takes g_rs.mutex from the event loop besides
+     * on_connect(), and it is held for two stores. */
+    if (g_rs.mutex_ready) {
+        pthread_mutex_lock(&g_rs.mutex);
+    }
+    g_rs.session[idx] = session;
+    g_rs.started[idx] = true;
+    if (g_rs.mutex_ready) {
+        pthread_mutex_unlock(&g_rs.mutex);
+    }
+    APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp: session '%s' published\n",
+        g_rs.attr[idx].name);
+    return CVI_SUCCESS;
+}
+
+const char* op_name(LoopRequest::Op op)
+{
+    return op == LoopRequest::InstallAuth ? "InstallAuth" : "CreateSessionAndAttach";
+}
+
+unsigned long long this_thread_id(void)
+{
+    return static_cast<unsigned long long>(
+        reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(pthread_self())));
+}
+
+/* live555 may coalesce several triggerEvent() calls into one handler run, so
+ * drain the whole queue every time. */
+void loop_handler(void* client_data)
+{
+    (void)client_data;
+    for (;;) {
+        std::shared_ptr<LoopRequest> req;
+        {
+            std::lock_guard<std::mutex> guard(g_rs.loop.mutex);
+            if (g_rs.loop.queue.empty()) {
+                return;
+            }
+            req = g_rs.loop.queue.front();
+            g_rs.loop.queue.pop_front();
+        }
+
+        bool cancelled = false;
+        {
+            std::lock_guard<std::mutex> guard(req->mutex);
+            cancelled = req->cancelled;
+        }
+        if (cancelled) {
+            APP_PROF_LOG_PRINT(LEVEL_WARN,
+                "rtsp: loop request %s idx=%d was cancelled, skipping\n",
+                op_name(req->op), req->idx);
+            continue;
+        }
+
+        APP_PROF_LOG_PRINT(LEVEL_INFO,
+            "rtsp: loop request %s idx=%d begin on thread %llu\n",
+            op_name(req->op), req->idx, this_thread_id());
+        int result = CVI_FAILURE;
+        switch (req->op) {
+        case LoopRequest::InstallAuth:
+            result = install_auth_on_loop();
+            break;
+        case LoopRequest::CreateSessionAndAttach:
+            result = create_session_on_loop(req->idx);
+            break;
+        }
+        APP_PROF_LOG_PRINT(LEVEL_INFO,
+            "rtsp: loop request %s idx=%d end, result=%d\n",
+            op_name(req->op), req->idx, result);
+
+        {
+            std::lock_guard<std::mutex> guard(req->mutex);
+            req->result = result;
+            req->completed = true;
+        }
+        req->done.notify_all();
+    }
+}
+
+/* Called on the application thread while the loop is still stopped:
+ * createEventTrigger() mutates scheduler state that only the loop may touch
+ * once it is running. */
+bool loop_executor_init(void)
+{
+    if (g_rs.ctx == nullptr) {
+        return false;
+    }
+    UsageEnvironment* env = static_cast<UsageEnvironment*>(g_rs.ctx->env);
+    if (env == nullptr) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR,
+            "rtsp: CVI_RTSP_Create() left no live555 environment\n");
+        return false;
+    }
+    TaskScheduler* scheduler = &env->taskScheduler();
+    EventTriggerId trigger_id = scheduler->createEventTrigger(loop_handler);
+    if (trigger_id == 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "rtsp: no live555 event trigger available\n");
+        return false;
+    }
+    std::lock_guard<std::mutex> guard(g_rs.loop.mutex);
+    g_rs.loop.scheduler = scheduler;
+    g_rs.loop.trigger_id = trigger_id;
+    g_rs.loop.queue.clear();
+    g_rs.loop.accepting = true;
+    APP_PROF_LOG_PRINT(LEVEL_INFO,
+        "rtsp: live555 event trigger %u created before the loop started\n",
+        static_cast<unsigned>(trigger_id));
+    return true;
+}
+
+/* Queue one mutation for the event loop and block until it reports back.
+ * Deliberately holds neither g_rs.mutex nor the queue lock while waiting: the
+ * loop thread takes g_rs.mutex in on_connect() and in create_session_on_loop(),
+ * so waiting under it would be an ABBA deadlock. */
+int run_on_loop_and_wait(LoopRequest::Op op, int idx)
+{
+    TaskScheduler* scheduler = nullptr;
+    EventTriggerId trigger_id = 0;
+    auto req = std::make_shared<LoopRequest>();
+    req->op = op;
+    req->idx = idx;
+    {
+        std::lock_guard<std::mutex> guard(g_rs.loop.mutex);
+        if (!g_rs.loop.accepting || g_rs.loop.scheduler == nullptr ||
+            g_rs.loop.trigger_id == 0) {
+            APP_PROF_LOG_PRINT(LEVEL_ERROR,
+                "rtsp: loop request %s idx=%d rejected, executor not running\n",
+                op_name(op), idx);
+            return CVI_FAILURE;
+        }
+        scheduler = g_rs.loop.scheduler;
+        trigger_id = g_rs.loop.trigger_id;
+        g_rs.loop.queue.push_back(req);
+    }
+    APP_PROF_LOG_PRINT(LEVEL_INFO,
+        "rtsp: loop request %s idx=%d queued from thread %llu\n",
+        op_name(op), idx, this_thread_id());
+
+    const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    scheduler->triggerEvent(trigger_id, nullptr);
+
+    std::unique_lock<std::mutex> lock(req->mutex);
+    const bool signalled = req->done.wait_for(lock, std::chrono::seconds(3),
+        [&req] { return req->completed; });
+    const long long elapsed_ms = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - begin).count());
+    if (!signalled) {
+        /* Leave the request in the queue: the handler drops it on sight, and
+         * the shared_ptr keeps it alive until then. */
+        req->cancelled = true;
+        lock.unlock();
+        APP_PROF_LOG_PRINT(LEVEL_ERROR,
+            "rtsp: loop request %s idx=%d timed out after %lld ms\n",
+            op_name(op), idx, elapsed_ms);
+        return CVI_FAILURE;
+    }
+    const int result = req->result;
+    lock.unlock();
+    APP_PROF_LOG_PRINT(LEVEL_INFO,
+        "rtsp: loop request %s idx=%d done in %lld ms, result=%d\n",
+        op_name(op), idx, elapsed_ms, result);
+    return result;
+}
+
+/* Stop accepting work and release anyone still waiting, before the loop is
+ * asked to exit -- otherwise their 3 s timeout is the only way out. */
+void loop_executor_drain(void)
+{
+    std::deque<std::shared_ptr<LoopRequest>> pending;
+    {
+        std::lock_guard<std::mutex> guard(g_rs.loop.mutex);
+        g_rs.loop.accepting = false;
+        pending.swap(g_rs.loop.queue);
+    }
+    for (const std::shared_ptr<LoopRequest>& req : pending) {
+        {
+            std::lock_guard<std::mutex> guard(req->mutex);
+            req->cancelled = true;
+            req->completed = true;
+            req->result = CVI_FAILURE;
+        }
+        req->done.notify_all();
+    }
+}
+
+/* Only safe once CVI_RTSP_Stop() has joined the loop thread. */
+void loop_executor_release(void)
+{
+    std::lock_guard<std::mutex> guard(g_rs.loop.mutex);
+    if (g_rs.loop.scheduler != nullptr && g_rs.loop.trigger_id != 0) {
+        g_rs.loop.scheduler->deleteEventTrigger(g_rs.loop.trigger_id);
+        APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp: live555 event trigger %u deleted\n",
+            static_cast<unsigned>(g_rs.loop.trigger_id));
+    }
+    g_rs.loop.scheduler = nullptr;
+    g_rs.loop.trigger_id = 0;
+    g_rs.loop.queue.clear();
 }
 
 } // namespace
@@ -430,8 +707,34 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
         return ret;
     }
 
+    APP_PROF_LOG_PRINT(LEVEL_INFO,
+        "rtsp: cvi_rtsp context created (server=%p env=%p scheduler=%p)\n",
+        g_rs.ctx->server, g_rs.ctx->env, g_rs.ctx->scheduler);
+
     pthread_mutex_init(&g_rs.mutex, NULL);
     g_rs.mutex_ready = true;
+
+    /* Everything that touches live555 from here on goes through the loop
+     * executor, so its trigger has to exist before the loop does. */
+    if (!loop_executor_init()) {
+        rtsp_server_stop();
+        return CVI_FAILURE;
+    }
+
+    /* Installed before Start() rather than after: it is one more write to the
+     * context, and doing it now keeps it off the running loop. */
+    g_rs.listener.onConnect = on_connect;
+    g_rs.listener.argConn = g_rs.ctx;
+    g_rs.listener.onDisconnect = on_disconnect;
+    CVI_RTSP_SetListener(g_rs.ctx, &g_rs.listener);
+
+    /* Session names must be settled before the loop can be asked to create
+     * them: the request carries only the index. */
+    for (int i = 0; i < g_rs.session_cnt; i++) {
+        snprintf(g_rs.attr[i].name, sizeof(g_rs.attr[i].name), "%s%d",
+            g_rs.session_prefix.c_str(), i);
+        g_rs.attr[i].reuseFirstSource = 1;
+    }
 
     ret = CVI_RTSP_Start(g_rs.ctx);
     if (ret < 0) {
@@ -439,36 +742,25 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
         rtsp_server_stop();
         return ret;
     }
+    APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp: event loop started on port %d\n", g_rs.port);
 
-    /* Credentials must be installed after Start(): the live555 server object
-     * inside the context does not exist before it. */
-    install_auth();
+    /* Credentials first: a session published before the auth database exists
+     * would be reachable without one. */
+    if (run_on_loop_and_wait(LoopRequest::InstallAuth, -1) != CVI_SUCCESS) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "rtsp: authentication could not be installed\n");
+        rtsp_server_stop();
+        return CVI_FAILURE;
+    }
 
-    bool metadata_attach_ok = true;
-    pthread_mutex_lock(&g_rs.mutex);
     for (int i = 0; i < g_rs.session_cnt; i++) {
-        snprintf(g_rs.attr[i].name, sizeof(g_rs.attr[i].name), "%s%d",
-            g_rs.session_prefix.c_str(), i);
-        g_rs.attr[i].reuseFirstSource = 1;
-        CVI_RTSP_CreateSession(g_rs.ctx, &g_rs.attr[i], &g_rs.session[i]);
-        g_rs.started[i] = true;
-        if (g_rs.metadata_enabled && !attach_metadata_track(i)) {
-            metadata_attach_ok = false;
+        if (run_on_loop_and_wait(LoopRequest::CreateSessionAndAttach, i) != CVI_SUCCESS) {
+            APP_PROF_LOG_PRINT(LEVEL_ERROR,
+                "rtsp: session '%s' could not be created\n", g_rs.attr[i].name);
+            rtsp_server_stop();
+            return CVI_FAILURE;
         }
         APP_PROF_LOG_PRINT(LEVEL_INFO, "======rtsp start [VencChn%d  %s]  ======\n",
             g_rs.venc_chn[i], g_rs.attr[i].name);
-    }
-    g_rs.listener.onConnect = on_connect;
-    g_rs.listener.argConn = g_rs.ctx;
-    g_rs.listener.onDisconnect = on_disconnect;
-    CVI_RTSP_SetListener(g_rs.ctx, &g_rs.listener);
-    pthread_mutex_unlock(&g_rs.mutex);
-
-    if (!metadata_attach_ok) {
-        APP_PROF_LOG_PRINT(LEVEL_ERROR,
-            "rtsp: configured ONVIF metadata track could not be created\n");
-        rtsp_server_stop();
-        return CVI_FAILURE;
     }
 
     return CVI_SUCCESS;
@@ -481,7 +773,17 @@ void rtsp_server_stop(void)
         return;
     }
 
+    /* Refuse new work and release whoever is already queued, so nobody is left
+     * waiting on a loop that is about to exit. */
+    loop_executor_drain();
+
+    APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp: stopping event loop\n");
     CVI_RTSP_Stop(g_rs.ctx);
+    APP_PROF_LOG_PRINT(LEVEL_INFO, "rtsp: event loop thread joined\n");
+
+    /* CVI_RTSP_Stop() joins the loop thread, so no callback can be in flight
+     * and the trigger can go before CVI_RTSP_Destroy() frees the scheduler. */
+    loop_executor_release();
 
     if (g_rs.mutex_ready) {
         pthread_mutex_lock(&g_rs.mutex);
