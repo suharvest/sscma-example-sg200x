@@ -163,7 +163,7 @@ DAEMON_OPTS="-v -m /userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel
 After editing, restart the service:
 
 ```bash
-sudo /etc/init.d/S92retail-vision restart
+sudo /etc/init.d/K92retail-vision restart
 ```
 
 ### All Options
