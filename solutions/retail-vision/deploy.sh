@@ -81,7 +81,6 @@ log "Stopping all camera-using services on ${HOST}..."
 
 run_ssh 'for svc in /etc/init.d/S*sscma-node* /etc/init.d/K*sscma-node* \
                /etc/init.d/S*node-red* /etc/init.d/K*node-red* \
-               /etc/init.d/S*sscma-supervisor* /etc/init.d/K*sscma-supervisor* \
                /etc/init.d/S*yolo*detector* /etc/init.d/K*yolo*detector* \
                /etc/init.d/S*ppocr* /etc/init.d/K*ppocr* \
                /etc/init.d/S*face-analysis* /etc/init.d/K*face-analysis* \
@@ -105,14 +104,17 @@ ok "Package installed"
 
 # --- Step 4: Start service ---
 log "Starting ${SOLUTION_NAME}..."
-run_sudo "/etc/init.d/S92retail-vision restart" || err "Service start failed"
+# Gallery apps intentionally install a K-prefixed script so SysV does not
+# auto-start several camera owners at boot. The supervisor invokes this exact
+# path as the single active application.
+run_sudo "/etc/init.d/K92retail-vision restart" || err "Service start failed"
 ok "Service started"
 
 # --- Step 5: Verify ---
 sleep 5
 
 log "Checking service status..."
-run_ssh "/etc/init.d/S92retail-vision status" || warn "Status check failed"
+run_ssh "/etc/init.d/K92retail-vision status" || warn "Status check failed"
 
 if [ "$MQTT_CHECK" = true ]; then
     log "Capturing MQTT output (10s, max 3 messages)..."

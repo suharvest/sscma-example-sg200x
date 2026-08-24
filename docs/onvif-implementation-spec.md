@@ -854,6 +854,14 @@ codec 枚举也只有 `RTSP_VIDEO_{H264,H265,JPEG}` 和 `RTSP_AUDIO_{PCM_L16,PCM
 
 > ⚠️ **参考实现**：`scpcom/cvi_rtsp` 的 `cv18xx-v4.2.x` 分支（`src/cvi_smss.hpp` / `cvi_video_smss.hpp` / `ring_buffer.hpp`）。**读它、理解思路、自己重写——该仓库无 LICENSE 文件，禁止直接复制粘贴代码。**
 
+> **2026-08-09 demo 过渡实现**：为尽快用真实 AI 摄像头验证 Frigate，
+> `rtsp_server` 在私有实现中通过 `CVI_RTSP_CTX` 暴露的 live555 server 给
+> 现有 session 附加标准 `vnd.onvif.metadata/90000` subsession。公共接口不暴露
+> live555 类型、默认关闭，因而其它 app 的 SDP 与行为不变；`retail-vision`
+> 是首个接入应用。线上 wire format 是标准的，但底层仍绑定厂商内嵌的
+> live555 2020.07.21 C++ ABI，只作为 demo/互操作验证，长期生产方案仍是上面的
+> 方案 B。
+
 ### 6.3 live555 实现要点
 
 Ross Finlayson（live555 作者）在邮件列表给出的官方做法：
@@ -1373,10 +1381,9 @@ cmake ../libwebsockets \
 | # | 缺口 | 影响 | 备注 |
 |---|---|---|---|
 | 1 | **Events（PullPoint 订阅）未实现** | 无法通过 Profile T 认证；VMS 侧看不到事件流 | 分析结果今天走 MQTT（`onvif_meta`）。这是四个操作加一个订阅状态机，独立一块工作 |
-| 2 | **RTSP metadata track 未实现** | 元数据与视频不同源、无帧级对齐 | Profile T §7.13 强制项。`onvif_meta` 的数据模型已经为它准备好了（序列化成 XML 即可，调用点不变） |
+| 2 | **RTSP metadata track 仅完成首个 app demo** | `retail-vision` 可走标准 data track；其它 app 仍只有 MQTT 元数据 | 当前借用厂商内嵌 live555 ABI，且尚未实现 `SetSynchronizationPoint`；长期仍需独立的新 live555 backend |
 | 3 | **Digest 认证只校验存在性，不校验摘要** | 配了用户名等于"要求客户端带 Authorization 头"，不等于真的鉴权 | 默认无凭据，所以默认路径不受影响。真要启用凭据前必须补完 |
 | 4 | **快照冷启动返回 503** | VMS 添加设备时若只拉一次缩略图，会拿到失败 | `debug_stream` 的 arm 机制：首次 GET 负责唤醒编码器，10s 内的后续 GET 才有图。定期拉缩略图的客户端只有第一次受影响；拉一次就放弃的客户端会显示空缩略图 |
-| 5 | **分辨率是写死的 1920x1080** | `GetVideoEncoderConfigurations` 报的值可能与实际不符 | `onvif_service` 刻意不依赖视频路径（这是它能被任意 app 链接的前提）。所有实际客户端都会从 SDP 重读真实分辨率，所以是标称不准而非功能故障 |
 | 6 | **`GetNetworkInterfaces` 的 MAC 恒为全零** | 少数客户端用 MAC 做设备去重 | `getifaddrs()` 在 musl 下不给 `AF_PACKET`；要真值得读 `/sys/class/net/<if>/address` |
 | 7 | **无 HTTPS** | — | Profile T §7.1 的 HTTPS 是 Conditional，可免。真要做的话 lws 侧开 `LWS_WITH_SSL` 即可，这正是选 lws 而非自写 HTTP 的理由之一 |
 

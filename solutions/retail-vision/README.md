@@ -70,7 +70,7 @@ DAEMON_OPTS="-v -m /userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel
 After editing, restart the service:
 
 ```bash
-sudo /etc/init.d/S92retail-vision restart
+sudo /etc/init.d/K92retail-vision restart
 ```
 
 ### CLI Options
@@ -221,9 +221,9 @@ ssh recamera@<device_ip>
 sudo tail -f /var/log/retail-vision.log
 
 # Service control
-sudo /etc/init.d/S92retail-vision status
-sudo /etc/init.d/S92retail-vision restart
-sudo /etc/init.d/S92retail-vision stop
+sudo /etc/init.d/K92retail-vision status
+sudo /etc/init.d/K92retail-vision restart
+sudo /etc/init.d/K92retail-vision stop
 
 # Manual run with custom args
 export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib

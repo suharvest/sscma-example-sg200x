@@ -3,15 +3,15 @@
  *
  * Two independent features share one config blob:
  *  - `service_*`  : the ONVIF device service (discovery + stream URI for a VMS)
- *  - `meta_*`     : ONVIF-shaped analytics metadata published on its own MQTT topic
+ *  - `meta_*`     : ONVIF analytics over the RTSP metadata track and MQTT
  *
  * The password is write-only — the backend never returns it, only `password_set`.
  */
 
 export interface IOnvifConfig {
-  /** Publish ONVIF analytics metadata to its own MQTT topic. */
+  /** Expose ONVIF analytics over RTSP and, when connected, MQTT. */
   meta_enabled: boolean;
-  /** Metadata publish interval, 20-60000 ms. */
+  /** MQTT metadata publish interval, 20-60000 ms; RTSP follows inference. */
   meta_interval_ms: number;
   /** Profile token the metadata is attributed to, default "live0". */
   meta_profile: string;

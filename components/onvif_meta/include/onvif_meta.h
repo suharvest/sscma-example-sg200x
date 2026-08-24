@@ -16,10 +16,9 @@
  * membership, or touching the video path.
  *
  * This header is the shared data model, deliberately separate from any
- * transport. Today it is serialised to JSON and published over MQTT; when the
- * RTSP metadata track lands (ONVIF Profile T section 7.13 makes it mandatory)
- * the same structures serialise to XML with no change at the call sites. Keep
- * it that way: no MQTT, no XML writer and no RTSP in this header.
+ * transport. It serialises to JSON for MQTT and XML for an ONVIF RTSP metadata
+ * track from the same structures. Keep it that way: no MQTT and no RTSP in
+ * this header.
  *
  * What it deliberately does NOT do: implement ONVIF services, claim
  * conformance, or let anyone print an ONVIF logo. Consuming clients that
@@ -107,6 +106,18 @@ struct onvif_frame_t {
  * tell "analytics running, nothing seen" from "analytics dead".
  */
 std::string onvif_meta_to_json(const onvif_frame_t& frame);
+
+/*
+ * Serialise one scene description as an ONVIF MetadataStream XML document for
+ * an RTSP metadata track (Profile T section 7.13):
+ *
+ *   <tt:MetadataStream><tt:VideoAnalytics><tt:Frame ...>...</tt:Frame>
+ *
+ * Coordinates and Transformation are identical to onvif_meta_to_json(). The
+ * returned string is a complete, self-contained UTF-8 XML document, including
+ * the tt, fc and recam namespace declarations needed by the optional fields.
+ */
+std::string onvif_meta_to_xml(const onvif_frame_t& frame);
 
 /*
  * MQTT topic per Analytics Spec 26.06 5.5.2:

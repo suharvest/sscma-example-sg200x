@@ -49,6 +49,11 @@ typedef struct {
     /* Bitmask of VENC channels to publish: bit i -> channel i, in order.
      * Same encoding initRtsp() has always taken. */
     uint8_t ch_mask;
+
+    /* Attach an ONVIF analytics metadata RTP subsession to every selected
+     * video session. Default false, preserving the historical two-track SDP.
+     * Frames are supplied with rtsp_server_write_metadata(). */
+    bool metadata_enabled;
 } rtsp_server_config_t;
 
 /* Fill cfg with the defaults documented above. */
@@ -78,7 +83,22 @@ int rtsp_server_video_handler(void* pData, void* pArgs, void* pUserData);
 int rtsp_server_port(void);
 int rtsp_server_session_count(void);
 const char* rtsp_server_session_name(int idx); /* "live0"; NULL if out of range */
+int rtsp_server_width(int idx);
+int rtsp_server_height(int idx);
+int rtsp_server_frame_rate(int idx);
+int rtsp_server_encoder_bitrate(int idx); /* kbps */
 bool rtsp_server_auth_enabled(void);
+bool rtsp_server_metadata_enabled(void);
+
+/*
+ * Publish one complete ONVIF MetadataStream XML document. The data is copied
+ * before this function returns, so callers may pass a temporary string.
+ * A slow or disconnected client never blocks inference: only the latest
+ * document is retained and each RTSP consumer reads it asynchronously.
+ * Returns 0 on success, -1 when the metadata track is disabled or arguments
+ * are invalid.
+ */
+int rtsp_server_write_metadata(const char* xml, size_t len);
 
 /*
  * Build "rtsp://[user@]host:port/<session>" into buf. Returns the number of

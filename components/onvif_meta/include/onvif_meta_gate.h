@@ -12,17 +12,17 @@
  *
  * Usage in an inference loop:
  *
- *     if (g_onvif.take(now_ms)) {                 // cheap when disabled
+ *     if (g_onvif.enabled()) {                    // RTSP at inference cadence
  *         onvif_frame_t f;
  *         ... fill from the boxes already built for the console ...
- *         mqtt->publishText(g_onvif.topic(), onvif_meta_to_json(f));
+ *         const std::string xml = onvif_meta_to_xml(f);
+ *         rtsp_server_write_metadata(xml.data(), xml.size());
+ *         if (g_onvif.take(now_ms))               // MQTT is rate limited
+ *             mqtt->publishText(g_onvif.topic(), onvif_meta_to_json(f));
  *     }
  *
- * take() is deliberately the only hot-path call: when the feature is off it is
- * a single bool test, matching how debug_stream stays free when nobody is
- * watching. Nothing here touches MQTT -- the caller owns the connection, and
- * keeping transport out is what lets the same data model serialise to XML for
- * the RTSP metadata track later.
+ * Nothing here touches a transport: the caller owns MQTT and RTSP. Keeping the
+ * gate transport-neutral lets both serialisers share one data model.
  */
 class OnvifMetaGate {
 public:

@@ -1,5 +1,6 @@
 #include "onvif_meta.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -68,6 +69,47 @@ std::string esc(const std::string& in)
         }
     }
     return out;
+}
+
+/* Escape XML character data and attribute values. XML 1.0 does not permit
+ * most ASCII control characters even as character references, so replace
+ * those bytes rather than returning a document that no conforming parser can
+ * consume. Input text is otherwise expected to be UTF-8, like std::string
+ * values throughout the applications. */
+std::string xml_esc(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size() + 8);
+    for (unsigned char c : in) {
+        switch (c) {
+        case '&':  out += "&amp;";  break;
+        case '<':  out += "&lt;";   break;
+        case '>':  out += "&gt;";   break;
+        case '"': out += "&quot;"; break;
+        case '\'': out += "&apos;"; break;
+        default:
+            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+                out += "&#xFFFD;";
+            } else {
+                out += static_cast<char>(c);
+            }
+        }
+    }
+    return out;
+}
+
+bool xml_local_name_safe(const std::string& name)
+{
+    if (name.empty() || !(std::isalpha(static_cast<unsigned char>(name[0])) ||
+        name[0] == '_')) {
+        return false;
+    }
+    for (unsigned char c : name) {
+        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::string num(float v, int prec = 2)
@@ -187,4 +229,94 @@ std::string onvif_meta_to_json(const onvif_frame_t& frame)
     }
     j << "]}]}";
     return j.str();
+}
+
+std::string onvif_meta_to_xml(const onvif_frame_t& frame)
+{
+    std::ostringstream x;
+    x << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+      << "<tt:MetadataStream"
+      << " xmlns:tt=\"http://www.onvif.org/ver10/schema\""
+      << " xmlns:fc=\"http://www.onvif.org/ver20/analytics/humanface\""
+      << " xmlns:recam=\"http://www.seeedstudio.com/recamera/schema\">"
+      << "<tt:VideoAnalytics>"
+      << "<tt:Frame UtcTime=\"" << onvif_meta_utc(frame.utc_ms) << "\"";
+    if (!frame.source.empty()) {
+        x << " Source=\"" << xml_esc(frame.source) << "\"";
+    }
+    x << ">";
+
+    const bool has_dims = frame.frame_w > 0 && frame.frame_h > 0;
+    if (has_dims) {
+        x << "<tt:Transformation>"
+          << "<tt:Translate x=\"-1.0\" y=\"-1.0\"/>"
+          << "<tt:Scale x=\"" << num(2.0f / frame.frame_w, 8)
+          << "\" y=\"" << num(2.0f / frame.frame_h, 8) << "\"/>"
+          << "</tt:Transformation>";
+    }
+
+    for (const onvif_object_t& o : frame.objects) {
+        x << "<tt:Object ObjectId=\"" << o.id << "\"";
+        if (o.parent != 0) {
+            x << " Parent=\"" << o.parent << "\"";
+        }
+        x << "><tt:Appearance>";
+
+        const float cog_y = has_dims ? (frame.frame_h - o.cy) : o.cy;
+        x << "<tt:Shape>"
+          << "<tt:BoundingBox left=\"" << num(o.cx - o.w / 2.f)
+          << "\" top=\"" << num(cog_y + o.h / 2.f)
+          << "\" right=\"" << num(o.cx + o.w / 2.f)
+          << "\" bottom=\"" << num(cog_y - o.h / 2.f) << "\"/>"
+          << "<tt:CenterOfGravity x=\"" << num(o.cx)
+          << "\" y=\"" << num(cog_y) << "\"/>"
+          << "</tt:Shape>";
+
+        if (!o.classes.empty()) {
+            x << "<tt:Class>";
+            for (const onvif_class_t& c : o.classes) {
+                x << "<tt:Type Likelihood=\"" << num(c.likelihood, 3) << "\">"
+                  << xml_esc(c.type) << "</tt:Type>";
+            }
+            x << "</tt:Class>";
+        }
+
+        if (o.face.present) {
+            x << "<tt:HumanFace>";
+            // fc:HumanFace is an XSD sequence: Age must precede Gender.
+            if (o.face.age_min >= 0 && o.face.age_max >= 0) {
+                x << "<fc:Age><tt:Min>" << o.face.age_min
+                  << "</tt:Min><tt:Max>" << o.face.age_max
+                  << "</tt:Max></fc:Age>";
+            }
+            if (!o.face.gender.empty()) {
+                x << "<fc:Gender>" << xml_esc(o.face.gender)
+                  << "</fc:Gender>";
+            }
+            x << "</tt:HumanFace>";
+        }
+
+        if (!o.barcode_data.empty()) {
+            x << "<tt:BarcodeInfo><tt:Data>" << xml_esc(o.barcode_data)
+              << "</tt:Data>";
+            if (!o.barcode_type.empty()) {
+                x << "<tt:Type>" << xml_esc(o.barcode_type) << "</tt:Type>";
+            }
+            x << "</tt:BarcodeInfo>";
+        }
+
+        // Appearance's trailing xs:any is the schema-defined vendor extension
+        // point. Keys are required by the data model contract to be safe XML
+        // local names; values still need ordinary XML character escaping.
+        for (const auto& kv : o.extensions) {
+            if (!xml_local_name_safe(kv.first)) continue;
+            x << "<recam:" << kv.first << ">" << xml_esc(kv.second)
+              << "</recam:" << kv.first << ">";
+        }
+
+        x << "</tt:Appearance></tt:Object>";
+    }
+
+    x << "</tt:Frame></tt:VideoAnalytics></tt:MetadataStream>";
+    return x.str();
 }
