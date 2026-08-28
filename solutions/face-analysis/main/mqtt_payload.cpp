@@ -3,6 +3,26 @@
 #include <iomanip>
 #include <sstream>
 
+/*
+ * Field semantics changed here, deliberately and visibly:
+ *
+ * "id" used to be a per-detection counter that incremented on every face on
+ * every frame -- it never identified anybody, despite the name. It is now a
+ * tracker-assigned identity that holds while the face stays in frame.
+ * "track_id" is published alongside with the same value, so a consumer can move
+ * onto the unambiguous name and stop reading "id" whenever it likes.
+ *
+ * Every "*_confidence" is now a VOTE SHARE, not a single frame's softmax peak:
+ * the winning label's slice of the probability mass this track has accumulated
+ * since it was first seen. It rises as evidence agrees and stays low while the
+ * heads disagree, so it is not comparable frame-for-frame with the old value.
+ * Read it together with "evidence_frames" and "stable".
+ *
+ * "gated": the face was too small (short side below --min-face-px in source
+ * pixels) for the attribute heads to be worth running, so none of them ran and
+ * the attribute fields are defaults.
+ */
+
 namespace face_analysis {
 
 std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
@@ -26,6 +46,10 @@ std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
 
         json << "{";
         json << "\"id\":" << face.face.id << ",";
+        json << "\"track_id\":" << face.face.id << ",";
+        json << "\"gated\":" << (attrs.gated ? "true" : "false") << ",";
+        json << "\"stable\":" << (attrs.stable ? "true" : "false") << ",";
+        json << "\"evidence_frames\":" << attrs.evidence_frames << ",";
 
         // Bounding box (normalized coordinates)
         json << "\"bbox\":{";
@@ -56,8 +80,10 @@ std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
             json << "\"race_confidence\":" << attrs.race_confidence << ",";
         }
 
-        // Emotion
-        json << "\"emotion\":\"" << getEmotionName(attrs.emotion) << "\",";
+        // Emotion. The key stays present for consumers that index it blindly,
+        // but carries "" when no verdict exists -- publishing the enum default
+        // reported every gated and every just-appeared face as "neutral".
+        json << "\"emotion\":\"" << (attrs.has_emotion ? getEmotionName(attrs.emotion) : "") << "\",";
         json << "\"emotion_confidence\":" << attrs.emotion_confidence << ",";
 
         // All emotion probabilities (HSEmotion AffectNet 8 classes)

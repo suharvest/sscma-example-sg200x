@@ -311,9 +311,16 @@ void EmotionRunner::packInput(const uint8_t* rgb_hwc_u8) {
     }
 }
 
-static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob) {
+// Softmax + argmax. `out_probs` (optional) receives the FULL distribution, up to
+// `out_cap` classes, and `out_n` how many were written -- the caller needs the
+// whole vector to accumulate probability mass across frames, and the loop below
+// computes it anyway. Passing nullptr reproduces the previous peak-only
+// behaviour exactly.
+static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob,
+                           float* out_probs = nullptr, int out_cap = 0, int* out_n = nullptr) {
     idx = -1;
     prob = 0.f;
+    if (out_n) *out_n = 0;
     if (logits.empty()) return;
     float m = -std::numeric_limits<float>::infinity();
     for (float v : logits) m = std::max(m, v);
@@ -325,6 +332,10 @@ static void softmax_argmax(const std::vector<float>& logits, int& idx, float& pr
     float bestp = 0.f;
     for (size_t i = 0; i < logits.size(); ++i) {
         const float p = std::exp(logits[i] - m) / sum;
+        if (out_probs && (int)i < out_cap) {
+            out_probs[i] = p;
+            if (out_n) *out_n = (int)i + 1;
+        }
         if (p > bestp) {
             bestp = p;
             best = (int)i;
@@ -355,7 +366,7 @@ bool EmotionRunner::parseOutputs(EmotionResult& out) {
 
     int idx = -1;
     float p = 0.f;
-    softmax_argmax(logits, idx, p);
+    softmax_argmax(logits, idx, p, out.probs, kEmotionClassCount, &out.n_probs);
 
     out.ok = (idx >= 0);
     out.emotion = idx;

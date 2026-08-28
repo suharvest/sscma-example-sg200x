@@ -18,6 +18,16 @@ struct AgeGenderRaceResult {
     float age_score = 0.f;
     float race_score = 0.f;
     bool is_fairface = false;  // true=FairFace (age bins+race), false=InsightFace (continuous age)
+
+    // Full softmax distributions, for temporal accumulation upstream (a single
+    // frame's argmax is what made race/age flicker frame to frame).
+    // FairFace path only -- the InsightFace branch leaves these at zero and
+    // callers split on `is_fairface`.
+    // gender_probs is stored in the SAME convention as `gender`
+    // (index 1 = male, index 0 = female), not in raw model output order.
+    float race_probs[7]   = {};
+    float gender_probs[2] = {};
+    float age_probs[9]    = {};
 };
 
 // Age/Gender/Race inference (SG2002 / CVIMODEL)
@@ -85,7 +95,13 @@ private:
 private:
     int input_size_ = 224;
     ModelFormat model_format_ = ModelFormat::Unknown;
-    float crop_scale_ = 1.3f;
+    // Square ROI side / detector-box long side. 0.90 is measured, not assumed:
+    // it is the peak of an offline crop sweep on FairFace val, and equals the
+    // reCamera Pro app's `crop_pad = -0.05` (side factor = 1 + 2*pad). Values
+    // below 1.0 crop TIGHTER than the detector box, which is the point.
+    // Re-measure this if the face detector is ever replaced -- it is calibrated
+    // against yolov8n-face's box tightness, not against faces in general.
+    float crop_scale_ = 0.90f;
 
     float mean_[3] = {0.0f, 0.0f, 0.0f};
     float scale_[3] = {1.0f, 1.0f, 1.0f};

@@ -9,16 +9,33 @@
 
 namespace face_analysis {
 
+// Class count of the shipped HSEnotion enet_b0_8 head. The array below is sized
+// by it; a model emitting fewer classes fills only its own prefix (`n_probs`).
+static constexpr int kEmotionClassCount = 8;
+
 struct EmotionResult {
     bool ok = false;
-    int emotion = -1;  // 0..6
-    float score = 0.f;
+    int emotion = -1;
+    float score = 0.f;   // peak probability -- the single-frame argmax's confidence
+
+    // Full softmax distribution, not just the peak. Cross-frame attribute voting
+    // (`AttributeEvidence`) accumulates probability MASS per track, so handing it
+    // a one-hot vector built from `emotion`/`score` would make every frame vote
+    // with the same weight regardless of how uncertain that frame actually was.
+    // The softmax is already computed in full inside parseOutputs; this just
+    // stops throwing it away.
+    float probs[kEmotionClassCount] = {};
+    int n_probs = 0;     // classes actually written into `probs`
 };
 
 // Emotion inference (SG2002 / CVIMODEL)
 // - Input: RGB888 full frame + bbox
-// - Output: 7-class softmax argmax
-// - Label mapping: angry(0), disgust(1), fear(2), happy(3), sad(4), surprise(5), neutral(6)
+// - Output: softmax over the model's classes, plus its argmax
+// - The SHIPPED model is HSEmotion enet_b0_8 (AffectNet, 8 classes). Its label
+//   order is owned by `attribute_analyzer.h` (`Emotion` enum / getEmotionName):
+//   anger, contempt, disgust, fear, happiness, neutral, sadness, surprise.
+//   This header used to document a different 7-class order; that comment did not
+//   match the deployed model and has been removed rather than corrected in place.
 class EmotionRunner {
 public:
     EmotionRunner() = default;

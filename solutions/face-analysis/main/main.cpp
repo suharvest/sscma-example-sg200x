@@ -16,6 +16,7 @@
 #include "rtsp_server.h"
 
 #include "face_detector.h"
+#include "face_tracker.h"
 #include "attribute_analyzer.h"
 #include "mqtt_payload.h"
 #include "privacy_blur.h"
@@ -59,6 +60,12 @@ static struct {
     // Emotion runs every N frames (1 = every frame, 2 = every 2 frames, ...)
     int emotion_interval = 2;
 
+    // Attribute accuracy: quality gate + temporal evidence + tracking
+    float min_face_px = 64.f;     // Face box short side (source pixels) below which stage 2/3 is skipped
+    int min_track_frames = 3;     // Gated-through frames before a verdict is reported as stable
+    int track_max_lost = 15;      // Frames a track survives without a match
+    float evidence_decay = 1.0f;  // Per-frame decay on accumulated evidence; 1.0 = plain sum
+
     // Debug stream (H.264-over-WS + results JSON for the supervisor console)
     bool enable_debug = true;
     int debug_port = 8001;
@@ -73,6 +80,7 @@ static struct {
 // Global state
 static std::atomic<bool> g_running(true);
 static FaceDetector* g_face_detector = nullptr;
+static FaceTracker* g_face_tracker = nullptr;
 static AttributeAnalyzer* g_attribute_analyzer = nullptr;
 static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static PrivacyBlur* g_face_blur = nullptr;
@@ -106,6 +114,10 @@ static void print_usage(const char* prog) {
     printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  --max-regions N           Max blur regions (1-8, default: %d)\n", g_config.max_regions);
     printf("  --emotion-interval N      Run emotion every N frames (default: %d)\n", g_config.emotion_interval);
+    printf("  --min-face-px N           Skip attribute inference below this face short side in px (default: %.0f)\n", g_config.min_face_px);
+    printf("  --min-track-frames N      Frames of evidence before a verdict is stable (default: %d)\n", g_config.min_track_frames);
+    printf("  --track-max-lost N        Frames a track survives unmatched (default: %d)\n", g_config.track_max_lost);
+    printf("  --evidence-decay F        Per-frame decay on accumulated evidence (default: %.2f)\n", g_config.evidence_decay);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
 }
@@ -126,6 +138,10 @@ static bool parse_args(int argc, char** argv) {
         {"emotion-interval", required_argument, 0, 5},
         {"no-debug", no_argument, 0, 6},
         {"debug-port", required_argument, 0, 7},
+        {"min-face-px", required_argument, 0, 8},
+        {"min-track-frames", required_argument, 0, 9},
+        {"track-max-lost", required_argument, 0, 10},
+        {"evidence-decay", required_argument, 0, 11},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -176,6 +192,18 @@ static bool parse_args(int argc, char** argv) {
             case 7:
                 g_config.debug_port = std::stoi(optarg);
                 break;
+            case 8:
+                g_config.min_face_px = std::stof(optarg);
+                break;
+            case 9:
+                g_config.min_track_frames = std::stoi(optarg);
+                break;
+            case 10:
+                g_config.track_max_lost = std::stoi(optarg);
+                break;
+            case 11:
+                g_config.evidence_decay = std::stof(optarg);
+                break;
             case 'v':
                 g_config.verbose = true;
                 break;
@@ -208,6 +236,20 @@ static bool init_models() {
         return false;
     }
     g_attribute_analyzer->setEmotionInterval(g_config.emotion_interval);
+
+    // Tracking + evidence: face.id becomes a real identity, and attributes are
+    // reported off accumulated per-track evidence instead of a single frame.
+    FaceTrackerConfig track_cfg;
+    track_cfg.max_lost_frames = g_config.track_max_lost;
+    g_face_tracker = new FaceTracker(track_cfg);
+
+    EvidenceConfig ev_cfg;
+    ev_cfg.min_face_px = g_config.min_face_px;
+    ev_cfg.min_track_frames = g_config.min_track_frames;
+    ev_cfg.decay = g_config.evidence_decay;
+    g_attribute_analyzer->setEvidenceConfig(ev_cfg);
+    MA_LOGI(TAG, "Tracking/evidence: min_face_px=%.0f min_track_frames=%d max_lost=%d decay=%.2f",
+            ev_cfg.min_face_px, ev_cfg.min_track_frames, track_cfg.max_lost_frames, ev_cfg.decay);
     MA_LOGI(TAG, "Attribute analyzer initialized (GenderAge: %s, Emotion: %s)",
             g_attribute_analyzer->isGenderAgeReady() ? "yes" : "no",
             g_attribute_analyzer->isEmotionReady() ? "yes" : "no");
@@ -309,11 +351,20 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
                          f.h * g_config.inference_height,
                          f.score, "face"});
         const auto& attr = af.attributes;
+        // A gated face ran no attribute stage at all, so every attribute field
+        // is still its default -- and the default emotion is NEUTRAL, which is
+        // how a too-small face used to render as a bare "neutral" label. Label
+        // it as a plain detection instead: the box and the track are real, the
+        // attributes are not.
+        if (attr.gated) {
+            labels.push_back("face");
+            continue;
+        }
         // gender · age · race · emotion. race_label is empty for InsightFace
         // (no race head) — skip it there so that path's label is unchanged.
         std::string label = attr.gender + " " + attr.age_label;
         if (!attr.race_label.empty()) label += " " + attr.race_label;
-        label += std::string(" ") + getEmotionName(attr.emotion);
+        if (attr.has_emotion) label += std::string(" ") + getEmotionName(attr.emotion);
         labels.push_back(label);
     }
     // The inference channel is letterboxed vs the 16:9 debug video (stream);
@@ -437,6 +488,11 @@ static void cleanup() {
         g_attribute_analyzer = nullptr;
     }
 
+    if (g_face_tracker) {
+        delete g_face_tracker;
+        g_face_tracker = nullptr;
+    }
+
     if (g_face_detector) {
         delete g_face_detector;
         g_face_detector = nullptr;
@@ -462,6 +518,17 @@ static void process_frame() {
     std::vector<FaceInfo> faces = g_face_detector->detect(&frame);
     auto detect_end = std::chrono::high_resolution_clock::now();
     auto detect_time = std::chrono::duration_cast<std::chrono::milliseconds>(detect_end - detect_start).count();
+
+    // Step 1.5: Resolve identities. FaceDetector hands out a fresh number per
+    // detection per frame, so face.id carries no identity until this runs; from
+    // here on it is the track id, which is what the evidence accumulator keys on
+    // and what the MQTT "id" field publishes.
+    if (g_face_tracker) {
+        const std::vector<int> track_ids = g_face_tracker->update(faces);
+        for (size_t i = 0; i < faces.size() && i < track_ids.size(); ++i) {
+            faces[i].id = track_ids[i];
+        }
+    }
 
     // Step 2: Feed face detections to the privacy mask. Before returnFrame()
     // below, because the pixelating backend averages the pixels it hides and
@@ -520,6 +587,9 @@ static void process_frame() {
     // Step 3: Attribute analysis for each face
     auto analyze_start = std::chrono::high_resolution_clock::now();
     std::vector<AnalyzedFace> analyzed_faces = g_attribute_analyzer->analyzeAll(&frame, faces);
+    if (g_face_tracker) {
+        g_attribute_analyzer->sweepEvidence(g_face_tracker->removedIds());
+    }
     auto analyze_end = std::chrono::high_resolution_clock::now();
     auto analyze_time = std::chrono::duration_cast<std::chrono::milliseconds>(analyze_end - analyze_start).count();
 

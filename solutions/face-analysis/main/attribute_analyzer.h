@@ -6,6 +6,7 @@
 #include <array>
 
 #include "face_detector.h"
+#include "attribute_evidence.h"
 #include "age_gender_race_runner.h"
 #include "emotion_runner.h"
 #include "landmark_runner.h"
@@ -80,9 +81,21 @@ struct FaceAttributes {
     float race_confidence = 0.f;
 
     // Emotion prediction (FairFace 7-class)
+    // `emotion` has no "unknown" enumerator, so its default reads as a real
+    // NEUTRAL result. `has_emotion` is what says whether a verdict exists:
+    // false while a track is gated, and also during the first frames before
+    // the emotion head has accumulated any evidence. Renderers must check it
+    // rather than trusting the enum.
+    bool has_emotion = false;
     Emotion emotion = Emotion::NEUTRAL;
     float emotion_confidence = 0.f;
     std::array<float, 8> emotion_probs = {};
+
+    // Evidence state. Every *_confidence above is now a vote share over the
+    // track's accumulated distributions, not a single frame's softmax peak.
+    bool gated = false;           // Face was below the quality gate: no stage 2/3 ran, fields are defaults
+    bool stable = false;          // evidence_frames >= min_track_frames
+    int evidence_frames = 0;      // Gated-through frames accumulated for this track
 };
 
 struct AnalyzedFace {
@@ -100,9 +113,17 @@ public:
               const std::string& emotion_model = "",
               const std::string& landmark_model = "");
 
-    // Analyze attributes for multiple faces from full frame
+    // Analyze attributes for multiple faces from full frame.
+    // FaceInfo::id must already carry the *track* id (FaceTracker::update ran
+    // upstream); it keys the per-track evidence accumulation.
     std::vector<AnalyzedFace> analyzeAll(ma_img_t* full_frame,
                                           const std::vector<FaceInfo>& faces);
+
+    void setEvidenceConfig(const EvidenceConfig& cfg) { evidence_.setConfig(cfg); }
+    const EvidenceConfig& evidenceConfig() const { return evidence_.config(); }
+
+    // Drop the evidence of tracks the tracker retired this frame.
+    void sweepEvidence(const std::vector<int>& removed_ids) { evidence_.sweep(removed_ids); }
 
     bool isGenderAgeReady() const { return genderage_ready_; }
     bool isEmotionReady() const { return emotion_ready_; }
@@ -122,12 +143,13 @@ private:
 
     int emotion_interval_ = 2;
     uint32_t frame_counter_ = 0;
-    struct EmotionCache {
-        float x1, y1, x2, y2;
-        Emotion emotion;
-        float confidence;
-    };
-    std::vector<EmotionCache> last_emotion_;
+
+    // Replaces the old IoU-matched emotion cache: on a frame where emotion is
+    // skipped, the track's accumulated verdict is reported instead. That is both
+    // simpler and more correct -- IoU matching against the previous frame's box
+    // set mismatches two faces that pass close to each other.
+    AttributeEvidence evidence_;
+    bool agr_is_fairface_ = false;
 };
 
 }  // namespace face_analysis

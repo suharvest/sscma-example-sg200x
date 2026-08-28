@@ -150,9 +150,28 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
     const int fw = full_frame->width;
     const int fh = full_frame->height;
 
+    const EvidenceConfig& ev_cfg = evidence_.config();
+
     for (const auto& face : faces) {
         AnalyzedFace analyzed;
         analyzed.face = face;
+
+        // FaceInfo::id is the track id by the time it gets here (main.cpp runs
+        // FaceTracker::update before calling us).
+        const int tid = face.id;
+
+        // Quality gate, before any crop or inference: a face this small is
+        // interpolation artefacts once it reaches a 224x224 classifier input,
+        // and letting it vote would poison the track's accumulated evidence.
+        // Skipping it also buys back the inference time.
+        if (!passesGate(face, fw, fh, ev_cfg)) {
+            analyzed.attributes.gated = true;
+            const Verdict v = evidence_.verdict(tid, AttributeEvidence::HEAD_RACE);
+            analyzed.attributes.evidence_frames = v.frames;
+            analyzed.attributes.stable = v.stable;
+            results.push_back(analyzed);
+            continue;
+        }
 
         // Convert normalized bbox to pixel coordinates
         float x1 = face.x * fw;
@@ -220,20 +239,20 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
             }
 
             if (agr_ok) {
-                analyzed.attributes.is_fairface = agr.is_fairface;
-                analyzed.attributes.gender = (agr.gender == 1) ? "male" : "female";
-                analyzed.attributes.gender_confidence = agr.gender_score;
-
+                agr_is_fairface_ = agr.is_fairface;
                 if (agr.is_fairface) {
-                    // FairFace: age bins + race
-                    analyzed.attributes.age_bin = agr.age;
-                    analyzed.attributes.age_label = getAgeBinLabel(agr.age);
-                    analyzed.attributes.age_confidence = agr.age_score;
-                    analyzed.attributes.race_bin = agr.race;
-                    analyzed.attributes.race_label = getRaceLabel(agr.race);
-                    analyzed.attributes.race_confidence = agr.race_score;
+                    // Feed the distributions to the track's evidence rather than
+                    // publishing this frame's argmax. The write-back happens
+                    // below, off the accumulated verdict.
+                    evidence_.add(tid, AttributeEvidence::HEAD_RACE, agr.race_probs, 7);
+                    evidence_.add(tid, AttributeEvidence::HEAD_GENDER, agr.gender_probs, 2);
+                    evidence_.add(tid, AttributeEvidence::HEAD_AGE, agr.age_probs, 9);
                 } else {
-                    // InsightFace: continuous age in years, no race
+                    // InsightFace: continuous age regression, no per-class
+                    // distribution to accumulate -- single-frame result stands.
+                    analyzed.attributes.is_fairface = false;
+                    analyzed.attributes.gender = (agr.gender == 1) ? "male" : "female";
+                    analyzed.attributes.gender_confidence = agr.gender_score;
                     analyzed.attributes.age_continuous = agr.age;
                     analyzed.attributes.age_label = std::to_string(agr.age);
                     analyzed.attributes.age_confidence = agr.age_score;
@@ -241,67 +260,73 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
             }
         }
 
-        // Emotion inference (rate-limited via emotion_interval_)
-        if (emotion_ready_) {
-            const bool run_now = (frame_counter_ % emotion_interval_) == 0;
+        // Emotion inference (rate-limited via emotion_interval_).
+        // On a skipped frame nothing is added; the verdict below still reports
+        // this track's accumulated emotion, which is what the old IoU cache was
+        // trying to approximate.
+        if (emotion_ready_ && (frame_counter_ % emotion_interval_) == 0) {
             EmotionResult emo;
-            bool ok = false;
-
-            if (run_now) {
-                ok = emotion_runner_.infer(frame_ptr, fw, fh, x1, y1, x2, y2, emo) && emo.ok;
-            } else {
-                // Reuse cached emotion from a recent frame: best IoU match against last bbox set
-                float best_iou = 0.f;
-                const EmotionCache* best = nullptr;
-                const float ax1 = x1, ay1 = y1, ax2 = x2, ay2 = y2;
-                const float aa = std::max(0.f, ax2 - ax1) * std::max(0.f, ay2 - ay1);
-                for (const auto& c : last_emotion_) {
-                    const float ix1 = std::max(ax1, c.x1);
-                    const float iy1 = std::max(ay1, c.y1);
-                    const float ix2 = std::min(ax2, c.x2);
-                    const float iy2 = std::min(ay2, c.y2);
-                    const float iw = std::max(0.f, ix2 - ix1);
-                    const float ih = std::max(0.f, iy2 - iy1);
-                    const float inter = iw * ih;
-                    const float bb = std::max(0.f, c.x2 - c.x1) * std::max(0.f, c.y2 - c.y1);
-                    const float uni = aa + bb - inter;
-                    const float iou = uni > 1e-6f ? inter / uni : 0.f;
-                    if (iou > best_iou) { best_iou = iou; best = &c; }
-                }
-                if (best && best_iou > 0.3f) {
-                    emo.ok = true;
-                    emo.emotion = static_cast<int>(best->emotion);
-                    emo.score = best->confidence;
-                    ok = true;
-                }
-            }
-
-            if (ok) {
-                analyzed.attributes.emotion = static_cast<Emotion>(emo.emotion);
-                analyzed.attributes.emotion_confidence = emo.score;
-                analyzed.attributes.emotion_probs.fill(0.f);
-                if (emo.emotion >= 0 && emo.emotion < 8) {
-                    analyzed.attributes.emotion_probs[emo.emotion] = emo.score;
+            if (emotion_runner_.infer(frame_ptr, fw, fh, x1, y1, x2, y2, emo) && emo.ok &&
+                emo.emotion >= 0 && emo.emotion < 8) {
+                // Vote with the FULL softmax, so an uncertain frame carries
+                // proportionally less weight than a confident one -- the same
+                // contract the three FairFace heads accumulate under. Older
+                // EmotionRunner builds exposed only argmax + peak probability;
+                // if a model ever reports fewer classes than the head declares,
+                // fall back to placing that peak on the winning class rather
+                // than voting with a partly-zero vector.
+                if (emo.n_probs == kEmotionClassCount) {
+                    evidence_.add(tid, AttributeEvidence::HEAD_EMOTION,
+                                  emo.probs, kEmotionClassCount);
+                } else {
+                    float probs[kEmotionClassCount] = {};
+                    probs[emo.emotion] = emo.score;
+                    evidence_.add(tid, AttributeEvidence::HEAD_EMOTION,
+                                  probs, kEmotionClassCount);
                 }
             }
         }
+
+        // One frame counted for this track, after every add() for it.
+        evidence_.bumpFrame(tid);
+
+        // Write back accumulated verdicts, not this frame's argmax.
+        if (agr_is_fairface_) {
+            const Verdict vr = evidence_.verdict(tid, AttributeEvidence::HEAD_RACE);
+            const Verdict vg = evidence_.verdict(tid, AttributeEvidence::HEAD_GENDER);
+            const Verdict va = evidence_.verdict(tid, AttributeEvidence::HEAD_AGE);
+
+            analyzed.attributes.is_fairface = true;
+            if (vr.index >= 0) {
+                analyzed.attributes.race_bin = vr.index;
+                analyzed.attributes.race_label = getRaceLabel(vr.index);
+                analyzed.attributes.race_confidence = vr.confidence;
+            }
+            if (vg.index >= 0) {
+                analyzed.attributes.gender = (vg.index == 1) ? "male" : "female";
+                analyzed.attributes.gender_confidence = vg.confidence;
+            }
+            if (va.index >= 0) {
+                analyzed.attributes.age_bin = va.index;
+                analyzed.attributes.age_label = getAgeBinLabel(va.index);
+                analyzed.attributes.age_confidence = va.confidence;
+            }
+        }
+
+        const Verdict ve = evidence_.verdict(tid, AttributeEvidence::HEAD_EMOTION);
+        if (ve.index >= 0) {
+            analyzed.attributes.has_emotion = true;
+            analyzed.attributes.emotion = static_cast<Emotion>(ve.index);
+            analyzed.attributes.emotion_confidence = ve.confidence;
+            analyzed.attributes.emotion_probs.fill(0.f);
+            evidence_.shares(tid, AttributeEvidence::HEAD_EMOTION,
+                             analyzed.attributes.emotion_probs.data(), 8);
+        }
+
+        analyzed.attributes.evidence_frames = ve.frames;
+        analyzed.attributes.stable = ve.stable;
 
         results.push_back(analyzed);
-    }
-
-    // Update cache from this frame's inferences (only when we actually ran emotion)
-    if (emotion_ready_ && (frame_counter_ % emotion_interval_) == 0) {
-        last_emotion_.clear();
-        last_emotion_.reserve(results.size());
-        for (const auto& r : results) {
-            if (r.attributes.emotion_confidence > 0.f) {
-                last_emotion_.push_back({
-                    r.face.x * fw, r.face.y * fh,
-                    (r.face.x + r.face.w) * fw, (r.face.y + r.face.h) * fh,
-                    r.attributes.emotion, r.attributes.emotion_confidence
-                });
-            }
-        }
     }
 
     ++frame_counter_;

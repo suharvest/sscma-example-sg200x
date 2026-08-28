@@ -236,7 +236,17 @@ void AgeGenderRaceRunner::alignCropRgb(const uint8_t* src, int src_w, int src_h,
     const float cx = 0.5f * (x1 + x2);
     const float cy = 0.5f * (y1 + y2);
 
-    const float box = std::max(bw, bh) * std::max(1.0f, crop_scale_);
+    // `crop_scale_` is the square ROI side as a multiple of the detector box's
+    // long side. It is deliberately allowed BELOW 1.0 (crop tighter than the
+    // box): yolov8n-face emits a looser rectangle than the dlib face rect
+    // FairFace was trained on, and squaring it widens the framing again, so the
+    // ROI has to be pulled back in to land on the training distribution. An
+    // offline sweep over 1942 FairFace val images puts the optimum at 0.90;
+    // the old `std::max(1.0f, ...)` floor made that value unreachable and
+    // pinned the crop at 1.30, which measured ~7.6 points of race accuracy
+    // worse. The remaining floor only keeps the division below finite.
+    // See recamera_pro/docs/guide/face-attribute-accuracy.md.
+    const float box = std::max(bw, bh) * std::max(0.5f, crop_scale_);
     const float scale = (box > 1e-6f) ? (dst_size / box) : 1.0f;
 
     const float dst_c = (dst_size - 1) * 0.5f;
@@ -421,7 +431,11 @@ bool AgeGenderRaceRunner::submitPackedInput(AgeGenderRaceResult& out) {
     return parseOutputs(out);
 }
 
-static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob) {
+// out_probs, when non-null, receives the full distribution that argmax was taken
+// over -- written here rather than recomputed by the caller so there is only one
+// softmax per head per frame.
+static void softmax_argmax(const std::vector<float>& logits, int& idx, float& prob,
+                           float* out_probs = nullptr) {
     idx = -1;
     prob = 0.f;
     if (logits.empty()) return;
@@ -434,6 +448,7 @@ static void softmax_argmax(const std::vector<float>& logits, int& idx, float& pr
     float bestp = 0.f;
     for (size_t i = 0; i < logits.size(); ++i) {
         const float p = std::exp(logits[i] - m) / sum;
+        if (out_probs) out_probs[i] = p;
         if (p > bestp) {
             bestp = p;
             best = (int)i;
@@ -503,9 +518,15 @@ bool AgeGenderRaceRunner::parseOutputsFairFace(AgeGenderRaceResult& out) {
 
     int race = -1, gender = -1, age = -1;
     float race_p = 0.f, gender_p = 0.f, age_p = 0.f;
-    softmax_argmax(race_logits, race, race_p);
-    softmax_argmax(gender_logits, gender, gender_p);
-    softmax_argmax(age_logits, age, age_p);
+    float gender_probs_raw[2] = {};
+    softmax_argmax(race_logits, race, race_p, out.race_probs);
+    softmax_argmax(gender_logits, gender, gender_p, gender_probs_raw);
+    softmax_argmax(age_logits, age, age_p, out.age_probs);
+
+    // Same 0=Male/1=Female -> 1=Male/0=Female remap as `out.gender` below, so
+    // an argmax over the accumulated vector indexes the same convention.
+    out.gender_probs[1] = gender_probs_raw[0];
+    out.gender_probs[0] = gender_probs_raw[1];
 
     out.ok = (race >= 0 && gender >= 0 && age >= 0);
     out.is_fairface = true;
