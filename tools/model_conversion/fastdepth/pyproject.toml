@@ -1,0 +1,12 @@
+[project]
+name = "recamera-fastdepth"
+version = "0.1.0"
+description = "FastDepth (dwofk/fast-depth, mobilenet-nnconv5dw-skipadd-pruned) monocular depth model conversion for reCamera (CV181x)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "onnx>=1.16.0",
+    "onnxsim>=0.4.36",
+    "numpy<2.0",
+    "Pillow>=10.0.0",
+]
