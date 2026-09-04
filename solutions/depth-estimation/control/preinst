@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Pre-installation script for depth-estimation
+
+# Stop a previously installed instance before upgrading (idempotent)
+for script in /etc/init.d/[SK]92depth-estimation; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/depth-estimation 2>/dev/null || true
+
+exit 0

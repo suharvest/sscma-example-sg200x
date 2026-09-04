@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# Pre-removal script for depth-estimation
+
+echo "Removing Monocular Depth Estimation Application..."
+
+for script in /etc/init.d/[SK]92depth-estimation; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/depth-estimation 2>/dev/null || true
+
+echo "Monocular Depth Estimation removed."
+
+exit 0

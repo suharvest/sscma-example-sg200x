@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Post-removal script for depth-estimation
+# Deregister from the app gallery so the console stops listing an application
+# that is no longer installed.
+
+rm -f /userdata/local/apps/depth-estimation.json
+rm -f /userdata/local/apps/depth-estimation.md
+rm -f /userdata/local/apps/depth-estimation.zh.md
+
+exit 0
