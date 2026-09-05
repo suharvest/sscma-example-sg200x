@@ -21,7 +21,7 @@
   "pipeline": [
     {
       "name": "scrfd-500m",
-      "path": "/userdata/local/models/scrfd_500m_int8.cvimodel",
+      "path": "/userdata/local/models/scrfd_500m_int8_qi.cvimodel",
       "task": "face-detect"
     },
     {

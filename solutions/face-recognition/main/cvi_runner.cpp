@@ -1,6 +1,7 @@
 #include "cvi_runner.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -367,8 +368,22 @@ bool CviRunner::run(const uint8_t* rgb_hwc, std::string* error) {
         setError(error, "runner not initialized");
         return false;
     }
+    const auto t0 = std::chrono::steady_clock::now();
     packInput(rgb_hwc);
-    return submit(error);
+    const auto t1 = std::chrono::steady_clock::now();
+    const bool ok = submit(error);
+    const auto t2 = std::chrono::steady_clock::now();
+
+    static int s_calls = 0;
+    if (++s_calls >= 30) {
+        s_calls = 0;
+        const int pack_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+        const int fwd_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count());
+        MA_LOGI(TAG, "cvi timing: pack=%dms forward=%dms", pack_ms, fwd_ms);
+    }
+    return ok;
 }
 
 int CviRunner::outputCount() const {

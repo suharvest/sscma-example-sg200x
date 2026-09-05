@@ -1,6 +1,7 @@
 #include "scrfd_runner.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <numeric>
@@ -207,6 +208,7 @@ bool ScrfdRunner::infer(const uint8_t* rgb, int width, int height,
     const int pad_w = (input_size_ - nw) / 2;
     const int pad_h = (input_size_ - nh) / 2;
 
+    const auto t_lb0 = std::chrono::steady_clock::now();
     std::fill(letterbox_.begin(), letterbox_.end(), kPadValue);
     {
         const cv::Mat src(height, width, CV_8UC3, const_cast<uint8_t*>(rgb));
@@ -214,8 +216,10 @@ bool ScrfdRunner::infer(const uint8_t* rgb, int width, int height,
         cv::Mat roi = canvas(cv::Rect(pad_w, pad_h, nw, nh));
         cv::resize(src, roi, cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
     }
+    const auto t_lb1 = std::chrono::steady_clock::now();
 
     if (!runner_.run(letterbox_.data(), error)) return false;
+    const auto t_run1 = std::chrono::steady_clock::now();
 
     struct Prop {
         float x1, y1, x2, y2, score;
@@ -259,8 +263,7 @@ bool ScrfdRunner::infer(const uint8_t* rgb, int width, int height,
         }
     }
 
-    if (props.empty()) return true;
-
+    if (!props.empty()) {
     // One global score-ordered IoU NMS across all three strides.
     std::vector<int> order(props.size());
     std::iota(order.begin(), order.end(), 0);
@@ -314,6 +317,21 @@ bool ScrfdRunner::infer(const uint8_t* rgb, int width, int height,
             d.landmarks[k].y = (p.kps[k * 2 + 1] - pad_h) * inv;
         }
         out.push_back(d);
+    }
+    }  // !props.empty()
+
+    const auto t_post1 = std::chrono::steady_clock::now();
+    static int s_calls = 0;
+    if (++s_calls >= 30) {
+        s_calls = 0;
+        const int letterbox_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(t_lb1 - t_lb0).count());
+        const int run_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(t_run1 - t_lb1).count());
+        const int post_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(t_post1 - t_run1).count());
+        MA_LOGI(TAG, "scrfd timing: letterbox=%dms run=%dms post=%dms", letterbox_ms,
+                run_ms, post_ms);
     }
     return true;
 }
