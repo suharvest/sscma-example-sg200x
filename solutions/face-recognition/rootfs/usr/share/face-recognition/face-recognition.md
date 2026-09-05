@@ -67,3 +67,11 @@ tag disagrees.
 above which an embedding is accepted as a gallery identity; `MIN_FACE_PX`
 (default 64) is the short side below which a face is published as `gated` and
 never embedded.
+
+## Measured on device (2026-09-06)
+
+- Detection-only frame: **61 ms** (int8-input SCRFD; 283 ms with the F32-input model).
+- Frame with one face, embedding every 5th frame: **81–105 ms**.
+- Live recognition of an enrolled person: score 0.85–0.87, `stable=true`.
+- Device BF16 embedding vs fp32 reference on the same image: cosine 0.99.
+- RAM: ~27 MB used, >100 MB free while running. Details: `solutions/face-recognition/EVALUATION.md`.

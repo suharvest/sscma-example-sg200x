@@ -58,3 +58,11 @@ camera 方式的注册只采纳画面中恰好有一张合格人脸的帧，约 
 
 `/etc/face-recognition.conf`。`MATCH_THRESHOLD`（默认 0.40）是判定为库内身份的余弦阈值；
 `MIN_FACE_PX`（默认 64）是短边像素下限，低于该值的人脸以 `gated` 发布且不做编码。
+
+## 设备实测（2026-09-06）
+
+- 仅检测的帧：**61 ms**（int8 输入 SCRFD；F32 输入旧模型为 283 ms）。
+- 有一张脸、每 5 帧做一次 embedding：**81–105 ms**。
+- 已录入人员的实时识别：score 0.85–0.87，`stable=true`。
+- 同一张图设备 BF16 embedding 与 fp32 参考的 cosine：0.99。
+- 内存：运行中占用约 27 MB，空闲 >100 MB。详见 `solutions/face-recognition/EVALUATION.md`。
