@@ -1,0 +1,173 @@
+2026/09/05 12:19:25 - INFO : TPU-MLIR v1.30.2-20260831
+[                                                  ] 0%                                                  ] 0%1%2%#                                                 ] 2%3%4%#                                                ] 4%5%6%#                                               ] 6%7%8%#                                              ] 8%9%10%#                                             ] 10%11%12%#                                            ] 12%13%14%#                                           ] 14%15%16%#                                          ] 16%17%18%#                                         ] 18%19%20%#                                        ] 20%21%22%#                                       ] 22%23%24%#                                      ] 24%25%26%#                                     ] 26%27%28%#                                    ] 28%29%30%#                                   ] 30%31%32%#                                  ] 32%#                                 ] 34%35%36%#                                ] 36%37%38%#                               ] 38%39%40%#                              ] 40%41%42%#                             ] 42%43%44%#                            ] 44%45%46%#                           ] 46%47%48%#                          ] 48%49%50%#                         ] 50%51%52%#                        ] 52%53%54%#                       ] 54%55%56%#                      ] 56%57%58%#                     ] 58%59%60%#                    ] 60%61%62%#                   ] 62%63%64%#                  ] 64%65%68%#                ] 68%69%70%#               ] 70%71%72%#              ] 72%73%74%#             ] 74%75%76%#            ] 76%77%78%#           ] 78%79%80%#          ] 80%81%82%#         ] 82%83%84%#        ] 84%85%86%#       ] 86%87%88%#      ] 88%89%90%#     ] 90%91%92%#    ] 92%93%94%#   ] 94%95%96%#  ] 96%97%98%# ] 98%#] 100%
+  0%|          | 0/1 [00:00<?, ?it/s]compare logits_Flatten:   0%|          | 0/1 [00:00<?, ?it/s]
+
+[logits_Flatten                  ]      SIMILAR [PASSED]
+    (1, 3) float32 
+    cosine_similarity      = 0.999998
+    euclidean_similarity   = 0.997007
+    sqnr_similarity        = 50.872874
+1 compared
+1 passed
+  0 equal, 0 close, 1 similar
+0 failed
+  0 not equal, 0 not similar
+min_similarity = (0.9999984502792358, 0.9970070078141219, 50.87287425994873)
+Target    liveness_minifasnet_cv181x_bf16_tpu_outputs.npz
+Reference live_top.npz
+npz compare PASSED.
+compare logits_Flatten: 100%|██████████| 1/1 [00:00<00:00, 14.46it/s]
+output_bytes: 12, before group, NetStatisticPass total_bytes: 4480894
+Can not open hash file from all available paths:
+  - current directory: 18176061728829999873
+[                                                  ] 0%                                                  ] 0%1%2%#                                                 ] 2%3%4%#                                                ] 4%5%6%#                                               ] 6%7%8%#                                              ] 8%9%10%#                                             ] 10%11%12%#                                            ] 12%13%16%#                                          ] 16%17%18%#                                         ] 18%19%20%#                                        ] 20%21%22%#                                       ] 22%23%24%#                                      ] 24%25%26%#                                     ] 26%27%30%#                                   ] 30%31%32%#                                  ] 32%33%34%#                                 ] 34%35%36%#                                ] 36%37%38%#                               ] 38%39%40%#                              ] 40%41%44%#                            ] 44%45%46%#                           ] 46%47%48%#                          ] 48%49%50%#                         ] 50%51%52%#                        ] 52%53%54%#                       ] 54%55%56%#                      ] 56%#                     ] 58%59%60%#                    ] 60%61%62%#                   ] 62%63%64%#                  ] 64%65%66%#                 ] 66%67%68%#                ] 68%69%70%#               ] 70%#              ] 72%73%74%#             ] 74%75%76%#            ] 76%77%78%#           ] 78%79%80%#          ] 80%81%82%#         ] 82%83%84%#        ] 84%#       ] 86%87%88%#      ] 88%89%90%#     ] 90%91%92%#    ] 92%93%94%#   ] 94%95%96%#  ] 96%97%98%# ] 98%#] 100%[                                                  ] 0%                                                  ] 0%1%2%#                                                 ] 2%3%4%#                                                ] 4%5%6%#                                               ] 6%7%8%#                                              ] 8%9%10%#                                             ] 10%11%12%#                                            ] 12%13%16%#                                          ] 16%17%18%#                                         ] 18%19%20%#                                        ] 20%21%22%#                                       ] 22%23%24%#                                      ] 24%25%26%#                                     ] 26%27%30%#                                   ] 30%31%32%#                                  ] 32%33%34%#                                 ] 34%35%36%#                                ] 36%37%38%#                               ] 38%39%40%#                              ] 40%41%44%#                            ] 44%45%46%#                           ] 46%47%48%#                          ] 48%49%50%#                         ] 50%51%52%#                        ] 52%53%54%#                       ] 54%55%56%#                      ] 56%#                     ] 58%59%60%#                    ] 60%61%62%#                   ] 62%63%64%#                  ] 64%65%66%#                 ] 66%67%68%#                ] 68%69%70%#               ] 70%#              ] 72%73%74%#             ] 74%75%76%#            ] 76%77%78%#           ] 78%79%80%#          ] 80%81%82%#         ] 82%83%84%#        ] 84%#       ] 86%87%88%#      ] 88%89%90%#     ] 90%91%92%#    ] 92%93%94%#   ] 94%95%96%#  ] 96%97%98%# ] 98%#] 100%================FINAL GROUP================
+GroupMethod_process time:2565029
+Dumping LgConfig!
+Global Configs:
+  shape_secs_search_strategy = 0
+  structure_detect_opt = 1
+Search Method Config: sc_method_quick_search
+  CSECS_SEARCH_RECORD_THRESHOLD = -1
+  DSECS_SEARCH_RECORD_THRESHOLD = -1
+  HSECS_SEARCH_RECORD_THRESHOLD = -1
+  MAX_CSECS = 32
+  MAX_DSECS = 32
+  MAX_HSECS = 32
+  MAX_NSECS = 32
+  MAX_TRY_NUM = 20
+  MAX_WSECS = 32
+  NSECS_SEARCH_RECORD_THRESHOLD = -1
+  WSECS_SEARCH_RECORD_THRESHOLD = -1
+Search Method Config: sc_method_search_better_v1
+  CSECS_SEARCH_RECORD_THRESHOLD = 3
+  DSECS_SEARCH_RECORD_THRESHOLD = 3
+  HSECS_SEARCH_RECORD_THRESHOLD = 3
+  MAX_CSECS = 32
+  MAX_DSECS = 32
+  MAX_HSECS = 32
+  MAX_NSECS = 32
+  MAX_TRY_NUM = 20
+  MAX_WSECS = 32
+  NSECS_SEARCH_RECORD_THRESHOLD = 3
+  WSECS_SEARCH_RECORD_THRESHOLD = 3
+Search Method Config: sc_method_search_better_v2
+  CSECS_SEARCH_RECORD_THRESHOLD = 2
+  DSECS_SEARCH_RECORD_THRESHOLD = 2
+  HSECS_SEARCH_RECORD_THRESHOLD = 2
+  MAX_CSECS = 32
+  MAX_DSECS = 32
+  MAX_HSECS = 32
+  MAX_NSECS = 32
+  MAX_TRY_NUM = 20
+  MAX_WSECS = 32
+  NSECS_SEARCH_RECORD_THRESHOLD = 2
+  WSECS_SEARCH_RECORD_THRESHOLD = 2
+Load debugger file "liveness_minifasnet_cv181x_bf16.layer_group_config.json" success!
+==---------------------------==
+Run LayerGroupSearchPass : 
+    Searching the optimal layer groups
+==---------------------------==
+
+=======================================================
+***** Dynamic Programming layer group with cluster ****
+=======================================================
+total num of base_group is 5
+process base group 0, layer_num=1, cluster_num=1
+process base group 1, layer_num=95, cluster_num=95
+Searching best group slices...
+Getting single group cost...
+
+Getting cost table...
+
+process base group 2, layer_num=1, cluster_num=1
+process base group 3, layer_num=1, cluster_num=1
+process base group 4, layer_num=1, cluster_num=1
+==---------------------------==
+Run GroupPostTransformPass : 
+    Some transform after layer groups is determined
+==---------------------------==
+==---------------------------==
+Run TimeStepAssignmentPass : 
+    Assign timestep task for each group.
+==---------------------------==
+==---------------------------==
+Run LocalMemoryAllocationPass : 
+    Allocate local memory for all layer groups
+==---------------------------==
+==---------------------------==
+Run TimeStepCombinePass : 
+    Combine time step for better parallel balance
+==---------------------------==
+==---------------------------==
+Run GroupDataMoveOverlapPass : 
+    Overlap data move between two layer group
+==---------------------------==
+GmemAllocator use FitFirstAssign
+  0%|          | 0/1 [00:00<?, ?it/s]compare logits_Flatten_f32:   0%|          | 0/1 [00:00<?, ?it/s]
+
+[logits_Flatten_f32              ]        EQUAL [PASSED]
+    (1, 3, 1, 1) float32 
+1 compared
+1 passed
+  1 equal, 0 close, 0 similar
+0 failed
+  0 not equal, 0 not similar
+min_similarity = (1.0, 1.0, inf)
+Target    liveness_minifasnet_cv181x_bf16_model_outputs.npz
+Reference liveness_minifasnet_cv181x_bf16_tpu_outputs.npz
+npz compare PASSED.
+compare logits_Flatten_f32: 100%|██████████| 1/1 [00:00<00:00, 22.88it/s]
+[Success] Create config file 'liveness_minifasnet_cv181x_bf16.layer_group_config.json'.
+Content:
+{
+  "shape_secs_search_strategy": 0,
+  "structure_detect_opt": true,
+  "sc_method_configs": [
+    {
+      "sc_method": "sc_method_quick_search",
+      "MAX_TRY_NUM": 20
+    },
+    {
+      "sc_method": "sc_method_search_better_v1",
+      "NSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "CSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "DSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "HSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "WSECS_SEARCH_RECORD_THRESHOLD": 3
+    },
+    {
+      "sc_method": "sc_method_search_better_v2",
+      "MAX_NSECS": 32,
+      "MAX_CSECS": 32,
+      "MAX_DSECS": 32,
+      "MAX_HSECS": 32,
+      "MAX_WSECS": 32,
+      "NSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "CSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "DSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "HSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "WSECS_SEARCH_RECORD_THRESHOLD": 2
+    }
+  ]
+}
+[Running]: tpuc-opt liveness.mlir --processor-assign="chip=cv181x mode=BF16 num_device=1 num_core=1 addr_mode=auto high_precision=False" --processor-top-optimize --convert-top-to-tpu="weightFileName=liveness_minifasnet_cv181x_bf16_tpu_weights.npz asymmetric=False doWinograd=False q_group_size=0 q_symmetric=False matmul_perchannel=False gelu_mode=normal" --canonicalize --weight-fold -o liveness_minifasnet_cv181x_bf16_tpu.mlir
+[Success]: tpuc-opt liveness.mlir --processor-assign="chip=cv181x mode=BF16 num_device=1 num_core=1 addr_mode=auto high_precision=False" --processor-top-optimize --convert-top-to-tpu="weightFileName=liveness_minifasnet_cv181x_bf16_tpu_weights.npz asymmetric=False doWinograd=False q_group_size=0 q_symmetric=False matmul_perchannel=False gelu_mode=normal" --canonicalize --weight-fold -o liveness_minifasnet_cv181x_bf16_tpu.mlir
+[CMD]: model_runner.py --input liveness_minifasnet_in_f32.npz --model liveness_minifasnet_cv181x_bf16_tpu.mlir --output liveness_minifasnet_cv181x_bf16_tpu_outputs.npz  
+[Running]: npz_tool.py compare liveness_minifasnet_cv181x_bf16_tpu_outputs.npz live_top.npz --tolerance 0.99,0.9 --except - -vv
+[Success]: npz_tool.py compare liveness_minifasnet_cv181x_bf16_tpu_outputs.npz live_top.npz --tolerance 0.99,0.9 --except - -vv
+[Running]: tpuc-opt liveness_minifasnet_cv181x_bf16_tpu.mlir --mlir-disable-threading --strip-io-quant="quant_input=False quant_output=False quant_input_list= quant_output_list= quant_output_bf16=False quant_input_int8=False quant_output_int8=False " --processor-tpu-optimize --dev-parallel --weight-reorder  --subnet-divide="dynamic=False" --op-reorder --topo-sort --layer-group="opt=2 group_by_cores=auto compress_mode=none debugger=0 disable_group_overlap=false lgcache=true config_filename= enable_lghash=False lghash_dir=" --affine-opt  --core-parallel  --after-layergroup-weight-reorder  --address-assign -o liveness_minifasnet_cv181x_bf16_final.mlir --debug_cmd=
+[Success]: tpuc-opt liveness_minifasnet_cv181x_bf16_tpu.mlir --mlir-disable-threading --strip-io-quant="quant_input=False quant_output=False quant_input_list= quant_output_list= quant_output_bf16=False quant_input_int8=False quant_output_int8=False " --processor-tpu-optimize --dev-parallel --weight-reorder  --subnet-divide="dynamic=False" --op-reorder --topo-sort --layer-group="opt=2 group_by_cores=auto compress_mode=none debugger=0 disable_group_overlap=false lgcache=true config_filename= enable_lghash=False lghash_dir=" --affine-opt  --core-parallel  --after-layergroup-weight-reorder  --address-assign -o liveness_minifasnet_cv181x_bf16_final.mlir --debug_cmd=
+[Running]: tpuc-opt liveness_minifasnet_cv181x_bf16_final.mlir --codegen="model_file=liveness_minifasnet_bf16.cvimodel embed_debug_info=False model_version=latest bmodel_only=False gdma_check=False rvti=False" -o /dev/null
+[Success]: tpuc-opt liveness_minifasnet_cv181x_bf16_final.mlir --codegen="model_file=liveness_minifasnet_bf16.cvimodel embed_debug_info=False model_version=latest bmodel_only=False gdma_check=False rvti=False" -o /dev/null
+[CMD]: model_runner.py --input liveness_minifasnet_in_f32.npz --model liveness_minifasnet_bf16.cvimodel --output liveness_minifasnet_cv181x_bf16_model_outputs.npz  
+[Running]: npz_tool.py compare liveness_minifasnet_cv181x_bf16_model_outputs.npz liveness_minifasnet_cv181x_bf16_tpu_outputs.npz --tolerance 0.99,0.90 --except - -vv
+[Success]: npz_tool.py compare liveness_minifasnet_cv181x_bf16_model_outputs.npz liveness_minifasnet_cv181x_bf16_tpu_outputs.npz --tolerance 0.99,0.90 --except - -vv
+setenv:cv181x
+Start TPU Simulator for cv181x
+device[0] opened, 4294967296
+version: 1.4.0
+liveness_minifasnet Build at 2026-09-05 12:19:31 For platform cv181x
+Cmodel: bm_load_cmdbuf
+Max SharedMem size:184800
+Cmodel: bm_run_cmdbuf
+device[0] closed

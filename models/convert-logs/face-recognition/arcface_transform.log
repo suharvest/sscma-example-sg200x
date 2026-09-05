@@ -1,0 +1,551 @@
+2026/09/05 12:18:14 - INFO : TPU-MLIR v1.30.2-20260831
+2026/09/05 12:18:14 - INFO : 
+	 _____________________________________________________ 
+	| preprocess:                                           |
+	|   (x - mean) * scale                                  |
+	'-------------------------------------------------------'
+  config Preprocess args : 
+	resize_dims           : same to net input dims
+	keep_aspect_ratio     : False
+	keep_ratio_mode       : letterbox
+	pad_value             : 0
+	pad_type              : center
+	--------------------------
+	mean                  : [127.5, 127.5, 127.5]
+	scale                 : [0.007843137, 0.007843137, 0.007843137]
+	--------------------------
+	pixel_format          : rgb
+	channel_format        : nchw
+	yuv_type              : 
+
+[transformers] Disabling PyTorch because PyTorch >= 2.4 is required but found 2.0.1+cpu
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+2026/09/05 12:18:17 - INFO : Input_shape assigned
+2026/09/05 12:18:17 - INFO : ConstantFolding finished
+2026/09/05 12:18:17 - INFO : skip_fuse_bn:False
+2026/09/05 12:18:17 - INFO : Onnxsim opt finished
+2026/09/05 12:18:17 - INFO : ConstantFolding finished
+2026/09/05 12:18:17 - INFO : Save mlir file: arcface_mbf_origin.mlir
+[Running]: tpuc-opt arcface_mbf_origin.mlir --struct-optimize --shape-infer --canonicalize --extra-optimize -o arcface_mbf.mlir
+[Success]: tpuc-opt arcface_mbf_origin.mlir --struct-optimize --shape-infer --canonicalize --extra-optimize -o arcface_mbf.mlir
+2026/09/05 12:18:18 - INFO : Mlir file generated:arcface_mbf.mlir
+2026/09/05 12:18:18 - INFO : 
+  load_config Preprocess args : 
+	resize_dims           : [112, 112]
+	keep_aspect_ratio     : False
+	keep_ratio_mode       : letterbox
+	pad_value             : 0
+	pad_type              : center
+	input_dims            : [112, 112]
+	--------------------------
+	mean                  : [127.5, 127.5, 127.5]
+	scale                 : [0.007843137, 0.007843137, 0.007843137]
+	--------------------------
+	pixel_format          : rgb
+	channel_format        : nchw
+	yuv_type              : 
+
+[CMD]: model_runner.py --input arcface_mbf_in_f32.npz --model arcface_mbf_static.onnx --output arcface_mbf_ref_outputs.npz  
+2026/09/05 12:18:18 - INFO : Saving arcface_mbf_ref_outputs.npz
+[                                                  ] 0%                                                  ] 0%1%2%#                                                 ] 2%3%4%#                                                ] 4%5%6%#                                               ] 6%7%8%#                                              ] 8%9%10%#                                             ] 10%11%12%#                                            ] 12%13%14%#                                           ] 14%15%16%#                                          ] 16%17%18%#                                         ] 18%19%20%#                                        ] 20%21%22%#                                       ] 22%23%26%#                                     ] 26%27%28%#                                    ] 28%29%30%#                                   ] 30%31%32%#                                  ] 32%33%34%#                                 ] 34%35%36%#                                ] 36%37%38%#                               ] 38%39%40%#                              ] 40%41%42%#                             ] 42%43%44%#                            ] 44%45%46%#                           ] 46%47%48%#                          ] 48%#                         ] 50%51%52%#                        ] 52%53%54%#                       ] 54%55%56%#                      ] 56%57%58%#                     ] 58%59%60%#                    ] 60%61%62%#                   ] 62%63%64%#                  ] 64%65%66%#                 ] 66%67%68%#                ] 68%69%70%#               ] 70%71%72%#              ] 72%73%76%#            ] 76%77%78%#           ] 78%79%80%#          ] 80%81%82%#         ] 82%83%84%#        ] 84%85%86%#       ] 86%87%88%#      ] 88%89%90%#     ] 90%91%92%#    ] 92%93%94%#   ] 94%95%96%#  ] 96%97%98%# ] 98%#] 100%
+[CMD]: model_runner.py --input arcface_mbf_in_f32.npz --model arcface_mbf.mlir --output arcface_top.npz  
+2026/09/05 12:18:19 - INFO : Saving arcface_top.npz
+  0%|          | 0/97 [00:00<?, ?it/s]compare 517_Conv:   0%|          | 0/97 [00:00<?, ?it/s]compare 339_PRelu:   1%|          | 1/97 [00:00<00:00, 928.56it/s]compare 520_Conv:   2%|▏         | 2/97 [00:00<00:00, 697.19it/s] compare 343_PRelu:   3%|▎         | 3/97 [00:00<00:00, 666.29it/s]compare 523_Conv:   4%|▍         | 4/97 [00:00<00:00, 661.01it/s] compare 347_PRelu:   5%|▌         | 5/97 [00:00<00:00, 662.15it/s]compare 526_Conv:   6%|▌         | 6/97 [00:00<00:00, 673.96it/s] compare 351_PRelu:   7%|▋         | 7/97 [00:00<00:00, 644.92it/s]compare 529_Conv:   8%|▊         | 8/97 [00:00<00:01, 57.12it/s]  compare 529_Conv:   9%|▉         | 9/97 [00:00<00:01, 64.19it/s]compare 532_Conv:   9%|▉         | 9/97 [00:00<00:01, 64.19it/s]compare 357_PRelu:  10%|█         | 10/97 [00:00<00:01, 64.19it/s]compare 535_Conv:  11%|█▏        | 11/97 [00:00<00:01, 64.19it/s] compare 361_PRelu:  12%|█▏        | 12/97 [00:00<00:01, 64.19it/s]compare 538_Conv:  13%|█▎        | 13/97 [00:00<00:01, 64.19it/s] compare 364_Add:  14%|█▍        | 14/97 [00:00<00:01, 64.19it/s] compare 541_Conv:  15%|█▌        | 15/97 [00:00<00:01, 64.19it/s]compare 368_PRelu:  16%|█▋        | 16/97 [00:00<00:01, 64.19it/s]compare 544_Conv:  18%|█▊        | 17/97 [00:00<00:01, 64.19it/s] compare 372_PRelu:  19%|█▊        | 18/97 [00:00<00:01, 64.19it/s]compare 547_Conv:  20%|█▉        | 19/97 [00:00<00:01, 64.19it/s] compare 375_Add:  21%|██        | 20/97 [00:00<00:01, 64.19it/s] compare 550_Conv:  22%|██▏       | 21/97 [00:00<00:01, 64.19it/s]compare 379_PRelu:  23%|██▎       | 22/97 [00:00<00:01, 64.19it/s]compare 553_Conv:  24%|██▎       | 23/97 [00:00<00:01, 64.19it/s] compare 553_Conv:  25%|██▍       | 24/97 [00:00<00:00, 107.21it/s]compare 383_PRelu:  25%|██▍       | 24/97 [00:00<00:00, 107.21it/s]compare 556_Conv:  26%|██▌       | 25/97 [00:00<00:00, 107.21it/s] compare 386_Add:  27%|██▋       | 26/97 [00:00<00:00, 107.21it/s] compare 559_Conv:  28%|██▊       | 27/97 [00:00<00:00, 107.21it/s]compare 390_PRelu:  29%|██▉       | 28/97 [00:00<00:00, 107.21it/s]compare 562_Conv:  30%|██▉       | 29/97 [00:00<00:00, 107.21it/s] compare 394_PRelu:  31%|███       | 30/97 [00:00<00:00, 107.21it/s]compare 565_Conv:  32%|███▏      | 31/97 [00:00<00:00, 107.21it/s] compare 397_Add:  33%|███▎      | 32/97 [00:00<00:00, 107.21it/s] compare 568_Conv:  34%|███▍      | 33/97 [00:00<00:00, 107.21it/s]compare 401_PRelu:  35%|███▌      | 34/97 [00:00<00:00, 107.21it/s]compare 571_Conv:  36%|███▌      | 35/97 [00:00<00:00, 107.21it/s] compare 571_Conv:  37%|███▋      | 36/97 [00:00<00:00, 87.33it/s] compare 405_PRelu:  37%|███▋      | 36/97 [00:00<00:00, 87.33it/s]compare 574_Conv:  38%|███▊      | 37/97 [00:00<00:00, 87.33it/s] compare 577_Conv:  39%|███▉      | 38/97 [00:00<00:00, 87.33it/s]compare 411_PRelu:  40%|████      | 39/97 [00:00<00:00, 87.33it/s]compare 580_Conv:  41%|████      | 40/97 [00:00<00:00, 87.33it/s] compare 415_PRelu:  42%|████▏     | 41/97 [00:00<00:00, 87.33it/s]compare 583_Conv:  43%|████▎     | 42/97 [00:00<00:00, 87.33it/s] compare 418_Add:  44%|████▍     | 43/97 [00:00<00:00, 87.33it/s] compare 586_Conv:  45%|████▌     | 44/97 [00:00<00:00, 87.33it/s]compare 422_PRelu:  46%|████▋     | 45/97 [00:00<00:00, 87.33it/s]compare 589_Conv:  47%|████▋     | 46/97 [00:00<00:00, 87.33it/s] compare 426_PRelu:  48%|████▊     | 47/97 [00:00<00:00, 87.33it/s]compare 592_Conv:  49%|████▉     | 48/97 [00:00<00:00, 87.33it/s] compare 592_Conv:  51%|█████     | 49/97 [00:00<00:00, 82.17it/s]compare 429_Add:  51%|█████     | 49/97 [00:00<00:00, 82.17it/s] compare 595_Conv:  52%|█████▏    | 50/97 [00:00<00:00, 82.17it/s]compare 433_PRelu:  53%|█████▎    | 51/97 [00:00<00:00, 82.17it/s]compare 598_Conv:  54%|█████▎    | 52/97 [00:00<00:00, 82.17it/s] compare 437_PRelu:  55%|█████▍    | 53/97 [00:00<00:00, 82.17it/s]compare 601_Conv:  56%|█████▌    | 54/97 [00:00<00:00, 82.17it/s] compare 440_Add:  57%|█████▋    | 55/97 [00:00<00:00, 82.17it/s] compare 604_Conv:  58%|█████▊    | 56/97 [00:00<00:00, 82.17it/s]compare 444_PRelu:  59%|█████▉    | 57/97 [00:00<00:00, 82.17it/s]compare 607_Conv:  60%|█████▉    | 58/97 [00:00<00:00, 82.17it/s] compare 448_PRelu:  61%|██████    | 59/97 [00:00<00:00, 82.17it/s]compare 610_Conv:  62%|██████▏   | 60/97 [00:00<00:00, 82.17it/s] compare 451_Add:  63%|██████▎   | 61/97 [00:00<00:00, 82.17it/s] compare 613_Conv:  64%|██████▍   | 62/97 [00:00<00:00, 82.17it/s]compare 455_PRelu:  65%|██████▍   | 63/97 [00:00<00:00, 82.17it/s]compare 616_Conv:  66%|██████▌   | 64/97 [00:00<00:00, 82.17it/s] compare 616_Conv:  67%|██████▋   | 65/97 [00:00<00:00, 90.06it/s]compare 459_PRelu:  67%|██████▋   | 65/97 [00:00<00:00, 90.06it/s]compare 619_Conv:  68%|██████▊   | 66/97 [00:00<00:00, 90.06it/s] compare 462_Add:  69%|██████▉   | 67/97 [00:00<00:00, 90.06it/s] compare 622_Conv:  70%|███████   | 68/97 [00:00<00:00, 90.06it/s]compare 466_PRelu:  71%|███████   | 69/97 [00:00<00:00, 90.06it/s]compare 625_Conv:  72%|███████▏  | 70/97 [00:00<00:00, 90.06it/s] compare 470_PRelu:  73%|███████▎  | 71/97 [00:00<00:00, 90.06it/s]compare 628_Conv:  74%|███████▍  | 72/97 [00:00<00:00, 90.06it/s] compare 473_Add:  75%|███████▌  | 73/97 [00:00<00:00, 90.06it/s] compare 631_Conv:  76%|███████▋  | 74/97 [00:00<00:00, 90.06it/s]compare 477_PRelu:  77%|███████▋  | 75/97 [00:00<00:00, 90.06it/s]compare 634_Conv:  78%|███████▊  | 76/97 [00:00<00:00, 90.06it/s] compare 481_PRelu:  79%|███████▉  | 77/97 [00:00<00:00, 90.06it/s]compare 637_Conv:  80%|████████  | 78/97 [00:00<00:00, 90.06it/s] compare 640_Conv:  81%|████████▏ | 79/97 [00:00<00:00, 90.06it/s]compare 487_PRelu:  82%|████████▏ | 80/97 [00:00<00:00, 90.06it/s]compare 487_PRelu:  84%|████████▎ | 81/97 [00:00<00:00, 95.50it/s]compare 643_Conv:  84%|████████▎ | 81/97 [00:00<00:00, 95.50it/s] compare 491_PRelu:  85%|████████▍ | 82/97 [00:00<00:00, 95.50it/s]compare 646_Conv:  86%|████████▌ | 83/97 [00:00<00:00, 95.50it/s] compare 494_Add:  87%|████████▋ | 84/97 [00:00<00:00, 95.50it/s] compare 649_Conv:  88%|████████▊ | 85/97 [00:00<00:00, 95.50it/s]compare 498_PRelu:  89%|████████▊ | 86/97 [00:00<00:00, 95.50it/s]compare 652_Conv:  90%|████████▉ | 87/97 [00:00<00:00, 95.50it/s] compare 502_PRelu:  91%|█████████ | 88/97 [00:00<00:00, 95.50it/s]compare 655_Conv:  92%|█████████▏| 89/97 [00:00<00:00, 95.50it/s] compare 505_Add:  93%|█████████▎| 90/97 [00:00<00:00, 95.50it/s] compare 658_Conv:  94%|█████████▍| 91/97 [00:00<00:00, 95.50it/s]compare 509_PRelu:  95%|█████████▍| 92/97 [00:00<00:00, 95.50it/s]compare 661_Conv:  96%|█████████▌| 93/97 [00:00<00:00, 95.50it/s] compare 513_PRelu:  97%|█████████▋| 94/97 [00:00<00:00, 95.50it/s]compare 514_Flatten:  98%|█████████▊| 95/97 [00:00<00:00, 95.50it/s]compare 516_BatchNormalization:  99%|█████████▉| 96/97 [00:01<00:00, 95.50it/s]compare 516_BatchNormalization: 100%|██████████| 97/97 [00:01<00:00, 100.60it/s]
+
+[517_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 56, 56) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 141.434011
+[339_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 56, 56) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 139.096327
+[520_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 56, 56) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 130.931883
+[343_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 56, 56) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 129.365501
+[523_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 56, 56) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 131.237774
+[347_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 56, 56) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 127.855663
+[526_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 125.692005
+[351_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.444386
+[529_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.517996
+[532_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 128.059225
+[357_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.309690
+[535_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.730116
+[361_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.572908
+[538_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.383276
+[364_Add                         ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.559572
+[541_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.885273
+[368_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.393259
+[544_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.653769
+[372_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.928963
+[547_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.058187
+[375_Add                         ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.394062
+[550_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.617090
+[379_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.032179
+[553_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.265038
+[383_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.327496
+[556_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.116802
+[386_Add                         ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.412760
+[559_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.137045
+[390_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.470060
+[562_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.044281
+[394_PRelu                       ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.884012
+[565_Conv                        ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.250984
+[397_Add                         ]      SIMILAR [PASSED]
+    (1, 128, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.858398
+[568_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.597675
+[401_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 28, 28) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.212334
+[571_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.900415
+[405_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 127.238655
+[574_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.056387
+[577_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.174089
+[411_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.260555
+[580_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.880358
+[415_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.800865
+[583_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.438232
+[418_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.373865
+[586_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.913069
+[422_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.964363
+[589_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.621235
+[426_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.334118
+[592_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.344597
+[429_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.336395
+[595_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.261299
+[433_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.468033
+[598_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.493954
+[437_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.166506
+[601_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.221258
+[440_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.295864
+[604_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.892199
+[444_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.451874
+[607_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.474928
+[448_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.503439
+[610_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 118.793383
+[451_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.147568
+[613_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.998844
+[455_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.345325
+[616_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.717672
+[459_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.224117
+[619_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 117.261133
+[462_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 118.565111
+[622_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.091022
+[466_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.088516
+[625_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.379677
+[470_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.850187
+[628_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 117.348289
+[473_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 118.269663
+[631_Conv                        ]      SIMILAR [PASSED]
+    (1, 512, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.373993
+[477_PRelu                       ]      SIMILAR [PASSED]
+    (1, 512, 14, 14) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.126715
+[634_Conv                        ]      SIMILAR [PASSED]
+    (1, 512, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.041681
+[481_PRelu                       ]      SIMILAR [PASSED]
+    (1, 512, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 124.194508
+[637_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 117.028847
+[640_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.410984
+[487_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.747732
+[643_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.989979
+[491_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.798521
+[646_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 118.183289
+[494_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 117.332830
+[649_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.541462
+[498_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 120.815096
+[652_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 121.591520
+[502_PRelu                       ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 119.520073
+[655_Conv                        ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 117.626944
+[505_Add                         ]      SIMILAR [PASSED]
+    (1, 256, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 117.198629
+[658_Conv                        ]      SIMILAR [PASSED]
+    (1, 512, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 118.751936
+[509_PRelu                       ]      SIMILAR [PASSED]
+    (1, 512, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 116.162233
+[661_Conv                        ]      SIMILAR [PASSED]
+    (1, 64, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999998
+    sqnr_similarity        = 116.163654
+[513_PRelu                       ]      SIMILAR [PASSED]
+    (1, 64, 7, 7) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999998
+    sqnr_similarity        = 116.280928
+[514_Flatten                     ]      SIMILAR [PASSED]
+    (1, 3136) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999998
+    sqnr_similarity        = 116.280928
+[516_BatchNormalization          ]      SIMILAR [PASSED]
+    (1, 512) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999998
+    sqnr_similarity        = 114.794188
+97 compared
+97 passed
+  0 equal, 0 close, 97 similar
+0 failed
+  0 not equal, 0 not similar
+min_similarity = (0.9999997615814209, 0.9999981801628868, 114.79418754577637)
+Target    arcface_top.npz
+Reference arcface_mbf_ref_outputs.npz
+npz compare PASSED.
+compare 516_BatchNormalization: 100%|██████████| 97/97 [00:01<00:00, 85.57it/s] 
+[Running]: npz_tool.py compare arcface_top.npz arcface_mbf_ref_outputs.npz --tolerance 0.99,0.99 --except - -vv
+[Success]: npz_tool.py compare arcface_top.npz arcface_mbf_ref_outputs.npz --tolerance 0.99,0.99 --except - -vv
