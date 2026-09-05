@@ -70,7 +70,7 @@ DAEMON_OPTS="-v -m /userdata/local/models/yolo11n_detection_cv181x_int8.cvimodel
 After editing, restart the service:
 
 ```bash
-sudo /etc/init.d/K92retail-vision restart
+sudo "$(ls /etc/init.d/[SK]92retail-vision | head -1)" restart
 ```
 
 ### CLI Options
@@ -86,6 +86,7 @@ sudo /etc/init.d/K92retail-vision restart
 | `--mqtt-host` | `localhost` | MQTT broker host |
 | `--mqtt-port` | `1883` | MQTT broker port |
 | `--mqtt-topic` | `recamera/retail-vision/vision` | MQTT publish topic |
+| `--mqtt-interval-ms` | `0` | Minimum ms between result publishes; `0` publishes every frame |
 | `--person-height` | `1.7` | Average person height in meters (for speed estimation) |
 | `--dwell-engaged` | `1.5` | Seconds stationary before ENGAGED state |
 | `--dwell-assist` | `20.0` | Seconds stationary before ASSISTANCE state |
@@ -113,6 +114,8 @@ Open with VLC, ffplay, or any RTSP client.
 
 Topic: `recamera/retail-vision/vision`
 
+Publishing every frame is the default. Set `--mqtt-interval-ms 1000` when several cameras share one broker: at per-frame rate the broker sees people x cameras x frame rate messages, which is what saturates first.
+
 ```json
 {
   "timestamp": 1709500000000,
@@ -135,9 +138,12 @@ Topic: `recamera/retail-vision/vision`
   },
   "persons": [
     {
+      "slot": 0,
       "track_id": 7,
       "confidence": 0.85,
-      "bbox": {"x": 120, "y": 85, "width": 210, "height": 480},
+      "cx_pct": 41.2,
+      "cy_pct": 63.8,
+      "bbox": {"x": 0.0938, "y": 0.1181, "w": 0.1641, "h": 0.6667},
       "velocity": {"vx": 0.15, "vy": -0.02, "speed_m_s": 0.42},
       "state": "engaged",
       "dwell_duration": 5.2
@@ -146,7 +152,9 @@ Topic: `recamera/retail-vision/vision`
 }
 ```
 
-**Coordinate format**: `bbox` uses absolute pixel coordinates (top-left x, y + width, height) referenced to `frame_width` x `frame_height`. Letterbox correction is applied internally to compensate for the square model input (640x640) vs 16:9 display output.
+**Coordinate format**: `bbox` is normalized `[0,1]` — top-left `x`, `y` plus `w`, `h`, relative to `frame_width` x `frame_height`. `cx_pct` / `cy_pct` are the box centre as a percentage of the frame, which is what dashboards and floor-plan calibration consume without needing to know the sensor resolution. Letterbox correction is applied internally to compensate for the square model input (640x640) vs 16:9 display output.
+
+`slot` is the person's index within the batch. Everyone in one message shares a timestamp, so a consumer storing them as time series needs a distinguishing key; index rather than `track_id` keeps that key bounded by people-per-frame instead of growing for the life of the deployment.
 
 #### Zone Metrics
 
@@ -221,9 +229,9 @@ ssh recamera@<device_ip>
 sudo tail -f /var/log/retail-vision.log
 
 # Service control
-sudo /etc/init.d/K92retail-vision status
-sudo /etc/init.d/K92retail-vision restart
-sudo /etc/init.d/K92retail-vision stop
+sudo "$(ls /etc/init.d/[SK]92retail-vision | head -1)" status
+sudo "$(ls /etc/init.d/[SK]92retail-vision | head -1)" restart
+sudo "$(ls /etc/init.d/[SK]92retail-vision | head -1)" stop
 
 # Manual run with custom args
 export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib

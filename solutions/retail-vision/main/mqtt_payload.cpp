@@ -1,5 +1,6 @@
 #include "mqtt_payload.h"
 
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 
@@ -75,13 +76,37 @@ std::string buildVisionJson(uint64_t timestamp_ms, uint32_t frame_id,
         float real_w  = p.detection.w / scale_x;
         float real_h  = p.detection.h / scale_y;
 
-        // Top-left normalized coords
-        float bx = real_cx - real_w / 2.0f;
-        float by = real_cy - real_h / 2.0f;
+        // Top-left normalized coords, intersected with the frame. Undoing the
+        // letterbox can push a box past the frame edge when the detector
+        // predicts into the padding band: a person cannot be taller than the
+        // picture, so the part outside is not a real detection. Without this
+        // the published bbox left its documented [0,1] range (observed
+        // y=-0.05, h=1.10) and overlay consumers drew off-frame.
+        float x0 = std::max(0.0f, real_cx - real_w / 2.0f);
+        float y0 = std::max(0.0f, real_cy - real_h / 2.0f);
+        float x1 = std::min(1.0f, real_cx + real_w / 2.0f);
+        float y1 = std::min(1.0f, real_cy + real_h / 2.0f);
+        float bx = x0;
+        float by = y0;
+        real_w = std::max(0.0f, x1 - x0);
+        real_h = std::max(0.0f, y1 - y0);
 
         j << "{";
-        j << "\"track_id\":" << p.track_id;
+        // Index within this batch. Every person in one message shares a
+        // timestamp, so a consumer storing them as time series needs a
+        // distinguishing key; index rather than track_id keeps that key
+        // bounded by people-per-frame instead of growing for the life of
+        // the deployment.
+        j << "\"slot\":" << i;
+        j << ",\"track_id\":" << p.track_id;
         j << ",\"confidence\":" << std::setprecision(2) << p.detection.score;
+
+        // Centre as a percentage of the frame. bbox below is normalized
+        // [0,1] top-left+size; this is the same point expressed the way
+        // dashboards and floor-plan calibration consume it, so neither has
+        // to know the sensor resolution.
+        j << ",\"cx_pct\":" << std::setprecision(1) << (real_cx * 100.0f);
+        j << ",\"cy_pct\":" << std::setprecision(1) << (real_cy * 100.0f);
 
         j << ",\"bbox\":{";
         j << "\"x\":" << std::setprecision(4) << bx;

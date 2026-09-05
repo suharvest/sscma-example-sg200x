@@ -41,6 +41,10 @@ static struct {
     std::string mqtt_host = "localhost";
     int mqtt_port = 1883;
     std::string mqtt_topic = "recamera/retail-vision/vision";
+    // 0 keeps the historical behaviour: one message per processed frame.
+    // Set it when several cameras share a broker — the message rate there is
+    // people x cameras x frame rate, which is what saturates first.
+    int mqtt_interval_ms = 0;
     std::string mqtt_user;
     std::string mqtt_pass;
 
@@ -129,6 +133,7 @@ static void print_usage(const char* prog) {
     printf("  --mqtt-host HOST              MQTT broker host (default: %s)\n", g_config.mqtt_host.c_str());
     printf("  --mqtt-port PORT              MQTT broker port (default: %d)\n", g_config.mqtt_port);
     printf("  --mqtt-topic TOPIC            MQTT topic (default: %s)\n", g_config.mqtt_topic.c_str());
+    printf("  --mqtt-interval-ms MS         Min ms between result publishes, 0 = every frame (default: %d)\n", g_config.mqtt_interval_ms);
     printf("  --mqtt-user USER              MQTT auth username (default: none)\n");
     printf("  --mqtt-pass PASS              MQTT auth password (default: none)\n");
     printf("  --person-height FLOAT         Avg person height in meters (default: %.1f)\n", g_config.person_height);
@@ -158,6 +163,7 @@ static bool parse_args(int argc, char** argv) {
         {"mqtt-host",        required_argument, 0, 5},
         {"mqtt-port",        required_argument, 0, 6},
         {"mqtt-topic",       required_argument, 0, 7},
+        {"mqtt-interval-ms", required_argument, 0, 19},
         {"mqtt-user",        required_argument, 0, 15},
         {"mqtt-pass",        required_argument, 0, 16},
         {"person-height",    required_argument, 0, 8},
@@ -186,6 +192,7 @@ static bool parse_args(int argc, char** argv) {
             case 5:   g_config.mqtt_host = optarg; break;
             case 6:   g_config.mqtt_port = std::stoi(optarg); break;
             case 7:   g_config.mqtt_topic = optarg; break;
+            case 19:  g_config.mqtt_interval_ms = std::stoi(optarg); break;
             case 15:  g_config.mqtt_user = optarg; break;
             case 16:  g_config.mqtt_pass = optarg; break;
             case 8:   g_config.person_height = std::stof(optarg); break;
@@ -621,13 +628,20 @@ static void process_frame() {
 
     // Publish the existing application-specific MQTT payload.
     if (g_config.enable_mqtt && g_mqtt_publisher) {
-        auto zone = g_zone_metrics->getSnapshot();
-        std::string payload = buildVisionJson(
-            timestamp_ms, g_frame_id, g_fps, inference_time_ms,
-            zone, tracked_persons,
-            g_config.stream_width, g_config.stream_height,
-            g_detector->getInputWidth(), g_detector->getInputHeight());
-        g_mqtt_publisher->publishResultsJson(payload);
+        static uint64_t s_last_publish_ms = 0;
+        bool due = g_config.mqtt_interval_ms <= 0 ||
+                   timestamp_ms - s_last_publish_ms >=
+                       static_cast<uint64_t>(g_config.mqtt_interval_ms);
+        if (due) {
+            s_last_publish_ms = timestamp_ms;
+            auto zone = g_zone_metrics->getSnapshot();
+            std::string payload = buildVisionJson(
+                timestamp_ms, g_frame_id, g_fps, inference_time_ms,
+                zone, tracked_persons,
+                g_config.stream_width, g_config.stream_height,
+                g_detector->getInputWidth(), g_detector->getInputHeight());
+            g_mqtt_publisher->publishResultsJson(payload);
+        }
 
     }
 
