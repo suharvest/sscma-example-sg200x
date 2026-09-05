@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# Post-removal script for face-recognition
+# Deregister from the app gallery so the console stops listing an application
+# that is no longer installed. The gallery under /userdata/local/face-gallery is
+# deliberately left in place: it is user data, and re-installing the app should
+# not require re-enrolling everybody.
+
+rm -f /userdata/local/apps/face-recognition.json
+rm -f /userdata/local/apps/face-recognition.md
+rm -f /userdata/local/apps/face-recognition.zh.md
+
+exit 0

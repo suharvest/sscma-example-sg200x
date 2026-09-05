@@ -1,0 +1,40 @@
+{
+  "id": "face-recognition",
+  "name": "Face Recognition",
+  "name_zh": "人脸识别",
+  "scene": "Access & Attendance",
+  "scene_zh": "门禁与考勤",
+  "description": "Recognises enrolled people on the device: SCRFD finds the face and its five landmarks, ArcFace turns the aligned crop into a 512-D template, and a cosine scan against the on-device gallery names it. Enrollment and removal go over MQTT. No face image ever leaves the camera.",
+  "description_zh": "端侧人脸识别：SCRFD 检出人脸与五点关键点，ArcFace 将对齐后的人脸编码为 512 维特征，与设备本地人脸库做余弦比对得出身份。注册与删除通过 MQTT 下发。人脸影像不出设备。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92face-recognition",
+  "image": "/apps/face-recognition.png",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/face-recognition/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "privacy_blur": true,
+  "models": [],
+  "pipeline": [
+    {
+      "name": "scrfd-500m",
+      "path": "/userdata/local/models/scrfd_500m_int8.cvimodel",
+      "task": "face-detect"
+    },
+    {
+      "name": "arcface-mbf",
+      "path": "/userdata/local/models/arcface_mbf_bf16.cvimodel",
+      "task": "face-embedding"
+    },
+    {
+      "name": "minifasnet",
+      "path": "/userdata/local/models/liveness_minifasnet_bf16.cvimodel",
+      "task": "face-liveness"
+    }
+  ],
+  "version": "0.1.0",
+  "author": "Seeed Studio"
+}
