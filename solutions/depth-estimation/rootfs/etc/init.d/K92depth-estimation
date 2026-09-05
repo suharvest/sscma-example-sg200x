@@ -48,7 +48,7 @@ DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
 
 # Model selection. The supervisor (appMgr setModel) can override the default
 # via a plain-text file whose first line is the absolute path of the model.
-DEFAULT_MODEL=/userdata/local/models/fastdepth_224_int8.cvimodel
+DEFAULT_MODEL=/userdata/local/models/fastdepth_224_bf16.cvimodel
 MODEL_OVERRIDE_FILE=/userdata/local/apps/depth-estimation.model
 MODEL_PATH="$DEFAULT_MODEL"
 if [ -f "$MODEL_OVERRIDE_FILE" ]; then

@@ -35,7 +35,10 @@ DO_START=false
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOLUTION_NAME="depth-estimation"
 MODEL_FILE="fastdepth_224_bf16.cvimodel"
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+# Force password auth: sshpass feeds the password to ssh's prompt, but if ssh
+# tries publickey or keyboard-interactive first it spawns ssh-askpass instead
+# and sshpass never gets to answer ("ssh_askpass: exec(...): No such file").
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -59,7 +62,9 @@ err()  { echo "ERROR: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 run_ssh()  { sshpass -p "$PASS" ssh $SSH_OPTS "${USER}@${HOST}" "$@"; }
-run_scp()  { sshpass -p "$PASS" scp $SSH_OPTS "$@"; }
+# -O forces the legacy SCP protocol. Modern scp defaults to the SFTP subsystem,
+# where sshpass cannot answer the password prompt on some hosts.
+run_scp()  { sshpass -p "$PASS" scp -O $SSH_OPTS "$@"; }
 run_sudo() { run_ssh "printf '%s\n' '${PASS}' | sudo -S $*"; }
 
 # --- Pre-flight ---
@@ -87,7 +92,7 @@ log "Package: $DEB_NAME"
 # --- Step 2: Check the depth model is on the device ---
 # It does not ship inside this deb (it is a model, not code), so a device
 # without it would start the app only to have it exit on a failed load.
-if ! run_ssh "[ -f /userdata/local/models/${MODEL_FILE} ]"; then
+if ! run_sudo "test -f /userdata/local/models/${MODEL_FILE}"; then
     warn "Depth model missing on device: /userdata/local/models/${MODEL_FILE}
      Copy it there before enabling the app, or point MODEL_PATH at another
      depth cvimodel in /etc/depth-estimation.conf."
