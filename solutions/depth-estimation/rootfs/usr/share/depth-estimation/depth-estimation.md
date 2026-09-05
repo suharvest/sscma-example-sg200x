@@ -30,7 +30,7 @@ reCamera (SG2002 / CV181x), BF16 model, 2026-09-05:
 | | |
 |---|---|
 | Inference channel | 320x180 accepted by VPSS; valid ROI `[0,0,320,180]`, no letterbox bars |
-| Inference latency | p50 31.8 ms, p95 46.7 ms, max 76.2 ms |
+| Inference latency | p50 31.8 ms, p95 33.2 ms, max 47.2 ms (816 frames, console mode) |
 | Stability (60 s, clean boot) | with PiP 590 frames / 0 wedges; `--no-pip` 562 frames / 0 wedges |
 | Depth PiP | renders at (944,524) on the outgoing stream |
 
@@ -40,10 +40,12 @@ Latency is higher than the ~18 ms the model's own benchmark reports for a bare
 INT8 forward pass; the figure logged here is measured around the whole
 per-frame path, so preprocessing and the colour mapping are included.
 
-**Depth quality is not yet validated.** The available test scene was a blank
-ceiling — a large untextured surface, which is the documented failure case for
-this model. Point the camera at a scene with objects at clearly different
-distances before judging whether the near/far structure is correct.
+Depth structure was checked against a room scene with real depth: the near
+furniture on one side reads red, the receding floor and far wall read blue, and
+the `zones` values agree with what the PiP draws. On a blank ceiling — a large
+untextured surface, the documented failure case — the usable range collapses
+(p98-p02 was 0.41 there against 1.72 in the room scene), so judge this model
+on a scene with objects at clearly different distances.
 
 If the stream stalls with `get chn frame fail` in the log, the VPSS driver is
 wedged; that state survives restarting the app and needs a reboot. It was

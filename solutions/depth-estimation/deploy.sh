@@ -113,6 +113,20 @@ done' || warn "Some init scripts not found (OK)"
 
 run_sudo 'killall -q depth-estimation fitness-trainer ppocr-reader face-analysis detection-blur retail-vision facemesh-reader weather-classifier yolo-detector sscma-node 2>/dev/null || true'
 sleep 2
+
+# Node-RED is watched by /usr/share/supervisor/scripts/nr_memguard.sh, which
+# restarts it behind our back. A revived Node-RED grabs the camera while this
+# app is streaming, both contend for VPSS, and the pipeline wedges — recoverable
+# only by rebooting. Verified: an app that ran 590 frames cleanly wedged at 153
+# once Node-RED came back. Stopping the init script alone is not enough.
+if run_ssh 'ps w | grep -q "[n]ode-red"'; then
+    err "Node-RED is still running (nr_memguard.sh restarts it).
+     It will take the camera from this app and wedge VPSS.
+     Switch the device to Console mode first: open the console, click
+     \"Switch back to Console mode\", then enable the app from its card.
+     That path goes through appMgr/switch, which stops Node-RED properly,
+     waits for the VPSS group and records the active app in state.json."
+fi
 ok "Services stopped"
 
 # --- Step 4: Transfer & install ---
@@ -138,6 +152,13 @@ if [ "$DO_START" = false ]; then
     echo "   Preview: ws://${HOST}:8001/  (results: ws://${HOST}:8001/results)"
     echo "   MQTT:    recamera/depth-estimation/results"
     exit 0
+fi
+
+# Refuse to race the supervisor. When its init script reports FAIL the service
+# is still up and may hand the camera to another app mid-run.
+if run_ssh 'ps w | grep -q "[s]upervisor -g"'; then
+    warn "supervisor is still running; --start bypasses appMgr/switch and can
+     race it. Prefer enabling the app from the console instead."
 fi
 
 log "Starting ${SOLUTION_NAME} directly (console not involved)..."
