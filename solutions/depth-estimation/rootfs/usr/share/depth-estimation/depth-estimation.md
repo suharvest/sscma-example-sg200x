@@ -23,6 +23,33 @@ photographs. Outdoors, and on large uniform surfaces (a blank wall, a clear
 sky), the depth map degrades — expect the ordering to stay roughly right and the
 fine structure to be wrong.
 
+## Measured on hardware
+
+reCamera (SG2002 / CV181x), BF16 model, 2026-09-05:
+
+| | |
+|---|---|
+| Inference channel | 320x180 accepted by VPSS; valid ROI `[0,0,320,180]`, no letterbox bars |
+| Inference latency | p50 31.8 ms, p95 46.7 ms, max 76.2 ms |
+| Stability (60 s, clean boot) | with PiP 590 frames / 0 wedges; `--no-pip` 562 frames / 0 wedges |
+| Depth PiP | renders at (944,524) on the outgoing stream |
+
+The `zones` values in the MQTT payload agree with the colours drawn in the PiP.
+
+Latency is higher than the ~18 ms the model's own benchmark reports for a bare
+INT8 forward pass; the figure logged here is measured around the whole
+per-frame path, so preprocessing and the colour mapping are included.
+
+**Depth quality is not yet validated.** The available test scene was a blank
+ceiling — a large untextured surface, which is the documented failure case for
+this model. Point the camera at a scene with objects at clearly different
+distances before judging whether the near/far structure is correct.
+
+If the stream stalls with `get chn frame fail` in the log, the VPSS driver is
+wedged; that state survives restarting the app and needs a reboot. It was
+triggered here by starting the app once with a missing model file, not by the
+depth overlay.
+
 ## Model
 
 | | |
