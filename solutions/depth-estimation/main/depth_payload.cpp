@@ -1,11 +1,21 @@
 #include "depth_payload.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
 
 namespace depth {
+
+/* Histogram resolution. kBins covers the whole frame (percentiles and the
+ * near-count cut); kZoneBins is per 3x3 cell. Both are 2048: a coarser zone
+ * histogram quantises the nine numbers visibly, because proximity() divides
+ * the bin width by the frame's span and so amplifies it -- at 512 bins,
+ * neighbouring cells on a low-contrast frame collapsed onto one value. Cell
+ * counts (~n/9) stay far below UINT16_MAX. */
+static constexpr size_t kBins     = 2048;
+static constexpr size_t kZoneBins = 2048;
 
 namespace {
 
@@ -60,17 +70,84 @@ DepthStats computeStats(const std::vector<float>& depth, int width, int height,
     st.max  = vmax;
     st.mean = static_cast<float>(sum / static_cast<double>(n));
 
-    std::vector<float> scratch(depth);
-    st.p02 = percentile(scratch, 0.02f);
-    st.p50 = percentile(scratch, 0.50f);
-    st.p98 = percentile(scratch, 0.98f);
+    /* Everything below comes out of one histogram pass instead of copying the
+     * map and running nth_element twelve times (three frame percentiles, nine
+     * cell percentiles) plus a separate near-count pass with a divide per
+     * pixel. Bin width is (max-min)/kBins, so a percentile is accurate to
+     * about 0.05% of the frame's depth range -- far below anything these
+     * relative-depth numbers are read to. */
+    static std::vector<uint32_t> hist(kBins);
+    static std::vector<uint16_t> zhist(9 * kZoneBins);
+    std::fill(hist.begin(), hist.end(), 0u);
+    std::fill(zhist.begin(), zhist.end(), uint16_t{0});
+
+    const float range = st.max - st.min;
+    if (!(range > 0.0f)) {
+        /* Flat map: every percentile is the single value, nothing is "near". */
+        st.p02 = st.p50 = st.p98 = st.min;
+        st.near_ratio   = 0.0f;
+        st.near_present = false;
+        for (int i = 0; i < 9; i++) st.zones[i] = 0.0f;
+        return st;
+    }
+
+    const float bin_scale  = static_cast<float>(kBins - 1) / range;
+    const float zbin_scale = static_cast<float>(kZoneBins - 1) / range;
+
+    /* Row-major walk so the zone index is derived from the loop counters
+     * rather than a per-pixel divide. The cut points must be the same integer
+     * divisions the cell loop used before (height*g/3), not the algebraically
+     * "equivalent" y*3 >= height: for 224 rows those differ by one row, which
+     * moves ~150 pixels between cells and shifts every zone value far more
+     * than the histogram's own quantisation does. */
+    const int ycut1 = height / 3, ycut2 = height * 2 / 3;
+    const int xcut1 = width / 3,  xcut2 = width * 2 / 3;
+    for (int y = 0; y < height; y++) {
+        const int gy = (y >= ycut2) ? 2 : (y >= ycut1 ? 1 : 0);
+        const float* row = depth.data() + static_cast<size_t>(y) * width;
+        for (int x = 0; x < width; x++) {
+            const float d = row[x] - st.min;
+            hist[static_cast<size_t>(d * bin_scale)]++;
+            const int gx = (x >= xcut2) ? 2 : (x >= xcut1 ? 1 : 0);
+            uint16_t& c = zhist[static_cast<size_t>(gy * 3 + gx) * kZoneBins +
+                                static_cast<size_t>(d * zbin_scale)];
+            if (c != UINT16_MAX) c++;  // saturate; a cell never fills a bin
+        }
+    }
+
+    const auto bin_value = [&](size_t bin, size_t bins) {
+        return st.min + (static_cast<float>(bin) + 0.5f) * range /
+                            static_cast<float>(bins - 1);
+    };
+    /* Smallest bin whose cumulative count reaches q of the total. */
+    const auto hist_percentile = [&](const uint32_t* h, size_t bins,
+                                     uint64_t total, float q) {
+        const uint64_t want = static_cast<uint64_t>(q * static_cast<float>(total));
+        uint64_t acc = 0;
+        for (size_t b = 0; b < bins; b++) {
+            acc += h[b];
+            if (acc > want) return bin_value(b, bins);
+        }
+        return bin_value(bins - 1, bins);
+    };
+
+    st.p02 = hist_percentile(hist.data(), kBins, n, 0.02f);
+    st.p50 = hist_percentile(hist.data(), kBins, n, 0.50f);
+    st.p98 = hist_percentile(hist.data(), kBins, n, 0.98f);
 
     const float span = st.p98 - st.p02;
 
+    /* proximity(d) >= t  <=>  d <= p98 - t*span, so the near count is a
+     * prefix sum of the same histogram -- no second pass, no per-pixel divide. */
     size_t near_count = 0;
     if (span > 0.0f) {
-        for (size_t i = 0; i < n; i++) {
-            if (proximity_of(depth[i], st.p02, span) >= near_threshold) near_count++;
+        const float cut = st.p98 - near_threshold * span;
+        if (cut >= st.min) {
+            const float fb = (cut - st.min) * bin_scale;
+            const size_t last =
+                (fb >= static_cast<float>(kBins - 1)) ? kBins - 1
+                                                      : static_cast<size_t>(fb);
+            for (size_t b = 0; b <= last; b++) near_count += hist[b];
         }
     }
     st.near_ratio   = static_cast<float>(near_count) / static_cast<float>(n);
@@ -79,22 +156,30 @@ DepthStats computeStats(const std::vector<float>& depth, int width, int height,
     /* 3x3 grid. Each cell reports the proximity of its 5th-percentile depth --
      * its nearest content, with the same p02/p98 stabilisation applied to the
      * whole frame so the nine numbers are comparable with each other. */
-    std::vector<float> cell;
-    cell.reserve((static_cast<size_t>(width) / 3 + 1) * (static_cast<size_t>(height) / 3 + 1));
-    for (int gy = 0; gy < 3; gy++) {
-        const int y0 = height * gy / 3;
-        const int y1 = height * (gy + 1) / 3;
-        for (int gx = 0; gx < 3; gx++) {
-            const int x0 = width * gx / 3;
-            const int x1 = width * (gx + 1) / 3;
-            cell.clear();
-            for (int y = y0; y < y1; y++) {
-                const float* row = depth.data() + static_cast<size_t>(y) * width;
-                for (int x = x0; x < x1; x++) cell.push_back(row[x]);
-            }
-            const float d05 = percentile(cell, 0.05f);
-            st.zones[gy * 3 + gx] = proximity_of(d05, st.p02, span);
+    const float inv_span = (span > 0.0f) ? 1.0f / span : 0.0f;
+    for (int g = 0; g < 9; g++) {
+        const uint16_t* zh = zhist.data() + static_cast<size_t>(g) * kZoneBins;
+        uint64_t cnt = 0;
+        for (size_t b = 0; b < kZoneBins; b++) cnt += zh[b];
+        if (cnt == 0) {
+            st.zones[g] = 0.0f;
+            continue;
         }
+        const uint64_t want = static_cast<uint64_t>(0.05f * static_cast<float>(cnt));
+        uint64_t acc  = 0;
+        float    d05  = st.min;
+        for (size_t b = 0; b < kZoneBins; b++) {
+            acc += zh[b];
+            if (acc > want) {
+                d05 = st.min + (static_cast<float>(b) + 0.5f) * range /
+                                   static_cast<float>(kZoneBins - 1);
+                break;
+            }
+        }
+        float v = (st.p02 + span - d05) * inv_span;
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        st.zones[g] = v;
     }
 
     return st;
