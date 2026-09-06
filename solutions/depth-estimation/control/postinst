@@ -1,0 +1,52 @@
+#!/bin/sh
+
+# Post-installation script for depth-estimation
+
+echo "Installing Monocular Depth Estimation Application..."
+
+mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
+
+chmod +x /usr/local/bin/depth-estimation
+chmod +x /etc/init.d/K92depth-estimation 2>/dev/null || true
+
+echo "Monocular Depth Estimation installed successfully!"
+echo ""
+echo "Usage: depth-estimation [options]"
+echo "       depth-estimation --help for more options"
+echo ""
+echo "Models should be placed in: /userdata/local/models/"
+echo "Default model: /userdata/local/models/fastdepth_224_bf16.cvimodel"
+echo "Model override (managed by the supervisor console):"
+echo "  /userdata/local/apps/depth-estimation.model"
+echo ""
+echo "Configuration file: /etc/depth-estimation.conf"
+echo ""
+echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:      recamera/depth-estimation/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+echo ""
+echo "Reported depth is RELATIVE (smaller = nearer). No absolute distance."
+
+# Register with the supervisor app gallery. The console scans
+# /usr/share/supervisor/apps/ (built-ins) and /userdata/local/apps/ (installed
+# apps); /usr/share/depth-estimation/ is neither, so the manifest and the
+# integration docs have to be copied across or the app never appears.
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/depth-estimation
+mkdir -p "$APPS_DIR"
+for f in depth-estimation.json depth-estimation.md depth-estimation.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    else
+        echo "WARNING: $SHARE_DIR/$f missing, not registered"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/depth-estimation.json"
+
+# Gallery apps must NOT start at boot — only the supervisor's app_restore
+# starts the single active application (K-prefix is skipped by SysVinit but
+# still invocable by path).
+rm -f /etc/init.d/S92depth-estimation
+
+exit 0

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Monocular depth estimation">
+  <defs>
+    <linearGradient id="depthRamp" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#1E40AF"/>
+      <stop offset="0.35" stop-color="#00ACC1"/>
+      <stop offset="0.6" stop-color="#43A047"/>
+      <stop offset="0.8" stop-color="#FB8C00"/>
+      <stop offset="1" stop-color="#E53935"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="#0F172A"/>
+  <rect x="10" y="10" width="44" height="44" rx="7" fill="url(#depthRamp)"/>
+  <path d="M16 46 L32 22 L48 46 Z" fill="#0F172A" opacity="0.55"/>
+  <circle cx="32" cy="34" r="7" fill="none" stroke="#F8FAFC" stroke-width="2.5"/>
+  <circle cx="32" cy="34" r="2.5" fill="#F8FAFC"/>
+</svg>

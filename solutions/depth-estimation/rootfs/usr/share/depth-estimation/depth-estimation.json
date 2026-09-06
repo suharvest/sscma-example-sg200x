@@ -1,0 +1,30 @@
+{
+  "id": "depth-estimation",
+  "name": "Monocular Depth Estimation",
+  "name_zh": "单目深度估计",
+  "scene": "Automation",
+  "scene_zh": "自动化",
+  "description": "Estimate relative scene depth in real time with a color depth preview and MQTT proximity metrics.",
+  "description_zh": "实时估计画面相对深度，通过彩色深度预览和 MQTT 近距离指标接入自动化。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92depth-estimation",
+  "image": "/apps/depth-estimation.svg",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/depth-estimation/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "privacy_blur": false,
+  "models": [],
+  "pipeline": [
+    {
+      "name": "FastDepth BF16",
+      "path": "/userdata/local/models/fastdepth_224_bf16.cvimodel",
+      "task": "depth-estimation"
+    }
+  ],
+  "version": "0.1.1",
+  "author": "Seeed Studio"
+}

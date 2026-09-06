@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+pretrained/
+calib_set/
+model_workspace/
+*.onnx
+*.cvimodel
+*.npz
+convert_log_*.txt
+val2017.zip
+.DS_Store
