@@ -291,6 +291,8 @@ static void process_frame() {
         return;
     }
 
+    const auto t_got_frame = std::chrono::steady_clock::now();
+
     const auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::system_clock::now().time_since_epoch())
                                   .count();
@@ -322,9 +324,13 @@ static void process_frame() {
         return;
     }
 
+    const auto t_infer_done = std::chrono::steady_clock::now();
+
     const depth::DepthStats stats = depth::computeStats(
         g_estimator->depth(), g_estimator->outputWidth(), g_estimator->outputHeight(),
         roi, src_w, src_h, g_config.near_threshold, g_config.near_ratio_threshold);
+
+    const auto t_stats_done = std::chrono::steady_clock::now();
 
     /* Preview on every inference frame: the whole point of it is to show what
      * the model is seeing right now. */
@@ -333,7 +339,26 @@ static void process_frame() {
                           g_estimator->outputHeight(), stats.p02, stats.p98);
     }
 
+    const auto t_overlay_done = std::chrono::steady_clock::now();
+
     const float inference_ms = g_estimator->lastInferenceMs();
+
+    /* -v profiling: where the per-frame budget actually goes. lastInferenceMs()
+     * covers preprocess+forward+readout, so the three sum to it; stats and
+     * overlay sit outside it and are what separates it from the frame period. */
+    if (g_config.verbose) {
+        const auto ms = [](std::chrono::steady_clock::time_point a,
+                           std::chrono::steady_clock::time_point b) {
+            return std::chrono::duration<float, std::milli>(b - a).count();
+        };
+        MA_LOGI(TAG,
+                "profile pre=%.1f fwd=%.1f read=%.1f | stats=%.1f overlay=%.1f "
+                "| infer=%.1f total=%.1f",
+                g_estimator->lastPreprocessMs(), g_estimator->lastForwardMs(),
+                g_estimator->lastReadoutMs(), ms(t_infer_done, t_stats_done),
+                ms(t_stats_done, t_overlay_done), inference_ms,
+                ms(t_got_frame, t_overlay_done));
+    }
 
     /* Debug console: no boxes -- there are no objects here -- and the depth
      * object as an extra top-level member. */

@@ -66,6 +66,12 @@ public:
     int outputWidth() const { return output_w_; }
     int outputHeight() const { return output_h_; }
     float lastInferenceMs() const { return last_inference_ms_; }
+    /* Breakdown of the same interval, for -v profiling: preprocess (crop +
+     * stretch + CHW + scale), the TPU forward pass, and copying the output
+     * tensor out. They sum to lastInferenceMs(). */
+    float lastPreprocessMs() const { return last_preprocess_ms_; }
+    float lastForwardMs() const { return last_forward_ms_; }
+    float lastReadoutMs() const { return last_readout_ms_; }
     bool initialized() const { return initialized_; }
 
 private:
@@ -81,6 +87,9 @@ private:
     int output_w_          = 0;
     int output_h_          = 0;
     float last_inference_ms_ = 0.0f;
+    float last_preprocess_ms_ = 0.0f;
+    float last_forward_ms_ = 0.0f;
+    float last_readout_ms_ = 0.0f;
     bool initialized_      = false;
 };
 

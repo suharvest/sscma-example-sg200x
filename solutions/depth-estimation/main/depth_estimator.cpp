@@ -283,21 +283,30 @@ bool DepthEstimator::run(const ma_img_t* frame, const Roi& roi) {
         return false;
     }
 
-    const auto t0 = std::chrono::steady_clock::now();
+    using clk = std::chrono::steady_clock;
+    const auto ms = [](clk::time_point a, clk::time_point b) {
+        return std::chrono::duration<float, std::milli>(b - a).count();
+    };
+
+    const auto t0 = clk::now();
     if (!preprocess(frame, roi)) return false;
+    const auto t1 = clk::now();
     if (engine_->run() != MA_OK) {
         MA_LOGE(TAG, "Forward pass failed");
         return false;
     }
+    const auto t2 = clk::now();
     /* Re-read the output descriptor: the runtime may hand back a different
      * buffer pointer after a forward pass. */
     output_ = engine_->getOutput(0);
     if (output_.data.data == nullptr) return false;
     if (!readOutput()) return false;
+    const auto t3 = clk::now();
 
-    const auto t1 = std::chrono::steady_clock::now();
-    last_inference_ms_ =
-        std::chrono::duration<float, std::milli>(t1 - t0).count();
+    last_preprocess_ms_ = ms(t0, t1);
+    last_forward_ms_    = ms(t1, t2);
+    last_readout_ms_    = ms(t2, t3);
+    last_inference_ms_  = ms(t0, t3);
     return true;
 }
 
