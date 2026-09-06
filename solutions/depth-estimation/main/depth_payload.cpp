@@ -17,6 +17,16 @@ namespace depth {
 static constexpr size_t kBins     = 2048;
 static constexpr size_t kZoneBins = 2048;
 
+/* Casting a NaN or out-of-range float to size_t is undefined behaviour, and a
+ * depth map is model output -- nothing guarantees every element is finite. Fold
+ * the clamp and the NaN case into one helper: NaN fails both comparisons and
+ * lands in bin 0 deterministically instead of indexing somewhere unmapped. */
+inline size_t bin_index(float scaled, size_t bins) {
+    if (scaled >= static_cast<float>(bins - 1)) return bins - 1;
+    if (scaled > 0.0f) return static_cast<size_t>(scaled);
+    return 0;
+}
+
 namespace {
 
 /* Percentile of a scratch buffer that may be reordered. q in [0,1]. */
@@ -93,6 +103,15 @@ DepthStats computeStats(const std::vector<float>& depth, int width, int height,
 
     const float bin_scale  = static_cast<float>(kBins - 1) / range;
     const float zbin_scale = static_cast<float>(kZoneBins - 1) / range;
+    /* A denormal range passes `range > 0` but makes the scales infinite, and
+     * every product below then becomes Inf or NaN. Treat it as flat. */
+    if (!std::isfinite(bin_scale) || !std::isfinite(zbin_scale)) {
+        st.p02 = st.p50 = st.p98 = st.min;
+        st.near_ratio   = 0.0f;
+        st.near_present = false;
+        for (int i = 0; i < 9; i++) st.zones[i] = 0.0f;
+        return st;
+    }
 
     /* Row-major walk so the zone index is derived from the loop counters
      * rather than a per-pixel divide. The cut points must be the same integer
@@ -107,17 +126,26 @@ DepthStats computeStats(const std::vector<float>& depth, int width, int height,
         const float* row = depth.data() + static_cast<size_t>(y) * width;
         for (int x = 0; x < width; x++) {
             const float d = row[x] - st.min;
-            hist[static_cast<size_t>(d * bin_scale)]++;
+            hist[bin_index(d * bin_scale, kBins)]++;
             const int gx = (x >= xcut2) ? 2 : (x >= xcut1 ? 1 : 0);
             uint16_t& c = zhist[static_cast<size_t>(gy * 3 + gx) * kZoneBins +
-                                static_cast<size_t>(d * zbin_scale)];
-            if (c != UINT16_MAX) c++;  // saturate; a cell never fills a bin
+                                bin_index(d * zbin_scale, kZoneBins)];
+            /* Saturating: a 3x3 cell of the 224x224 output holds ~5.6k pixels,
+             * far under the type's range. It would only matter for an output
+             * around 900x900 or larger, which no model here produces -- and
+             * saturation degrades a cell percentile rather than corrupting
+             * memory. */
+            if (c != UINT16_MAX) c++;
         }
     }
 
+    /* Bin b covers [b, b+1) * range/(bins-1); its centre is half a bin above
+     * that. The top bin's centre would land past max, so clamp -- a percentile
+     * must never report a value the frame does not contain. */
     const auto bin_value = [&](size_t bin, size_t bins) {
-        return st.min + (static_cast<float>(bin) + 0.5f) * range /
-                            static_cast<float>(bins - 1);
+        const float v = st.min + (static_cast<float>(bin) + 0.5f) * range /
+                                     static_cast<float>(bins - 1);
+        return (v > st.max) ? st.max : v;
     };
     /* Smallest bin whose cumulative count reaches q of the total. */
     const auto hist_percentile = [&](const uint32_t* h, size_t bins,
@@ -137,17 +165,20 @@ DepthStats computeStats(const std::vector<float>& depth, int width, int height,
 
     const float span = st.p98 - st.p02;
 
-    /* proximity(d) >= t  <=>  d <= p98 - t*span, so the near count is a
-     * prefix sum of the same histogram -- no second pass, no per-pixel divide. */
+    /* proximity(d) >= t  <=>  d <= p98 - t*span, so this needs no division --
+     * but it does need to be exact, and a histogram prefix sum is not: the bin
+     * straddling the cut is counted whole. On a frame whose depths cluster into
+     * a few bins (a flat wall, with a couple of outliers setting the range)
+     * that single bin can hold most of the image, and near_ratio then jumps to
+     * near 1 while the true value is near 0 -- flipping near_present with it.
+     * One compare-only pass is cheap; the expensive parts of the old code were
+     * the whole-map copy, twelve nth_element calls and a per-pixel divide, all
+     * of which stay gone. */
     size_t near_count = 0;
     if (span > 0.0f) {
         const float cut = st.p98 - near_threshold * span;
-        if (cut >= st.min) {
-            const float fb = (cut - st.min) * bin_scale;
-            const size_t last =
-                (fb >= static_cast<float>(kBins - 1)) ? kBins - 1
-                                                      : static_cast<size_t>(fb);
-            for (size_t b = 0; b <= last; b++) near_count += hist[b];
+        for (size_t i = 0; i < n; i++) {
+            if (depth[i] <= cut) near_count++;  // NaN compares false: not near
         }
     }
     st.near_ratio   = static_cast<float>(near_count) / static_cast<float>(n);

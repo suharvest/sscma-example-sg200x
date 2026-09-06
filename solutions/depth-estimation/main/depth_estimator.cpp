@@ -202,7 +202,8 @@ bool DepthEstimator::init(const std::string& model_path) {
 
 void DepthEstimator::buildXMap(const Roi& roi, int frame_width) {
     if (xmap_valid_ && xmap_roi_x_ == roi.x && xmap_roi_w_ == roi.w &&
-        xmap_frame_w_ == frame_width) {
+        xmap_frame_w_ == frame_width &&
+        static_cast<int>(xmap_x0_.size()) == input_w_) {
         return;  // geometry is fixed for the life of the stream
     }
     xmap_x0_.resize(input_w_);

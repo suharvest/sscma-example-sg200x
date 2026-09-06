@@ -119,9 +119,14 @@ sleep 2
 # app is streaming, both contend for VPSS, and the pipeline wedges — recoverable
 # only by rebooting. Verified: an app that ran 590 frames cleanly wedged at 153
 # once Node-RED came back. Stopping the init script alone is not enough.
-if run_ssh 'ps w | grep -q "[n]ode-red"'; then
-    err "Node-RED is still running (nr_memguard.sh restarts it).
-     It will take the camera from this app and wedge VPSS.
+# Ask the device what mode it is in rather than grepping a process list: a
+# pattern like "node-red" also matches the ssh command carrying it, so the grep
+# reports a hit even when nothing is running.
+if [ "$(run_sudo 'cat /userdata/local/apps/mode 2>/dev/null' | tr -d '\r\n')" = "nodered" ]; then
+    err "The device is in Node-RED mode.
+     Gallery apps are stopped and disabled in that mode, and Node-RED is watched
+     by nr_memguard.sh, which restarts it seconds after the init script stops
+     it. A revived Node-RED takes the camera from this app and wedges VPSS.
      Switch the device to Console mode first: open the console, click
      \"Switch back to Console mode\", then enable the app from its card.
      That path goes through appMgr/switch, which stops Node-RED properly,
@@ -182,7 +187,12 @@ done
 exit 1'"; then
     ok "VPSS Grp(0) released"
 else
-    warn "VPSS Grp(0) still held after 5s — starting anyway (the driver may be wedged)"
+    err "VPSS Grp(0) still held after 5s.
+     Something still owns the camera, or the driver is already wedged. Starting
+     on top of that is what produces 'Grp(0) is occupied' and then an endless
+     'get chn frame fail' — and that state survives restarting the app, so it
+     costs a reboot to clear. Check for a lingering app process, or reboot the
+     camera, then retry."
 fi
 sleep 1
 
