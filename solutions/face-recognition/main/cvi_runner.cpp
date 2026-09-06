@@ -292,6 +292,24 @@ void CviRunner::packInput(const uint8_t* rgb_hwc) {
         }
     };
 
+    // Fast path for the common detector layout: 3-channel HWC uint8 in,
+    // CHW int8 "pixel-128" out (quantized-input cvimodel). px ^ 0x80 is
+    // px-128 in two's complement, so no clamp or per-element dispatch.
+    if (C == 3 && input_is_chw_ && raw_passthrough_ && input_type_ == MA_TENSOR_TYPE_S8) {
+        int8_t* d0 = buf_s8_.data();
+        int8_t* d1 = d0 + plane;
+        int8_t* d2 = d1 + plane;
+        const int c0 = bgr_ ? 2 : 0;
+        const int c2 = bgr_ ? 0 : 2;
+        const uint8_t* p = rgb_hwc;
+        for (size_t i = 0; i < plane; ++i, p += 3) {
+            d0[i] = static_cast<int8_t>(p[c0] ^ 0x80u);
+            d1[i] = static_cast<int8_t>(p[1] ^ 0x80u);
+            d2[i] = static_cast<int8_t>(p[c2] ^ 0x80u);
+        }
+        return;
+    }
+
     for (int y = 0; y < H; ++y) {
         const uint8_t* row = rgb_hwc + static_cast<size_t>(y) * W * 3u;
         for (int x = 0; x < W; ++x) {
