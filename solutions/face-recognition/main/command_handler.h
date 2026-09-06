@@ -9,7 +9,7 @@
 
 namespace face_recognition {
 
-enum class CommandOp { Enroll, Remove, List, Reload };
+enum class CommandOp { Enroll, Remove, List, Reload, LivenessCapture };
 enum class EnrollSource { Camera, Image };
 
 struct Command {
@@ -19,6 +19,11 @@ struct Command {
     std::string name;
     int frames = 1;                       // camera source: how many to average
     std::vector<uint8_t> encoded_image;   // image source: raw JPEG/PNG bytes
+
+    // liveness_capture: label is real|print|screen, validated at parse time so a
+    // mislabelled session never reaches the JSONL a threshold fitter trusts.
+    std::string capture_label;
+    int capture_seconds = 0;
 };
 
 // Bounded MQTT command queue.

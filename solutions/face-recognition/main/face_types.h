@@ -26,6 +26,31 @@ struct BBox {
 using Landmarks5 = std::array<Point2f, 5>;
 using Embedding512 = std::array<float, 512>;
 
+// Liveness v2 verdict for one track at one instant.
+//
+// It lives here rather than in liveness_temporal.h so RecognitionResult can
+// carry it without result_payload.cpp pulling in the temporal machinery, and so
+// the host-only test target needs exactly one dependency-free header.
+//
+// `decision` is "pending" | "live" | "spoof". Every numeric field is nullable: a
+// verdict exists before motion has a usable window, and the texture EMA does not
+// exist before the first successful MiniFAS inference.
+struct LivenessResult {
+    std::string decision = "pending";
+    bool has_score = false;
+    float score = 0.f;
+    bool has_texture = false;
+    float texture = 0.f;
+    bool has_motion = false;
+    float motion = 0.f;
+    bool blink = false;
+    std::string reason = "insufficient_samples";
+
+    bool isLive() const { return decision == "live"; }
+    bool isSpoof() const { return decision == "spoof"; }
+    bool isPending() const { return decision == "pending"; }
+};
+
 struct FaceDetection {
     BBox bbox;
     Landmarks5 landmarks{};
@@ -45,6 +70,11 @@ struct RecognitionResult {
     bool stable = false;
     bool gated = false;
     std::string reason;   // "small", "align", "embed", "spoof", "" when fine
+
+    // v2: nested verdict. `has_liveness_v2` is false when the v2 stage did not
+    // run for this face, and the serializer then emits `"liveness": null`.
+    bool has_liveness_v2 = false;
+    LivenessResult liveness;
 };
 
 }  // namespace face_recognition

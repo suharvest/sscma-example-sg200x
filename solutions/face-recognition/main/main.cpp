@@ -29,8 +29,11 @@
 #include "face_align.h"
 #include "face_tracker.h"
 #include "face_types.h"
+#include "facemesh_liveness.h"
 #include "gallery.h"
+#include "liveness_capture_writer.h"
 #include "liveness_runner.h"
+#include "liveness_temporal.h"
 #include "privacy_blur.h"
 #include "result_payload.h"
 #include "scrfd_runner.h"
@@ -51,8 +54,15 @@ static struct {
     std::string detect_model = "/userdata/local/models/scrfd_500m_int8.cvimodel";
     std::string embed_model = "/userdata/local/models/arcface_mbf_bf16.cvimodel";
     std::string liveness_model = "/userdata/local/models/liveness_minifasnet_bf16.cvimodel";
+    std::string liveness_v1se_model =
+        "/userdata/local/models/liveness_minifasnet_v1se_bf16.cvimodel";
+    std::string facemesh_model = "/userdata/local/models/face_landmark_cv181x_bf16.cvimodel";
     std::string gallery_path =
         "/userdata/local/face-gallery/cvi_scrfd500m_mbf512_bf16.json";
+    // /usr/local/bin is read-only on this device, so the capture file lives with
+    // the gallery -- the one directory the package guarantees is writable.
+    std::string liveness_capture_path =
+        "/userdata/local/face-gallery/liveness_capture.jsonl";
 
     float det_threshold = 0.5f;
     float nms_threshold = 0.4f;
@@ -86,10 +96,15 @@ static struct {
     bool verbose = false;
 } g_config;
 
+// Liveness v2 tuning. `liveness_threshold` above stays as the single-shot legacy
+// knob; everything temporal lives here.
+static LivenessConfig g_lcfg;
+
 static std::atomic<bool> g_running(true);
 static ScrfdRunner* g_detector = nullptr;
 static ArcFaceRunner* g_embedder = nullptr;
 static LivenessRunner* g_liveness = nullptr;
+static FacemeshLiveness* g_facemesh = nullptr;
 static Gallery* g_gallery = nullptr;
 static FaceTracker* g_tracker = nullptr;
 static CommandQueue* g_commands = nullptr;
@@ -98,6 +113,24 @@ static PrivacyBlur* g_blur = nullptr;
 static Camera* g_camera = nullptr;
 static OnvifMetaGate g_onvif_meta;
 static uint32_t g_frame_id = 0;
+
+// Monotonic milliseconds. Every temporal liveness decision and the capture
+// deadline use this rather than the wall clock, so an NTP step mid-session
+// cannot fabricate a two-second timeout or truncate a capture.
+static uint64_t steady_ms() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+// Wall-clock seconds, for the `ts` field of a capture row -- that one is meant
+// to be correlated with external recordings, so it must not be monotonic.
+static double wall_seconds() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+               .count() / 1000.0;
+}
 
 // Per-track recognition state. Keyed on the tracker identity so a face is
 // embedded on appearance and then only every embed_interval frames -- ArcFace
@@ -109,8 +142,15 @@ struct TrackState {
     std::string candidate_name;
     int consecutive_matches = 0;
     RecognitionResult cached;
+    // v2: temporal liveness evidence, retired with the track.
+    LivenessState liveness;
 };
 static std::map<int, TrackState> g_track_state;
+
+// Calibration capture. Armed by an MQTT command, drained and stopped on the main
+// thread only, so the Mosquitto thread never touches the FILE*.
+static LivenessCaptureWriter g_capture;
+static std::string g_capture_request_id;
 
 // A camera-source enrollment consumes frames from the loop, so it lives across
 // iterations rather than blocking inside the command drain.
@@ -142,8 +182,32 @@ static void print_usage(const char* prog) {
     printf("      --match FLOAT         Cosine match threshold (default: %.2f)\n", g_config.match_threshold);
     printf("      --min-face-px N       Gate faces below this short side (default: %.0f)\n", g_config.min_face_px);
     printf("      --embed-interval N    Re-embed a track every N frames (default: %d)\n", g_config.embed_interval);
+    printf("      --liveness-v1se-model PATH  MiniFASNet-V1SE 4.0x head (default: %s)\n", g_config.liveness_v1se_model.c_str());
+    printf("      --facemesh-model PATH   FaceMesh landmarks for blink (default: %s)\n", g_config.facemesh_model.c_str());
     printf("      --liveness            Enable the anti-spoof stage\n");
     printf("      --liveness-threshold F  P(real) above which a face is live (default: %.2f)\n", g_config.liveness_threshold);
+    printf("  Liveness v2 (temporal fusion):\n");
+    printf("      --liveness-texture-ema-alpha F  (default: %.2f)\n", g_lcfg.texture_ema_alpha);
+    printf("      --liveness-min-samples N        Texture samples before a verdict (default: %d)\n", g_lcfg.min_samples);
+    printf("      --liveness-motion-window-sec F  (default: %.2f)\n", g_lcfg.motion_window_sec);
+    printf("      --liveness-timeout-sec F        (default: %.2f)\n", g_lcfg.timeout_sec);
+    printf("      --liveness-motion-noise-floor F (default: %.4f)\n", g_lcfg.motion_noise_floor);
+    printf("      --liveness-motion-high F        (default: %.4f)\n", g_lcfg.motion_high);
+    printf("      --liveness-correlation-low F    (default: %.2f)\n", g_lcfg.correlation_low);
+    printf("      --liveness-correlation-high F   (default: %.2f)\n", g_lcfg.correlation_high);
+    printf("      --liveness-facemesh-interval N  0 disables blink (default: %d)\n", g_lcfg.facemesh_interval);
+    printf("      --liveness-ear-threshold F      (default: %.2f)\n", g_lcfg.ear_threshold);
+    printf("      --liveness-blink-min-samples N  (default: %d)\n", g_lcfg.blink_min_samples);
+    printf("      --liveness-blink-max-samples N  (default: %d)\n", g_lcfg.blink_max_samples);
+    printf("      --liveness-w-texture F          (default: %.2f)\n", g_lcfg.w_texture);
+    printf("      --liveness-w-motion F           (default: %.2f)\n", g_lcfg.w_motion);
+    printf("      --liveness-w-depth F            (default: %.2f)\n", g_lcfg.w_depth);
+    printf("      --liveness-blink-bonus F        (default: %.2f)\n", g_lcfg.blink_bonus);
+    printf("      --liveness-t-live F             (default: %.2f)\n", g_lcfg.t_live);
+    printf("      --liveness-t-spoof F            (default: %.2f)\n", g_lcfg.t_spoof);
+    printf("      --liveness-depth-enabled N      Pro-only stub (default: 0)\n");
+    printf("      --liveness-capture-max-sec N    (default: %d)\n", g_lcfg.capture_max_sec);
+    printf("      --liveness-capture-path PATH    (default: %s)\n", g_config.liveness_capture_path.c_str());
     printf("  -m, --mqtt-host HOST      MQTT broker host (default: %s)\n", g_config.mqtt_host.c_str());
     printf("  -p, --mqtt-port PORT      MQTT broker port (default: %d)\n", g_config.mqtt_port);
     printf("      --no-rtsp             Disable RTSP streaming\n");
@@ -179,6 +243,29 @@ static bool parse_args(int argc, char** argv) {
         {"liveness", no_argument, 0, 11},
         {"liveness-threshold", required_argument, 0, 12},
         {"track-max-lost", required_argument, 0, 13},
+        {"liveness-v1se-model", required_argument, 0, 20},
+        {"facemesh-model", required_argument, 0, 21},
+        {"liveness-texture-ema-alpha", required_argument, 0, 22},
+        {"liveness-min-samples", required_argument, 0, 23},
+        {"liveness-motion-window-sec", required_argument, 0, 24},
+        {"liveness-timeout-sec", required_argument, 0, 25},
+        {"liveness-motion-noise-floor", required_argument, 0, 26},
+        {"liveness-motion-high", required_argument, 0, 27},
+        {"liveness-correlation-low", required_argument, 0, 28},
+        {"liveness-correlation-high", required_argument, 0, 29},
+        {"liveness-facemesh-interval", required_argument, 0, 30},
+        {"liveness-ear-threshold", required_argument, 0, 31},
+        {"liveness-blink-min-samples", required_argument, 0, 32},
+        {"liveness-blink-max-samples", required_argument, 0, 33},
+        {"liveness-w-texture", required_argument, 0, 34},
+        {"liveness-w-motion", required_argument, 0, 35},
+        {"liveness-w-depth", required_argument, 0, 36},
+        {"liveness-blink-bonus", required_argument, 0, 37},
+        {"liveness-t-live", required_argument, 0, 38},
+        {"liveness-t-spoof", required_argument, 0, 39},
+        {"liveness-depth-enabled", required_argument, 0, 40},
+        {"liveness-capture-max-sec", required_argument, 0, 41},
+        {"liveness-capture-path", required_argument, 0, 42},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -206,6 +293,29 @@ static bool parse_args(int argc, char** argv) {
             case 11: g_config.liveness_enabled = true; break;
             case 12: g_config.liveness_threshold = std::stof(optarg); break;
             case 13: g_config.track_max_lost = std::stoi(optarg); break;
+            case 20: g_config.liveness_v1se_model = optarg; break;
+            case 21: g_config.facemesh_model = optarg; break;
+            case 22: g_lcfg.texture_ema_alpha = std::stof(optarg); break;
+            case 23: g_lcfg.min_samples = std::max(1, std::stoi(optarg)); break;
+            case 24: g_lcfg.motion_window_sec = std::stof(optarg); break;
+            case 25: g_lcfg.timeout_sec = std::stof(optarg); break;
+            case 26: g_lcfg.motion_noise_floor = std::stof(optarg); break;
+            case 27: g_lcfg.motion_high = std::stof(optarg); break;
+            case 28: g_lcfg.correlation_low = std::stof(optarg); break;
+            case 29: g_lcfg.correlation_high = std::stof(optarg); break;
+            case 30: g_lcfg.facemesh_interval = std::max(0, std::stoi(optarg)); break;
+            case 31: g_lcfg.ear_threshold = std::stof(optarg); break;
+            case 32: g_lcfg.blink_min_samples = std::max(1, std::stoi(optarg)); break;
+            case 33: g_lcfg.blink_max_samples = std::max(1, std::stoi(optarg)); break;
+            case 34: g_lcfg.w_texture = std::stof(optarg); break;
+            case 35: g_lcfg.w_motion = std::stof(optarg); break;
+            case 36: g_lcfg.w_depth = std::stof(optarg); break;
+            case 37: g_lcfg.blink_bonus = std::stof(optarg); break;
+            case 38: g_lcfg.t_live = std::stof(optarg); break;
+            case 39: g_lcfg.t_spoof = std::stof(optarg); break;
+            case 40: g_lcfg.depth_enabled = std::stoi(optarg) != 0; break;
+            case 41: g_lcfg.capture_max_sec = std::max(1, std::stoi(optarg)); break;
+            case 42: g_config.liveness_capture_path = optarg; break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
@@ -214,9 +324,55 @@ static bool parse_args(int argc, char** argv) {
     return true;
 }
 
+// Model ION is the binding constraint on this device: 180 MB of system RAM and
+// a carveout pool that face-analysis measured OOMing around 47 MB of aggregate
+// model allocation. Disk size does not predict it, so the only honest way to
+// know whether V2 + V1SE + FaceMesh fit under the 40 MB operational ceiling is
+// to print the numbers on either side of every load and subtract.
+//
+// MemFree/MemAvailable come from /proc/meminfo (the same source `free -m`
+// reads). The ION line is best-effort: the CVI carveout exporter is not at a
+// stable path across kernels, so a miss prints "n/a" rather than failing.
+static void log_mem(const char* stage) {
+    long free_kb = -1, avail_kb = -1;
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            long v = 0;
+            if (sscanf(line, "MemFree: %ld kB", &v) == 1) free_kb = v;
+            else if (sscanf(line, "MemAvailable: %ld kB", &v) == 1) avail_kb = v;
+        }
+        fclose(f);
+    }
+    static const char* kIonPaths[] = {
+        "/proc/cvitek/ion",
+        "/sys/kernel/debug/ion/cvi_carveout_heap",
+        "/proc/ion/cvi_carveout_heap",
+    };
+    std::string ion = "n/a";
+    for (const char* p : kIonPaths) {
+        FILE* g = fopen(p, "r");
+        if (!g) continue;
+        char line[512];
+        while (fgets(line, sizeof(line), g)) {
+            if (strstr(line, "Mem") || strstr(line, "mem") || strstr(line, "total")) {
+                std::string s(line);
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+                if (!s.empty()) ion = s;   // keep the last summary line
+            }
+        }
+        fclose(g);
+        break;
+    }
+    MA_LOGI(TAG, "MEM[%s] free=%ldMB available=%ldMB ion=%s", stage,
+            free_kb >= 0 ? free_kb / 1024 : -1, avail_kb >= 0 ? avail_kb / 1024 : -1,
+            ion.c_str());
+}
+
 static bool init_models() {
     std::string err;
 
+    log_mem("before-scrfd");
     g_detector = new ScrfdRunner();
     if (!g_detector->init(g_config.detect_model, &err)) {
         MA_LOGE(TAG, "Face detector: %s", err.c_str());
@@ -226,6 +382,7 @@ static bool init_models() {
     g_detector->setNmsThreshold(g_config.nms_threshold);
     MA_LOGI(TAG, "SCRFD input  %s", g_detector->inputDescription().c_str());
     MA_LOGI(TAG, "SCRFD heads  %s", g_detector->outputDescription().c_str());
+    log_mem("after-scrfd");
 
     g_embedder = new ArcFaceRunner();
     if (!g_embedder->init(g_config.embed_model, &err)) {
@@ -233,18 +390,56 @@ static bool init_models() {
         return false;
     }
     MA_LOGI(TAG, "ArcFace input %s", g_embedder->inputDescription().c_str());
+    log_mem("after-arcface");
 
     // Liveness last, and never fatal: the model ION pool is the binding
     // constraint on this device, and recognition is still useful without an
     // anti-spoof stage while the reverse is not true.
+    //
+    // Three separate degradations are possible and all of them are survivable:
+    //   V1SE missing   -> single-head texture ensemble.
+    //   FaceMesh fails -> no blink evidence; texture + motion still fuse.
+    //   V2 fails       -> the whole stage is disabled.
     g_liveness = new LivenessRunner();
+    g_facemesh = new FacemeshLiveness();
+    g_lcfg.enabled = g_config.liveness_enabled;
     if (g_config.liveness_enabled) {
-        if (!g_liveness->initOptional(g_config.liveness_model, &err)) {
+        log_mem("before-liveness");
+        if (!g_liveness->initOptional(g_config.liveness_model, g_config.liveness_v1se_model,
+                                      &err)) {
             MA_LOGW(TAG, "Liveness disabled: %s", err.c_str());
             g_config.liveness_enabled = false;
+            g_lcfg.enabled = false;
         } else {
-            MA_LOGI(TAG, "Liveness input %s", g_liveness->inputDescription().c_str());
+            if (!err.empty()) MA_LOGW(TAG, "Liveness ensemble: %s", err.c_str());
+            MA_LOGI(TAG, "Liveness input %s (ensemble=%d)",
+                    g_liveness->inputDescription().c_str(),
+                    static_cast<int>(g_liveness->ensembleAvailable()));
         }
+        log_mem("after-liveness");
+
+        if (g_config.liveness_enabled && g_lcfg.facemesh_interval > 0) {
+            log_mem("before-facemesh");
+            std::string fm_err;
+            if (!g_facemesh->initOptional(g_config.facemesh_model, &fm_err)) {
+                MA_LOGW(TAG, "FaceMesh blink evidence disabled: %s", fm_err.c_str());
+                g_lcfg.facemesh_interval = 0;
+            } else {
+                MA_LOGI(TAG, "FaceMesh input %s (every %d frames)",
+                        g_facemesh->inputDescription().c_str(), g_lcfg.facemesh_interval);
+            }
+            log_mem("after-facemesh");
+        }
+        MA_LOGI(TAG,
+                "Liveness v2: min_samples=%d ema=%.2f window=%.2fs timeout=%.2fs "
+                "floor=%.4f high=%.4f corr=[%.2f,%.2f] ear=%.2f blink=[%d,%d] "
+                "w=[t %.2f m %.2f d %.2f] bonus=%.2f T=[live %.2f spoof %.2f]",
+                g_lcfg.min_samples, g_lcfg.texture_ema_alpha, g_lcfg.motion_window_sec,
+                g_lcfg.timeout_sec, g_lcfg.motion_noise_floor, g_lcfg.motion_high,
+                g_lcfg.correlation_low, g_lcfg.correlation_high, g_lcfg.ear_threshold,
+                g_lcfg.blink_min_samples, g_lcfg.blink_max_samples, g_lcfg.w_texture,
+                g_lcfg.w_motion, g_lcfg.w_depth, g_lcfg.blink_bonus, g_lcfg.t_live,
+                g_lcfg.t_spoof);
     } else {
         MA_LOGI(TAG, "Liveness stage disabled by configuration");
     }
@@ -400,9 +595,11 @@ static void cleanup() {
         delete g_mqtt;
         g_mqtt = nullptr;
     }
+    g_capture.stop();
     delete g_commands;   g_commands = nullptr;
     delete g_tracker;    g_tracker = nullptr;
     delete g_gallery;    g_gallery = nullptr;
+    delete g_facemesh;   g_facemesh = nullptr;
     delete g_liveness;   g_liveness = nullptr;
     delete g_embedder;   g_embedder = nullptr;
     delete g_detector;   g_detector = nullptr;
@@ -544,8 +741,50 @@ static void drain_commands() {
                         cmd.name.c_str(), cmd.frames);
                 break;
             }
+            case CommandOp::LivenessCapture: {
+                if (!g_config.liveness_enabled || !g_liveness->available()) {
+                    publish_ack(cmd.request_id, "liveness_capture", false,
+                                "liveness stage is disabled; nothing to capture");
+                    break;
+                }
+                const uint64_t now_ms = steady_ms();
+                if (!g_capture.start(g_config.liveness_capture_path, cmd.capture_label,
+                                     cmd.capture_seconds, g_lcfg.capture_max_sec, now_ms,
+                                     &err)) {
+                    publish_ack(cmd.request_id, "liveness_capture", false, err);
+                    break;
+                }
+                g_capture_request_id = cmd.request_id;
+                AckData data;
+                data.addString("state", "started");
+                data.addString("label", g_capture.label());
+                data.addString("path", g_capture.path());
+                data.addUInt("seconds", static_cast<uint64_t>(g_capture.seconds()));
+                publish_ack(cmd.request_id, "liveness_capture", true, "", data);
+                MA_LOGI(TAG, "Liveness capture armed: label=%s %ds -> %s",
+                        g_capture.label().c_str(), g_capture.seconds(),
+                        g_capture.path().c_str());
+                break;
+            }
         }
     }
+}
+
+// Publishes the closing acknowledgement for a capture that has run out its
+// deadline, then releases the file.
+static void finish_capture_if_expired(uint64_t now_ms) {
+    if (!g_capture.active() || !g_capture.expired(now_ms)) return;
+    AckData data;
+    data.addString("state", "stopped");
+    data.addString("label", g_capture.label());
+    data.addString("path", g_capture.path());
+    data.addUInt("rows", g_capture.rows());
+    data.addUInt("seconds", static_cast<uint64_t>(g_capture.seconds()));
+    MA_LOGI(TAG, "Liveness capture finished: %llu row(s) -> %s",
+            static_cast<unsigned long long>(g_capture.rows()), g_capture.path().c_str());
+    g_capture.stop();
+    publish_ack(g_capture_request_id, "liveness_capture", true, "", data);
+    g_capture_request_id.clear();
 }
 
 // Feeds one frame to an armed camera enrollment. `dets` must be this frame's
@@ -567,9 +806,12 @@ static void step_camera_enroll(const uint8_t* rgb, int w, int h,
             g_embedder->infer(chip.data(), emb, &err)) {
             bool live = true;
             if (g_config.liveness_enabled && g_liveness->available()) {
-                float p = 0.f;
-                if (g_liveness->inferRgbFrame(rgb, w, h, eligible[0]->bbox, p, &err)) {
-                    live = p >= g_config.liveness_threshold;
+                // Enrollment is a single-shot decision on one frame, so it uses
+                // the ensemble mean against the legacy threshold rather than the
+                // temporal fusion, which needs a track that persists.
+                TextureScores tex;
+                if (g_liveness->inferRgbFrame(rgb, w, h, eligible[0]->bbox, tex, &err)) {
+                    live = tex.mean >= g_config.liveness_threshold;
                 }
             }
             if (live) g_pending_enroll.collected.push_back(emb);
@@ -630,11 +872,121 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
                                       boxes, &labels);
 }
 
+// Applies a v2 verdict to a published row.
+//
+// Identity leakage rule (spec pitfall 3): a name is actionable only once the
+// track is `live`. While `pending` the name is withheld -- not because the match
+// is wrong, but because a consumer that acts on it has skipped the anti-spoof
+// stage entirely. On `spoof` the name is withheld AND the accumulated identity
+// evidence on the track is discarded.
+static void apply_liveness(RecognitionResult& r, TrackState& st, const LivenessResult& lr) {
+    r.has_liveness_v2 = true;
+    r.liveness = lr;
+    // Legacy contract: null while pending, so an old consumer can still tell
+    // "not checked" from "checked and failed".
+    r.has_liveness = !lr.isPending();
+    r.live = lr.isLive();
+    r.liveness_score = lr.has_texture ? lr.texture : 0.f;
+
+    if (lr.isSpoof()) {
+        r.name.clear();
+        r.stable = false;
+        r.reason = "spoof";
+        st.candidate_name.clear();
+        st.consecutive_matches = 0;
+        st.cached.name.clear();
+        st.cached.stable = false;
+    } else if (lr.isPending()) {
+        r.name.clear();
+        r.stable = false;
+        if (r.reason.empty()) r.reason = "liveness_pending";
+    }
+}
+
+// Runs every liveness sampler that is due for this face and returns the fused
+// verdict. Called BEFORE the embedding-due early return, because motion needs a
+// sample on every frame the face is visible and FaceMesh runs on its own
+// cadence -- the pre-v2 code only ever reached liveness on ArcFace frames.
+static bool sample_liveness(const uint8_t* rgb, int w, int h, const FaceDetection& d,
+                            TrackState& st, uint64_t now_ms, bool texture_due,
+                            LivenessResult& out) {
+    if (!g_config.liveness_enabled || !g_liveness || !g_liveness->available()) return false;
+
+    LivenessState& ls = st.liveness;
+    if (!ls.started) {
+        ls.started = true;
+        ls.first_seen_ms = now_ms;
+    }
+
+    updateMotion(ls, now_ms, d.landmarks, d.bbox.shortSide(), g_lcfg);
+
+    bool have_ear = false;
+    float ear = 0.f;
+    if (g_facemesh && g_facemesh->available() && g_lcfg.facemesh_interval > 0 &&
+        (g_frame_id % static_cast<uint32_t>(g_lcfg.facemesh_interval)) == 0) {
+        std::string fm_err;
+        if (g_facemesh->infer(rgb, w, h, d.bbox, ear, &fm_err)) {
+            have_ear = true;
+        } else if (g_config.verbose) {
+            MA_LOGW(TAG, "facemesh failed: %s", fm_err.c_str());
+        }
+    }
+    updateBlink(ls, have_ear, ear, g_lcfg);
+
+    TextureScores tex;
+    bool have_tex = false;
+    if (texture_due) {
+        std::string tex_err;
+        if (g_liveness->inferRgbFrame(rgb, w, h, d.bbox, tex, &tex_err)) {
+            have_tex = true;
+            ls.last_v2 = tex.v2;
+            ls.last_v1se = tex.v1se;
+            ls.last_v1se_valid = tex.has_v1se;
+            updateTexture(ls, tex.mean, g_lcfg);
+        } else if (g_config.verbose) {
+            MA_LOGW(TAG, "liveness failed: %s", tex_err.c_str());
+        }
+    }
+
+    out = fuseLiveness(ls, now_ms, g_lcfg);
+
+    // One capture row per eligible face per captured frame, written after every
+    // available feature has been updated. Features only, never pixels.
+    if (g_capture.active()) {
+        CaptureRow row;
+        row.has_v2 = have_tex;
+        row.p_tex_v2 = tex.v2;
+        row.has_v1se = have_tex && tex.has_v1se;
+        row.p_tex_v1se = tex.v1se;
+        row.has_motion = ls.motion.valid;
+        row.motion_residual = ls.motion.residual;
+        row.correlation = ls.motion.correlation;
+        row.has_ear = have_ear;
+        row.ear = ear;
+        row.blink = ls.blink_this_frame;
+        row.face_px_size = d.bbox.shortSide();
+        row.track_id = d.track_id;
+        row.ts = wall_seconds();
+        std::string cap_err;
+        if (!g_capture.append(row, &cap_err)) {
+            MA_LOGW(TAG, "capture append failed: %s", cap_err.c_str());
+        }
+    }
+    return true;
+}
+
+// Wall time spent inside sample_liveness() for the frame currently being
+// processed, so the cost of the v2 stage is visible in the per-frame log rather
+// than hidden inside "recognize".
+static long long g_liveness_ms = 0;
+
 static void recognize(const uint8_t* rgb, int w, int h,
                       const std::vector<FaceDetection>& dets,
                       std::vector<RecognitionResult>& out) {
     out.clear();
     out.reserve(dets.size());
+    const uint64_t now_ms = steady_ms();
+    g_liveness_ms = 0;
 
     for (const auto& d : dets) {
         TrackState& st = g_track_state[d.track_id];
@@ -654,6 +1006,7 @@ static void recognize(const uint8_t* rgb, int w, int h,
             r.score = 0.f;
             r.stable = false;
             r.has_liveness = false;
+            r.has_liveness_v2 = false;
             st.cached = r;
             st.candidate_name.clear();
             st.consecutive_matches = 0;
@@ -664,7 +1017,23 @@ static void recognize(const uint8_t* rgb, int w, int h,
 
         const bool due = !st.embedded ||
                          (g_frame_id - st.last_embed_frame) >= static_cast<uint32_t>(g_config.embed_interval);
+
+        // Liveness sampling happens for EVERY eligible face on EVERY frame, and
+        // deliberately before the "not due for a new embedding" early return
+        // below: motion needs a per-frame keypoint sample, FaceMesh runs on its
+        // own interval, and neither has anything to do with the ArcFace cadence.
+        // Texture follows embed_interval to stay affordable, except during a
+        // calibration capture, which forces both heads every frame.
+        LivenessResult lr;
+        const auto lv_start = std::chrono::high_resolution_clock::now();
+        const bool has_lr =
+            sample_liveness(rgb, w, h, d, st, now_ms, due || g_capture.active(), lr);
+        g_liveness_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::high_resolution_clock::now() - lv_start)
+                             .count();
+
         if (!due) {
+            if (has_lr) apply_liveness(r, st, lr);
             out.push_back(r);
             continue;
         }
@@ -682,6 +1051,7 @@ static void recognize(const uint8_t* rgb, int w, int h,
             st.candidate_name.clear();
             st.consecutive_matches = 0;
             st.cached = r;
+            if (has_lr) apply_liveness(r, st, lr);
             out.push_back(r);
             continue;
         }
@@ -695,37 +1065,18 @@ static void recognize(const uint8_t* rgb, int w, int h,
             st.candidate_name.clear();
             st.consecutive_matches = 0;
             st.cached = r;
+            if (has_lr) apply_liveness(r, st, lr);
             out.push_back(r);
             if (g_config.verbose) MA_LOGW(TAG, "embed failed: %s", err.c_str());
             continue;
         }
 
-        if (g_config.liveness_enabled && g_liveness->available()) {
-            float p = 0.f;
-            if (g_liveness->inferRgbFrame(rgb, w, h, d.bbox, p, &err)) {
-                r.has_liveness = true;
-                r.liveness_score = p;
-                r.live = p >= g_config.liveness_threshold;
-            } else {
-                r.has_liveness = false;
-                if (g_config.verbose) MA_LOGW(TAG, "liveness failed: %s", err.c_str());
-            }
-        } else {
-            r.has_liveness = false;
-        }
-
+        // Liveness already ran above, on every frame, ahead of the embedding
+        // cadence. Nothing to do here but match.
         const GalleryMatch m = g_gallery->match(emb);
         r.score = m.score;
 
-        if (r.has_liveness && !r.live) {
-            // A spoof is not an identity. The score is still reported so the
-            // near-match is visible in the log.
-            r.name.clear();
-            r.reason = "spoof";
-            r.stable = false;
-            st.candidate_name.clear();
-            st.consecutive_matches = 0;
-        } else if (m.matched) {
+        if (m.matched) {
             r.name = m.name;
             if (st.candidate_name == m.name) {
                 st.consecutive_matches++;
@@ -743,7 +1094,12 @@ static void recognize(const uint8_t* rgb, int w, int h,
             st.consecutive_matches = 0;
         }
 
+        // The identity is cached BEFORE the liveness gate, so a track that is
+        // still `pending` keeps accumulating stability and publishes the name
+        // the instant the verdict turns live. apply_liveness() wipes both the
+        // published row and this cache when the verdict is `spoof`.
         st.cached = r;
+        if (has_lr) apply_liveness(r, st, lr);
         out.push_back(r);
     }
 }
@@ -860,15 +1216,30 @@ static void process_frame() {
     }
 
     if (g_config.verbose || !faces.empty()) {
-        MA_LOGI(TAG, "Frame %u: %zu faces, detect=%lldms, recognize=%lldms, total=%lldms",
+        MA_LOGI(TAG,
+                "Frame %u: %zu faces, detect=%lldms, recognize=%lldms, liveness=%lldms, "
+                "total=%lldms",
                 g_frame_id, faces.size(), static_cast<long long>(detect_time),
-                static_cast<long long>(recog_time), static_cast<long long>(total_time));
+                static_cast<long long>(recog_time), g_liveness_ms,
+                static_cast<long long>(total_time));
         for (const auto& f : faces) {
             MA_LOGI(TAG, "  Face[%d]: name=%s score=%.3f det=%.2f live=%s stable=%d gated=%d%s%s",
                     f.track_id, f.name.empty() ? "-" : f.name.c_str(), f.score, f.det_score,
                     f.has_liveness ? (f.live ? "yes" : "no") : "n/a",
                     static_cast<int>(f.stable), static_cast<int>(f.gated),
                     f.reason.empty() ? "" : " reason=", f.reason.c_str());
+            if (f.has_liveness_v2) {
+                MA_LOGI(TAG,
+                        "    liveness: decision=%s reason=%s score=%s texture=%s motion=%s "
+                        "blink=%d",
+                        f.liveness.decision.c_str(), f.liveness.reason.c_str(),
+                        f.liveness.has_score ? std::to_string(f.liveness.score).c_str() : "null",
+                        f.liveness.has_texture ? std::to_string(f.liveness.texture).c_str()
+                                               : "null",
+                        f.liveness.has_motion ? std::to_string(f.liveness.motion).c_str()
+                                              : "null",
+                        static_cast<int>(f.liveness.blink));
+            }
         }
     }
 
@@ -940,6 +1311,12 @@ int main(int argc, char** argv) {
     while (g_running.load()) {
         drain_commands();
         process_frame();
+        // Capture bookkeeping outside process_frame() for the same reason the
+        // command drain is: a stalled camera must not strand an open file or
+        // withhold the closing acknowledgement.
+        const uint64_t now_ms = steady_ms();
+        g_capture.tick(now_ms);
+        finish_capture_if_expired(now_ms);
     }
 
     cleanup();

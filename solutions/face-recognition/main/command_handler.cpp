@@ -60,6 +60,7 @@ const char* CommandQueue::opName(CommandOp op) {
         case CommandOp::Remove: return "remove";
         case CommandOp::List: return "list";
         case CommandOp::Reload: return "reload";
+        case CommandOp::LivenessCapture: return "liveness_capture";
     }
     return "unknown";
 }
@@ -128,8 +129,29 @@ bool CommandQueue::push(const std::string& payload, std::string* error,
             if (error) *error = "source must be 'camera' or 'image'";
             return false;
         }
+    } else if (op == "liveness_capture") {
+        cmd.op = CommandOp::LivenessCapture;
+        cmd.capture_label = lower(trim(req.value("label", std::string())));
+        if (cmd.capture_label != "real" && cmd.capture_label != "print" &&
+            cmd.capture_label != "screen") {
+            if (error) *error = "label must be one of real, print, screen";
+            return false;
+        }
+        if (!req.contains("seconds") || !req["seconds"].is_number()) {
+            if (error) *error = "missing numeric 'seconds'";
+            return false;
+        }
+        // Upper bound is applied against the configured maximum on the main
+        // thread; this only rejects nonsense so the queue never carries it.
+        const double secs = req["seconds"].get<double>();
+        if (!(secs >= 1.0) || secs > 3600.0) {
+            if (error) *error = "'seconds' must be between 1 and 3600";
+            return false;
+        }
+        cmd.capture_seconds = static_cast<int>(secs);
     } else {
-        if (error) *error = "unknown op; expected enroll, remove, list or reload";
+        if (error) *error =
+            "unknown op; expected enroll, remove, list, reload or liveness_capture";
         return false;
     }
 

@@ -50,6 +50,25 @@ std::string buildResultsJson(uint64_t timestamp_ms, uint32_t frame_id,
             row["live"] = nullptr;
             row["liveness_score"] = nullptr;
         }
+        // v2 nested verdict, alongside (never instead of) the legacy pair above.
+        // Every numeric member is independently nullable: "pending" carries no
+        // fused score, and motion has no value until the window fills.
+        if (f.has_liveness_v2) {
+            nlohmann::json lv;
+            lv["score"] = f.liveness.has_score ? nlohmann::json(round3(f.liveness.score))
+                                               : nlohmann::json(nullptr);
+            lv["texture"] = f.liveness.has_texture ? nlohmann::json(round3(f.liveness.texture))
+                                                   : nlohmann::json(nullptr);
+            lv["motion"] = f.liveness.has_motion ? nlohmann::json(round3(f.liveness.motion))
+                                                 : nlohmann::json(nullptr);
+            lv["blink"] = f.liveness.blink;
+            lv["decision"] = f.liveness.decision;
+            lv["reason"] = f.liveness.reason.empty() ? nlohmann::json(nullptr)
+                                                     : nlohmann::json(f.liveness.reason);
+            row["liveness"] = std::move(lv);
+        } else {
+            row["liveness"] = nullptr;
+        }
         row["stable"] = f.stable;
         row["gated"] = f.gated;
         if (f.reason.empty()) {
