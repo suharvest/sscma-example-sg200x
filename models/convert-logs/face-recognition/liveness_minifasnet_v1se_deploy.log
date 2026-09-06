@@ -1,0 +1,735 @@
+2026/09/06 08:31:48 - INFO : TPU-MLIR v1.30.2-20260831
+2026/09/06 08:31:48 - INFO : 
+	 _____________________________________________________ 
+	| preprocess:                                           |
+	|   (x - mean) * scale                                  |
+	'-------------------------------------------------------'
+  config Preprocess args : 
+	resize_dims           : same to net input dims
+	keep_aspect_ratio     : False
+	keep_ratio_mode       : letterbox
+	pad_value             : 0
+	pad_type              : center
+	--------------------------
+	mean                  : [0.0, 0.0, 0.0]
+	scale                 : [1.0, 1.0, 1.0]
+	--------------------------
+	pixel_format          : bgr
+	channel_format        : nchw
+	yuv_type              : 
+
+[transformers] Disabling PyTorch because PyTorch >= 2.4 is required but found 2.0.1+cpu
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+2026/09/06 08:31:50 - INFO : Input_shape assigned
+2026/09/06 08:31:50 - INFO : ConstantFolding finished
+2026/09/06 08:31:50 - INFO : skip_fuse_bn:False
+2026/09/06 08:31:50 - INFO : Onnxsim opt finished
+2026/09/06 08:31:50 - INFO : ConstantFolding finished
+2026/09/06 08:31:50 - INFO : Save mlir file: liveness_v1se_origin.mlir
+[Running]: tpuc-opt liveness_v1se_origin.mlir --struct-optimize --shape-infer --canonicalize --extra-optimize -o liveness_v1se.mlir
+[Success]: tpuc-opt liveness_v1se_origin.mlir --struct-optimize --shape-infer --canonicalize --extra-optimize -o liveness_v1se.mlir
+2026/09/06 08:31:51 - INFO : Mlir file generated:liveness_v1se.mlir
+2026/09/06 08:31:51 - INFO : 
+  load_config Preprocess args : 
+	resize_dims           : [80, 80]
+	keep_aspect_ratio     : False
+	keep_ratio_mode       : letterbox
+	pad_value             : 0
+	pad_type              : center
+	input_dims            : [80, 80]
+	--------------------------
+	mean                  : [0.0, 0.0, 0.0]
+	scale                 : [1.0, 1.0, 1.0]
+	--------------------------
+	pixel_format          : bgr
+	channel_format        : nchw
+	yuv_type              : 
+
+[CMD]: model_runner.py --input liveness_v1se_in_f32.npz --model liveness_minifasnet_v1se.onnx --output liveness_v1se_ref_outputs.npz  
+2026/09/06 08:31:51 - INFO : Saving liveness_v1se_ref_outputs.npz
+[                                                  ] 0%                                                  ] 0%                                                  ] 0%1%2%#                                                 ] 2%3%4%#                                                ] 4%5%6%#                                               ] 6%7%8%#                                              ] 8%9%10%#                                             ] 10%#                                             ] 10%11%12%#                                            ] 12%13%14%#                                           ] 14%15%16%#                                          ] 16%17%18%#                                         ] 18%19%20%#                                        ] 20%#                                        ] 20%21%22%#                                       ] 22%23%24%#                                      ] 24%25%26%#                                     ] 26%27%28%#                                    ] 28%29%30%#                                   ] 30%#                                   ] 30%31%32%#                                  ] 32%33%34%#                                 ] 34%35%36%#                                ] 36%37%38%#                               ] 38%39%40%#                              ] 40%#                              ] 40%41%42%#                             ] 42%43%44%#                            ] 44%45%46%#                           ] 46%47%48%#                          ] 48%49%50%#                         ] 50%#                         ] 50%51%52%#                        ] 52%53%54%#                       ] 54%55%56%#                      ] 56%57%58%#                     ] 58%59%60%#                    ] 60%#                    ] 60%61%62%#                   ] 62%63%64%#                  ] 64%65%66%#                 ] 66%67%68%#                ] 68%69%70%#               ] 70%#               ] 70%71%72%#              ] 72%73%74%#             ] 74%75%76%#            ] 76%77%78%#           ] 78%79%80%#          ] 80%#          ] 80%81%82%#         ] 82%83%84%#        ] 84%85%86%#       ] 86%87%88%#      ] 88%89%90%#     ] 90%#     ] 90%91%92%#    ] 92%93%94%#   ] 94%95%96%#  ] 96%97%98%# ] 98%99%100%#] 100%
+[CMD]: model_runner.py --input liveness_v1se_in_f32.npz --model liveness_v1se.mlir --output live_v1se_top.npz  
+2026/09/06 08:31:51 - INFO : Saving live_v1se_top.npz
+  0%|          | 0/111 [00:00<?, ?it/s]compare /conv1/conv/Conv_output_0_Conv:   0%|          | 0/111 [00:00<?, ?it/s]compare /conv1/prelu/PRelu_output_0_PRelu:   1%|          | 1/111 [00:00<00:00, 763.02it/s]compare /conv2_dw/conv/Conv_output_0_Conv:   2%|▏         | 2/111 [00:00<00:00, 581.49it/s]compare /conv2_dw/prelu/PRelu_output_0_PRelu:   3%|▎         | 3/111 [00:00<00:00, 525.34it/s]compare /conv_23/conv/conv/Conv_output_0_Conv:   4%|▎         | 4/111 [00:00<00:00, 526.00it/s]compare /conv_23/conv/prelu/PRelu_output_0_PRelu:   5%|▍         | 5/111 [00:00<00:00, 528.80it/s]compare /conv_23/conv_dw/conv/Conv_output_0_Conv:   5%|▌         | 6/111 [00:00<00:00, 541.33it/s]compare /conv_23/conv_dw/prelu/PRelu_output_0_PRelu:   6%|▋         | 7/111 [00:00<00:00, 547.07it/s]compare /conv_23/project/conv/Conv_output_0_Conv:   7%|▋         | 8/111 [00:00<00:01, 78.82it/s]    compare /conv_23/project/conv/Conv_output_0_Conv:   8%|▊         | 9/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.0/conv/conv/Conv_output_0_Conv:   8%|▊         | 9/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.0/conv/prelu/PRelu_output_0_PRelu:   9%|▉         | 10/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.0/conv_dw/conv/Conv_output_0_Conv:  10%|▉         | 11/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.0/conv_dw/prelu/PRelu_output_0_PRelu:  11%|█         | 12/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.0/project/conv/Conv_output_0_Conv:  12%|█▏        | 13/111 [00:00<00:01, 88.50it/s]   compare /conv_3/model/model.0/Add_output_0_Add:  13%|█▎        | 14/111 [00:00<00:01, 88.50it/s]               compare /conv_3/model/model.1/conv/conv/Conv_output_0_Conv:  14%|█▎        | 15/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.1/conv/prelu/PRelu_output_0_PRelu:  14%|█▍        | 16/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.1/conv_dw/conv/Conv_output_0_Conv:  15%|█▌        | 17/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.1/conv_dw/prelu/PRelu_output_0_PRelu:  16%|█▌        | 18/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.1/project/conv/Conv_output_0_Conv:  17%|█▋        | 19/111 [00:00<00:01, 88.50it/s]   compare /conv_3/model/model.1/Add_output_0_Add:  18%|█▊        | 20/111 [00:00<00:01, 88.50it/s]               compare /conv_3/model/model.2/conv/conv/Conv_output_0_Conv:  19%|█▉        | 21/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.2/conv/prelu/PRelu_output_0_PRelu:  20%|█▉        | 22/111 [00:00<00:01, 88.50it/s]compare /conv_3/model/model.2/conv_dw/conv/Conv_output_0_Conv:  21%|██        | 23/111 [00:00<00:00, 88.50it/s]compare /conv_3/model/model.2/conv_dw/prelu/PRelu_output_0_PRelu:  22%|██▏       | 24/111 [00:00<00:00, 88.50it/s]compare /conv_3/model/model.2/conv_dw/prelu/PRelu_output_0_PRelu:  23%|██▎       | 25/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.2/project/conv/Conv_output_0_Conv:  23%|██▎       | 25/111 [00:00<00:00, 96.52it/s]   compare /conv_3/model/model.2/Add_output_0_Add:  23%|██▎       | 26/111 [00:00<00:00, 96.52it/s]               compare /conv_3/model/model.3/conv/conv/Conv_output_0_Conv:  24%|██▍       | 27/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.3/conv/prelu/PRelu_output_0_PRelu:  25%|██▌       | 28/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.3/conv_dw/conv/Conv_output_0_Conv:  26%|██▌       | 29/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.3/conv_dw/prelu/PRelu_output_0_PRelu:  27%|██▋       | 30/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.3/project/conv/Conv_output_0_Conv:  28%|██▊       | 31/111 [00:00<00:00, 96.52it/s]   compare /conv_3/model/model.3/se_module/avg_pool/GlobalAveragePool_output_0_GlobalAveragePool:  29%|██▉       | 32/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.3/se_module/relu/Relu_output_0_Relu:  30%|██▉       | 33/111 [00:00<00:00, 96.52it/s]                              compare /conv_3/model/model.3/se_module/fc2/Conv_output_0_Conv:  31%|███       | 34/111 [00:00<00:00, 96.52it/s] compare /conv_3/model/model.3/se_module/sigmoid/Sigmoid_output_0_Sigmoid:  32%|███▏      | 35/111 [00:00<00:00, 96.52it/s]compare /conv_3/model/model.3/se_module/Mul_output_0_Mul:  32%|███▏      | 36/111 [00:00<00:00, 96.52it/s]                compare /conv_3/model/model.3/Add_output_0_Add:  33%|███▎      | 37/111 [00:00<00:00, 96.52it/s]          compare /conv_34/conv/conv/Conv_output_0_Conv:  34%|███▍      | 38/111 [00:00<00:00, 96.52it/s] compare /conv_34/conv/prelu/PRelu_output_0_PRelu:  35%|███▌      | 39/111 [00:00<00:00, 96.52it/s]compare /conv_34/conv/prelu/PRelu_output_0_PRelu:  36%|███▌      | 40/111 [00:00<00:00, 116.28it/s]compare /conv_34/conv_dw/conv/Conv_output_0_Conv:  36%|███▌      | 40/111 [00:00<00:00, 116.28it/s]compare /conv_34/conv_dw/prelu/PRelu_output_0_PRelu:  37%|███▋      | 41/111 [00:00<00:00, 116.28it/s]compare /conv_34/project/conv/Conv_output_0_Conv:  38%|███▊      | 42/111 [00:00<00:00, 116.28it/s]   compare /conv_4/model/model.0/conv/conv/Conv_output_0_Conv:  39%|███▊      | 43/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.0/conv/prelu/PRelu_output_0_PRelu:  40%|███▉      | 44/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.0/conv_dw/conv/Conv_output_0_Conv:  41%|████      | 45/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.0/conv_dw/prelu/PRelu_output_0_PRelu:  41%|████▏     | 46/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.0/project/conv/Conv_output_0_Conv:  42%|████▏     | 47/111 [00:00<00:00, 116.28it/s]   compare /conv_4/model/model.0/Add_output_0_Add:  43%|████▎     | 48/111 [00:00<00:00, 116.28it/s]               compare /conv_4/model/model.1/conv/conv/Conv_output_0_Conv:  44%|████▍     | 49/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.1/conv/prelu/PRelu_output_0_PRelu:  45%|████▌     | 50/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.1/conv_dw/conv/Conv_output_0_Conv:  46%|████▌     | 51/111 [00:00<00:00, 116.28it/s]compare /conv_4/model/model.1/conv_dw/conv/Conv_output_0_Conv:  47%|████▋     | 52/111 [00:00<00:00, 92.28it/s] compare /conv_4/model/model.1/conv_dw/prelu/PRelu_output_0_PRelu:  47%|████▋     | 52/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.1/project/conv/Conv_output_0_Conv:  48%|████▊     | 53/111 [00:00<00:00, 92.28it/s]   compare /conv_4/model/model.1/Add_output_0_Add:  49%|████▊     | 54/111 [00:00<00:00, 92.28it/s]               compare /conv_4/model/model.2/conv/conv/Conv_output_0_Conv:  50%|████▉     | 55/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.2/conv/prelu/PRelu_output_0_PRelu:  50%|█████     | 56/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.2/conv_dw/conv/Conv_output_0_Conv:  51%|█████▏    | 57/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.2/conv_dw/prelu/PRelu_output_0_PRelu:  52%|█████▏    | 58/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.2/project/conv/Conv_output_0_Conv:  53%|█████▎    | 59/111 [00:00<00:00, 92.28it/s]   compare /conv_4/model/model.2/Add_output_0_Add:  54%|█████▍    | 60/111 [00:00<00:00, 92.28it/s]               compare /conv_4/model/model.3/conv/conv/Conv_output_0_Conv:  55%|█████▍    | 61/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.3/conv/prelu/PRelu_output_0_PRelu:  56%|█████▌    | 62/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.3/conv_dw/conv/Conv_output_0_Conv:  57%|█████▋    | 63/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.3/conv_dw/prelu/PRelu_output_0_PRelu:  58%|█████▊    | 64/111 [00:00<00:00, 92.28it/s]compare /conv_4/model/model.3/conv_dw/prelu/PRelu_output_0_PRelu:  59%|█████▊    | 65/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.3/project/conv/Conv_output_0_Conv:  59%|█████▊    | 65/111 [00:00<00:00, 90.76it/s]   compare /conv_4/model/model.3/Add_output_0_Add:  59%|█████▉    | 66/111 [00:00<00:00, 90.76it/s]               compare /conv_4/model/model.4/conv/conv/Conv_output_0_Conv:  60%|██████    | 67/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.4/conv/prelu/PRelu_output_0_PRelu:  61%|██████▏   | 68/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.4/conv_dw/conv/Conv_output_0_Conv:  62%|██████▏   | 69/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.4/conv_dw/prelu/PRelu_output_0_PRelu:  63%|██████▎   | 70/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.4/project/conv/Conv_output_0_Conv:  64%|██████▍   | 71/111 [00:00<00:00, 90.76it/s]   compare /conv_4/model/model.4/Add_output_0_Add:  65%|██████▍   | 72/111 [00:00<00:00, 90.76it/s]               compare /conv_4/model/model.5/conv/conv/Conv_output_0_Conv:  66%|██████▌   | 73/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.5/conv/prelu/PRelu_output_0_PRelu:  67%|██████▋   | 74/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.5/conv_dw/conv/Conv_output_0_Conv:  68%|██████▊   | 75/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.5/conv_dw/prelu/PRelu_output_0_PRelu:  68%|██████▊   | 76/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.5/project/conv/Conv_output_0_Conv:  69%|██████▉   | 77/111 [00:00<00:00, 90.76it/s]   compare /conv_4/model/model.5/se_module/avg_pool/GlobalAveragePool_output_0_GlobalAveragePool:  70%|███████   | 78/111 [00:00<00:00, 90.76it/s]compare /conv_4/model/model.5/se_module/relu/Relu_output_0_Relu:  71%|███████   | 79/111 [00:00<00:00, 90.76it/s]                              compare /conv_4/model/model.5/se_module/fc2/Conv_output_0_Conv:  72%|███████▏  | 80/111 [00:00<00:00, 90.76it/s] compare /conv_4/model/model.5/se_module/fc2/Conv_output_0_Conv:  73%|███████▎  | 81/111 [00:00<00:00, 96.21it/s]compare /conv_4/model/model.5/se_module/sigmoid/Sigmoid_output_0_Sigmoid:  73%|███████▎  | 81/111 [00:00<00:00, 96.21it/s]compare /conv_4/model/model.5/se_module/Mul_output_0_Mul:  74%|███████▍  | 82/111 [00:00<00:00, 96.21it/s]                compare /conv_4/model/model.5/Add_output_0_Add:  75%|███████▍  | 83/111 [00:00<00:00, 96.21it/s]          compare /conv_45/conv/conv/Conv_output_0_Conv:  76%|███████▌  | 84/111 [00:00<00:00, 96.21it/s] compare /conv_45/conv/prelu/PRelu_output_0_PRelu:  77%|███████▋  | 85/111 [00:00<00:00, 96.21it/s]compare /conv_45/conv_dw/conv/Conv_output_0_Conv:  77%|███████▋  | 86/111 [00:00<00:00, 96.21it/s]compare /conv_45/conv_dw/prelu/PRelu_output_0_PRelu:  78%|███████▊  | 87/111 [00:00<00:00, 96.21it/s]compare /conv_45/project/conv/Conv_output_0_Conv:  79%|███████▉  | 88/111 [00:00<00:00, 96.21it/s]   compare /conv_5/model/model.0/conv/conv/Conv_output_0_Conv:  80%|████████  | 89/111 [00:00<00:00, 96.21it/s]compare /conv_5/model/model.0/conv/prelu/PRelu_output_0_PRelu:  81%|████████  | 90/111 [00:00<00:00, 96.21it/s]compare /conv_5/model/model.0/conv_dw/conv/Conv_output_0_Conv:  82%|████████▏ | 91/111 [00:00<00:00, 96.21it/s]compare /conv_5/model/model.0/conv_dw/prelu/PRelu_output_0_PRelu:  83%|████████▎ | 92/111 [00:00<00:00, 96.21it/s]compare /conv_5/model/model.0/project/conv/Conv_output_0_Conv:  84%|████████▍ | 93/111 [00:00<00:00, 96.21it/s]   compare /conv_5/model/model.0/Add_output_0_Add:  85%|████████▍ | 94/111 [00:00<00:00, 96.21it/s]               compare /conv_5/model/model.1/conv/conv/Conv_output_0_Conv:  86%|████████▌ | 95/111 [00:00<00:00, 96.21it/s]compare /conv_5/model/model.1/conv/prelu/PRelu_output_0_PRelu:  86%|████████▋ | 96/111 [00:00<00:00, 96.21it/s]compare /conv_5/model/model.1/conv/prelu/PRelu_output_0_PRelu:  87%|████████▋ | 97/111 [00:00<00:00, 98.95it/s]compare /conv_5/model/model.1/conv_dw/conv/Conv_output_0_Conv:  87%|████████▋ | 97/111 [00:00<00:00, 98.95it/s]compare /conv_5/model/model.1/conv_dw/prelu/PRelu_output_0_PRelu:  88%|████████▊ | 98/111 [00:00<00:00, 98.95it/s]compare /conv_5/model/model.1/project/conv/Conv_output_0_Conv:  89%|████████▉ | 99/111 [00:00<00:00, 98.95it/s]   compare /conv_5/model/model.1/se_module/avg_pool/GlobalAveragePool_output_0_GlobalAveragePool:  90%|█████████ | 100/111 [00:00<00:00, 98.95it/s]compare /conv_5/model/model.1/se_module/relu/Relu_output_0_Relu:  91%|█████████ | 101/111 [00:01<00:00, 98.95it/s]                              compare /conv_5/model/model.1/se_module/fc2/Conv_output_0_Conv:  92%|█████████▏| 102/111 [00:01<00:00, 98.95it/s] compare /conv_5/model/model.1/se_module/sigmoid/Sigmoid_output_0_Sigmoid:  93%|█████████▎| 103/111 [00:01<00:00, 98.95it/s]compare /conv_5/model/model.1/se_module/Mul_output_0_Mul:  94%|█████████▎| 104/111 [00:01<00:00, 98.95it/s]                compare /conv_5/model/model.1/Add_output_0_Add:  95%|█████████▍| 105/111 [00:01<00:00, 98.95it/s]          compare /conv_6_sep/conv/Conv_output_0_Conv:  95%|█████████▌| 106/111 [00:01<00:00, 98.95it/s]   compare /conv_6_sep/prelu/PRelu_output_0_PRelu:  96%|█████████▋| 107/111 [00:01<00:00, 98.95it/s]compare /conv_6_dw/conv/Conv_output_0_Conv:  97%|█████████▋| 108/111 [00:01<00:00, 98.95it/s]    compare /head/Conv_output_0_Conv:  98%|█████████▊| 109/111 [00:01<00:00, 98.95it/s]          compare logits_Flatten:  99%|█████████▉| 110/111 [00:01<00:00, 98.95it/s]          
+
+[/conv1/conv/Conv_output_0_Conv  ]      SIMILAR [PASSED]
+    (1, 32, 40, 40) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 136.489964
+[/conv1/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 32, 40, 40) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 135.448694
+[/conv2_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 32, 40, 40) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 130.810909
+[/conv2_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 32, 40, 40) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 129.492674
+[/conv_23/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 103, 40, 40) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 128.529930
+[/conv_23/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 103, 40, 40) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 127.290506
+[/conv_23/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 103, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 128.620405
+[/conv_23/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 103, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 125.963669
+[/conv_23/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.503448
+[/conv_3/model/model.0/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 127.501364
+[/conv_3/model/model.0/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.761694
+[/conv_3/model/model.0/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.347248
+[/conv_3/model/model.0/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.434305
+[/conv_3/model/model.0/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.776188
+[/conv_3/model/model.0/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.282269
+[/conv_3/model/model.1/conv/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 20, 20) float32 
+    close order            = 3
+[/conv_3/model/model.1/conv/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 20, 20) float32 
+    close order            = 3
+[/conv_3/model/model.1/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 26, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.842428
+[/conv_3/model/model.1/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 26, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.197083
+[/conv_3/model/model.1/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.706831
+[/conv_3/model/model.1/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.872818
+[/conv_3/model/model.2/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.908318
+[/conv_3/model/model.2/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.961496
+[/conv_3/model/model.2/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.586372
+[/conv_3/model/model.2/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 13, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.952938
+[/conv_3/model/model.2/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.840212
+[/conv_3/model/model.2/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.610395
+[/conv_3/model/model.3/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 52, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.703360
+[/conv_3/model/model.3/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 52, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.092976
+[/conv_3/model/model.3/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 52, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.989763
+[/conv_3/model/model.3/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 52, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 122.410364
+[/conv_3/model/model.3/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.442631
+[/conv_3/model/model.3/se_module/avg_pool/GlobalAveragePool_output_0_GlobalAveragePool]        CLOSE [PASSED]
+    (1, 64, 1, 1) float32 
+    close order            = 5
+[/conv_3/model/model.3/se_module/relu/Relu_output_0_Relu]        CLOSE [PASSED]
+    (1, 16, 1, 1) float32 
+    close order            = 4
+[/conv_3/model/model.3/se_module/fc2/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 64, 1, 1) float32 
+    close order            = 4
+[/conv_3/model/model.3/se_module/sigmoid/Sigmoid_output_0_Sigmoid]        CLOSE [PASSED]
+    (1, 64, 1, 1) float32 
+    close order            = 5
+[/conv_3/model/model.3/se_module/Mul_output_0_Mul]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.161478
+[/conv_3/model/model.3/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 64, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.165287
+[/conv_34/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 231, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.034466
+[/conv_34/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 231, 20, 20) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.008347
+[/conv_34/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 231, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.814419
+[/conv_34/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 231, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.573030
+[/conv_34/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.617043
+[/conv_4/model/model.0/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 154, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.530409
+[/conv_4/model/model.0/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 154, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 125.404758
+[/conv_4/model/model.0/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 154, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.844908
+[/conv_4/model/model.0/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 154, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.320393
+[/conv_4/model/model.0/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.911928
+[/conv_4/model/model.0/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.161028
+[/conv_4/model/model.1/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 52, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.548653
+[/conv_4/model/model.1/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 52, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 125.110817
+[/conv_4/model/model.1/conv_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 52, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.1/conv_dw/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 52, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.1/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.848284
+[/conv_4/model/model.1/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.384340
+[/conv_4/model/model.2/conv/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.2/conv/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.2/conv_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.2/conv_dw/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.2/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.402651
+[/conv_4/model/model.2/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.444345
+[/conv_4/model/model.3/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 52, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.373215
+[/conv_4/model/model.3/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 52, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 125.126467
+[/conv_4/model/model.3/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 52, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.213684
+[/conv_4/model/model.3/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 52, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.788895
+[/conv_4/model/model.3/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.592079
+[/conv_4/model/model.3/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.486050
+[/conv_4/model/model.4/conv/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.4/conv/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.4/conv_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.4/conv_dw/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.4/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.458345
+[/conv_4/model/model.4/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.387888
+[/conv_4/model/model.5/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 26, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.287594
+[/conv_4/model/model.5/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 26, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 124.807434
+[/conv_4/model/model.5/conv_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.5/conv_dw/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 10, 10) float32 
+    close order            = 3
+[/conv_4/model/model.5/project/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 1.000000
+    sqnr_similarity        = 126.460571
+[/conv_4/model/model.5/se_module/avg_pool/GlobalAveragePool_output_0_GlobalAveragePool]        CLOSE [PASSED]
+    (1, 128, 1, 1) float32 
+    close order            = 4
+[/conv_4/model/model.5/se_module/relu/Relu_output_0_Relu]        CLOSE [PASSED]
+    (1, 32, 1, 1) float32 
+    close order            = 4
+[/conv_4/model/model.5/se_module/fc2/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 128, 1, 1) float32 
+    close order            = 3
+[/conv_4/model/model.5/se_module/sigmoid/Sigmoid_output_0_Sigmoid]        CLOSE [PASSED]
+    (1, 128, 1, 1) float32 
+    close order            = 5
+[/conv_4/model/model.5/se_module/Mul_output_0_Mul]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.746546
+[/conv_4/model/model.5/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.165758
+[/conv_45/conv/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 308, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.363798
+[/conv_45/conv/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 308, 10, 10) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.851976
+[/conv_45/conv_dw/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 308, 5, 5) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.613165
+[/conv_45/conv_dw/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 308, 5, 5) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 124.668121
+[/conv_45/project/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 128, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.0/conv/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.0/conv/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.0/conv_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.0/conv_dw/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.0/project/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 128, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.0/Add_output_0_Add]        CLOSE [PASSED]
+    (1, 128, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/conv/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/conv/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/conv_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/conv_dw/prelu/PRelu_output_0_PRelu]        CLOSE [PASSED]
+    (1, 26, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/project/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 128, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/se_module/avg_pool/GlobalAveragePool_output_0_GlobalAveragePool]        CLOSE [PASSED]
+    (1, 128, 1, 1) float32 
+    close order            = 3
+[/conv_5/model/model.1/se_module/relu/Relu_output_0_Relu]        CLOSE [PASSED]
+    (1, 32, 1, 1) float32 
+    close order            = 5
+[/conv_5/model/model.1/se_module/fc2/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 128, 1, 1) float32 
+    close order            = 3
+[/conv_5/model/model.1/se_module/sigmoid/Sigmoid_output_0_Sigmoid]        CLOSE [PASSED]
+    (1, 128, 1, 1) float32 
+    close order            = 5
+[/conv_5/model/model.1/se_module/Mul_output_0_Mul]        CLOSE [PASSED]
+    (1, 128, 5, 5) float32 
+    close order            = 3
+[/conv_5/model/model.1/Add_output_0_Add]      SIMILAR [PASSED]
+    (1, 128, 5, 5) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.126944
+[/conv_6_sep/conv/Conv_output_0_Conv]      SIMILAR [PASSED]
+    (1, 512, 5, 5) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 125.535164
+[/conv_6_sep/prelu/PRelu_output_0_PRelu]      SIMILAR [PASSED]
+    (1, 512, 5, 5) float32 
+    cosine_similarity      = 1.000000
+    euclidean_similarity   = 0.999999
+    sqnr_similarity        = 123.613148
+[/conv_6_dw/conv/Conv_output_0_Conv]        CLOSE [PASSED]
+    (1, 512, 1, 1) float32 
+    close order            = 3
+[/head/Conv_output_0_Conv        ]        CLOSE [PASSED]
+    (1, 3, 1, 1) float32 
+    close order            = 5
+[logits_Flatten                  ]        CLOSE [PASSED]
+    (1, 3) float32 
+    close order            = 5
+111 compared
+111 passed
+  0 equal, 42 close, 69 similar
+0 failed
+  0 not equal, 0 not similar
+min_similarity = (0.9999998807907104, 0.999999305501286, 122.41036415100098)
+Target    live_v1se_top.npz
+Reference liveness_v1se_ref_outputs.npz
+npz compare PASSED.
+compare logits_Flatten: 100%|██████████| 111/111 [00:01<00:00, 93.91it/s]
+[Running]: npz_tool.py compare live_v1se_top.npz liveness_v1se_ref_outputs.npz --tolerance 0.99,0.99 --except - -vv
+[Success]: npz_tool.py compare live_v1se_top.npz liveness_v1se_ref_outputs.npz --tolerance 0.99,0.99 --except - -vv
+2026/09/06 08:31:54 - INFO : TPU-MLIR v1.30.2-20260831
+[                                                  ] 0%                                                  ] 0%                                                  ] 0%1%2%#                                                 ] 2%3%4%#                                                ] 4%5%6%#                                               ] 6%7%8%#                                              ] 8%#                                              ] 8%9%10%#                                             ] 10%11%12%#                                            ] 12%13%14%#                                           ] 14%15%16%#                                          ] 16%#                                          ] 16%17%18%#                                         ] 18%19%20%#                                        ] 20%21%22%#                                       ] 22%23%24%#                                      ] 24%25%26%#                                     ] 26%27%28%#                                    ] 28%29%30%#                                   ] 30%31%32%#                                  ] 32%33%34%#                                 ] 34%35%36%#                                ] 36%37%38%#                               ] 38%39%40%#                              ] 40%41%42%#                             ] 42%43%44%#                            ] 44%45%46%#                           ] 46%47%48%#                          ] 48%49%50%#                         ] 50%#                         ] 50%51%52%#                        ] 52%53%54%#                       ] 54%55%56%#                      ] 56%57%58%#                     ] 58%#                     ] 58%59%60%#                    ] 60%61%62%#                   ] 62%63%64%#                  ] 64%65%66%#                 ] 66%#                 ] 66%67%68%#                ] 68%69%70%#               ] 70%71%72%#              ] 72%73%74%#             ] 74%75%76%#            ] 76%77%78%#           ] 78%79%80%#          ] 80%81%82%#         ] 82%83%84%#        ] 84%85%86%#       ] 86%87%88%#      ] 88%89%90%#     ] 90%91%92%#    ] 92%93%94%#   ] 94%95%96%#  ] 96%97%98%# ] 98%99%100%#] 100%
+  0%|          | 0/1 [00:00<?, ?it/s]compare logits_Flatten:   0%|          | 0/1 [00:00<?, ?it/s]
+
+[logits_Flatten                  ]      SIMILAR [PASSED]
+    (1, 3) float32 
+    cosine_similarity      = 0.999994
+    euclidean_similarity   = 0.994261
+    sqnr_similarity        = 45.166955
+1 compared
+1 passed
+  0 equal, 0 close, 1 similar
+0 failed
+  0 not equal, 0 not similar
+min_similarity = (0.9999940395355225, 0.994260871469392, 45.16695499420166)
+Target    liveness_v1se_cv181x_bf16_tpu_outputs.npz
+Reference live_v1se_top.npz
+npz compare PASSED.
+compare logits_Flatten: 100%|██████████| 1/1 [00:00<00:00, 19.61it/s]
+output_bytes: 12, before group, NetStatisticPass total_bytes: 4735298
+Can not open hash file from all available paths:
+  - current directory: 15762252087913541475
+[                                                  ] 0%                                                  ] 0%#                                                 ] 2%#                                              ] 8%#                                           ] 14%#                                        ] 20%#                                     ] 26%#                                  ] 32%#                               ] 38%#                            ] 44%#                         ] 50%#                        ] 52%#                     ] 58%#                  ] 64%#               ] 70%#            ] 76%#         ] 82%#      ] 88%#   ] 94%#] 100%[                                                  ] 0%                                                  ] 0%#                                                 ] 2%#                                              ] 8%#                                           ] 14%#                                        ] 20%#                                     ] 26%#                                  ] 32%#                               ] 38%#                            ] 44%#                         ] 50%#                        ] 52%#                     ] 58%#                  ] 64%#               ] 70%#            ] 76%#         ] 82%#      ] 88%#   ] 94%#] 100%[                                                  ] 0%                                                  ] 0%#                                                 ] 2%#                                                ] 4%#                                               ] 6%#                                          ] 16%#                                         ] 18%#                                        ] 20%#                                   ] 30%#                                  ] 32%#                                 ] 34%#                            ] 44%#                           ] 46%#                          ] 48%#                     ] 58%#                    ] 60%#                   ] 62%#              ] 72%#             ] 74%#            ] 76%#       ] 86%#      ] 88%#     ] 90%#] 100%[                                                  ] 0%                                                  ] 0%#                                                 ] 2%#                                                ] 4%#                                               ] 6%#                                          ] 16%#                                         ] 18%#                                        ] 20%#                                   ] 30%#                                  ] 32%#                                 ] 34%#                            ] 44%#                           ] 46%#                          ] 48%#                     ] 58%#                    ] 60%#                   ] 62%#              ] 72%#             ] 74%#            ] 76%#       ] 86%#      ] 88%#     ] 90%#] 100%[                                                  ] 0%                                                  ] 0%#                                             ] 10%#                                     ] 26%#                                ] 36%#                             ] 42%#                        ] 52%#                ] 68%#           ] 78%#        ] 84%#   ] 94%#] 100%[                                                  ] 0%                                                  ] 0%#                                             ] 10%#                                     ] 26%#                                ] 36%#                             ] 42%#                        ] 52%#                ] 68%#           ] 78%#        ] 84%#   ] 94%#] 100%[                                                  ] 0%                                                  ] 0%#                 ] 66%#] 100%[                                                  ] 0%                                                  ] 0%#                 ] 66%#] 100%================FINAL GROUP================
+GroupMethod_process time:753594
+Dumping LgConfig!
+Global Configs:
+  shape_secs_search_strategy = 0
+  structure_detect_opt = 1
+Search Method Config: sc_method_quick_search
+  CSECS_SEARCH_RECORD_THRESHOLD = -1
+  DSECS_SEARCH_RECORD_THRESHOLD = -1
+  HSECS_SEARCH_RECORD_THRESHOLD = -1
+  MAX_CSECS = 32
+  MAX_DSECS = 32
+  MAX_HSECS = 32
+  MAX_NSECS = 32
+  MAX_TRY_NUM = 20
+  MAX_WSECS = 32
+  NSECS_SEARCH_RECORD_THRESHOLD = -1
+  WSECS_SEARCH_RECORD_THRESHOLD = -1
+Search Method Config: sc_method_search_better_v1
+  CSECS_SEARCH_RECORD_THRESHOLD = 3
+  DSECS_SEARCH_RECORD_THRESHOLD = 3
+  HSECS_SEARCH_RECORD_THRESHOLD = 3
+  MAX_CSECS = 32
+  MAX_DSECS = 32
+  MAX_HSECS = 32
+  MAX_NSECS = 32
+  MAX_TRY_NUM = 20
+  MAX_WSECS = 32
+  NSECS_SEARCH_RECORD_THRESHOLD = 3
+  WSECS_SEARCH_RECORD_THRESHOLD = 3
+Search Method Config: sc_method_search_better_v2
+  CSECS_SEARCH_RECORD_THRESHOLD = 2
+  DSECS_SEARCH_RECORD_THRESHOLD = 2
+  HSECS_SEARCH_RECORD_THRESHOLD = 2
+  MAX_CSECS = 32
+  MAX_DSECS = 32
+  MAX_HSECS = 32
+  MAX_NSECS = 32
+  MAX_TRY_NUM = 20
+  MAX_WSECS = 32
+  NSECS_SEARCH_RECORD_THRESHOLD = 2
+  WSECS_SEARCH_RECORD_THRESHOLD = 2
+Load debugger file "liveness_v1se_cv181x_bf16.layer_group_config.json" success!
+==---------------------------==
+Run LayerGroupSearchPass : 
+    Searching the optimal layer groups
+==---------------------------==
+
+=======================================================
+***** Dynamic Programming layer group with cluster ****
+=======================================================
+total num of base_group is 11
+process base group 0, layer_num=1, cluster_num=1
+process base group 1, layer_num=36, cluster_num=36
+Searching best group slices...
+Getting single group cost...
+
+Getting cost table...
+
+process base group 2, layer_num=1, cluster_num=1
+process base group 3, layer_num=45, cluster_num=45
+Searching best group slices...
+Getting single group cost...
+
+Getting cost table...
+
+process base group 4, layer_num=1, cluster_num=1
+process base group 5, layer_num=21, cluster_num=21
+Searching best group slices...
+Getting single group cost...
+
+Getting cost table...
+
+process base group 6, layer_num=1, cluster_num=1
+process base group 7, layer_num=5, cluster_num=5
+Searching best group slices...
+Getting single group cost...
+
+Getting cost table...
+
+process base group 8, layer_num=1, cluster_num=1
+process base group 9, layer_num=1, cluster_num=1
+process base group 10, layer_num=1, cluster_num=1
+==---------------------------==
+Run GroupPostTransformPass : 
+    Some transform after layer groups is determined
+==---------------------------==
+==---------------------------==
+Run TimeStepAssignmentPass : 
+    Assign timestep task for each group.
+==---------------------------==
+==---------------------------==
+Run LocalMemoryAllocationPass : 
+    Allocate local memory for all layer groups
+==---------------------------==
+==---------------------------==
+Run TimeStepCombinePass : 
+    Combine time step for better parallel balance
+==---------------------------==
+===group idx: 3
+merge timestep 26 to timestep 25
+===group idx: 8
+merge timestep 38 to timestep 37
+==---------------------------==
+Run GroupDataMoveOverlapPass : 
+    Overlap data move between two layer group
+==---------------------------==
+GmemAllocator use OpSizeOrderAssign
+  0%|          | 0/1 [00:00<?, ?it/s]compare logits_Flatten_f32:   0%|          | 0/1 [00:00<?, ?it/s]
+
+[logits_Flatten_f32              ]        EQUAL [PASSED]
+    (1, 3, 1, 1) float32 
+1 compared
+1 passed
+  1 equal, 0 close, 0 similar
+0 failed
+  0 not equal, 0 not similar
+min_similarity = (1.0, 1.0, inf)
+Target    liveness_v1se_cv181x_bf16_model_outputs.npz
+Reference liveness_v1se_cv181x_bf16_tpu_outputs.npz
+npz compare PASSED.
+compare logits_Flatten_f32: 100%|██████████| 1/1 [00:00<00:00, 29.62it/s]
+[Success] Create config file 'liveness_v1se_cv181x_bf16.layer_group_config.json'.
+Content:
+{
+  "shape_secs_search_strategy": 0,
+  "structure_detect_opt": true,
+  "sc_method_configs": [
+    {
+      "sc_method": "sc_method_quick_search",
+      "MAX_TRY_NUM": 20
+    },
+    {
+      "sc_method": "sc_method_search_better_v1",
+      "NSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "CSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "DSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "HSECS_SEARCH_RECORD_THRESHOLD": 3,
+      "WSECS_SEARCH_RECORD_THRESHOLD": 3
+    },
+    {
+      "sc_method": "sc_method_search_better_v2",
+      "MAX_NSECS": 32,
+      "MAX_CSECS": 32,
+      "MAX_DSECS": 32,
+      "MAX_HSECS": 32,
+      "MAX_WSECS": 32,
+      "NSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "CSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "DSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "HSECS_SEARCH_RECORD_THRESHOLD": 2,
+      "WSECS_SEARCH_RECORD_THRESHOLD": 2
+    }
+  ]
+}
+[Running]: tpuc-opt liveness_v1se.mlir --processor-assign="chip=cv181x mode=BF16 num_device=1 num_core=1 addr_mode=auto high_precision=False" --processor-top-optimize --convert-top-to-tpu="weightFileName=liveness_v1se_cv181x_bf16_tpu_weights.npz asymmetric=False doWinograd=False q_group_size=0 q_symmetric=False matmul_perchannel=False gelu_mode=normal" --canonicalize --weight-fold -o liveness_v1se_cv181x_bf16_tpu.mlir
+[Success]: tpuc-opt liveness_v1se.mlir --processor-assign="chip=cv181x mode=BF16 num_device=1 num_core=1 addr_mode=auto high_precision=False" --processor-top-optimize --convert-top-to-tpu="weightFileName=liveness_v1se_cv181x_bf16_tpu_weights.npz asymmetric=False doWinograd=False q_group_size=0 q_symmetric=False matmul_perchannel=False gelu_mode=normal" --canonicalize --weight-fold -o liveness_v1se_cv181x_bf16_tpu.mlir
+[CMD]: model_runner.py --input liveness_v1se_in_f32.npz --model liveness_v1se_cv181x_bf16_tpu.mlir --output liveness_v1se_cv181x_bf16_tpu_outputs.npz  
+[Running]: npz_tool.py compare liveness_v1se_cv181x_bf16_tpu_outputs.npz live_v1se_top.npz --tolerance 0.99,0.9 --except - -vv
+[Success]: npz_tool.py compare liveness_v1se_cv181x_bf16_tpu_outputs.npz live_v1se_top.npz --tolerance 0.99,0.9 --except - -vv
+[Running]: tpuc-opt liveness_v1se_cv181x_bf16_tpu.mlir --mlir-disable-threading --strip-io-quant="quant_input=False quant_output=False quant_input_list= quant_output_list= quant_output_bf16=False quant_input_int8=False quant_output_int8=False " --processor-tpu-optimize --dev-parallel --weight-reorder  --subnet-divide="dynamic=False" --op-reorder --topo-sort --layer-group="opt=2 group_by_cores=auto compress_mode=none debugger=0 disable_group_overlap=false lgcache=true config_filename= enable_lghash=False lghash_dir=" --affine-opt  --core-parallel  --after-layergroup-weight-reorder  --address-assign -o liveness_v1se_cv181x_bf16_final.mlir --debug_cmd=
+[Success]: tpuc-opt liveness_v1se_cv181x_bf16_tpu.mlir --mlir-disable-threading --strip-io-quant="quant_input=False quant_output=False quant_input_list= quant_output_list= quant_output_bf16=False quant_input_int8=False quant_output_int8=False " --processor-tpu-optimize --dev-parallel --weight-reorder  --subnet-divide="dynamic=False" --op-reorder --topo-sort --layer-group="opt=2 group_by_cores=auto compress_mode=none debugger=0 disable_group_overlap=false lgcache=true config_filename= enable_lghash=False lghash_dir=" --affine-opt  --core-parallel  --after-layergroup-weight-reorder  --address-assign -o liveness_v1se_cv181x_bf16_final.mlir --debug_cmd=
+[Running]: tpuc-opt liveness_v1se_cv181x_bf16_final.mlir --codegen="model_file=liveness_minifasnet_v1se_bf16.cvimodel embed_debug_info=False model_version=latest bmodel_only=False gdma_check=False rvti=False" -o /dev/null
+[Success]: tpuc-opt liveness_v1se_cv181x_bf16_final.mlir --codegen="model_file=liveness_minifasnet_v1se_bf16.cvimodel embed_debug_info=False model_version=latest bmodel_only=False gdma_check=False rvti=False" -o /dev/null
+[CMD]: model_runner.py --input liveness_v1se_in_f32.npz --model liveness_minifasnet_v1se_bf16.cvimodel --output liveness_v1se_cv181x_bf16_model_outputs.npz  
+[Running]: npz_tool.py compare liveness_v1se_cv181x_bf16_model_outputs.npz liveness_v1se_cv181x_bf16_tpu_outputs.npz --tolerance 0.99,0.90 --except - -vv
+[Success]: npz_tool.py compare liveness_v1se_cv181x_bf16_model_outputs.npz liveness_v1se_cv181x_bf16_tpu_outputs.npz --tolerance 0.99,0.90 --except - -vv
+setenv:cv181x
+Start TPU Simulator for cv181x
+device[0] opened, 4294967296
+version: 1.4.0
+liveness_v1se Build at 2026-09-06 08:31:57 For platform cv181x
+Cmodel: bm_load_cmdbuf
+Max SharedMem size:287200
+Cmodel: bm_run_cmdbuf
+device[0] closed
