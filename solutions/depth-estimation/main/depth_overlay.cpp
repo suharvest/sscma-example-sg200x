@@ -48,6 +48,18 @@ inline uint32_t ramp_argb(float t) {
     return 0xFF000000u | (r << 16) | (g << 8) | bl;
 }
 
+/* 256-entry ramp LUT: the gradient is fixed, so per-pixel colour interpolation
+ * is a table index. Built on first use. */
+const uint32_t* ramp_lut() {
+    static uint32_t lut[256];
+    static bool built = false;
+    if (!built) {
+        for (int i = 0; i < 256; i++) lut[i] = ramp_argb(static_cast<float>(i) / 255.0f);
+        built = true;
+    }
+    return lut;
+}
+
 }  // namespace
 
 DepthOverlay::~DepthOverlay() { deinit(); }
@@ -148,15 +160,28 @@ void DepthOverlay::update(const std::vector<float>& depth, int dw, int dh,
     /* Nearest-neighbour from the depth map onto the tile. The depth map already
      * covers exactly the sensor content the stream shows (the grey bars were
      * removed before inference, and preprocessing stretches rather than pads),
-     * so this rescale is all the geometry there is: no letterbox to undo. */
+     * so this rescale is all the geometry there is: no letterbox to undo.
+     *
+     * The column map depends only on the two widths, so it is built once; the
+     * span reciprocal and the colour LUT turn the inner loop into a multiply
+     * and a table lookup. */
+    if (static_cast<int>(xmap_.size()) != pip_w_ || xmap_src_w_ != dw) {
+        xmap_.resize(pip_w_);
+        for (int x = 0; x < pip_w_; x++) xmap_[x] = std::min(dw - 1, x * dw / pip_w_);
+        xmap_src_w_ = dw;
+    }
+    const uint32_t* lut     = ramp_lut();
+    const float     inv_span = 1.0f / span;
+
     for (int y = 0; y < pip_h_; y++) {
         const int sy = std::min(dh - 1, y * dh / pip_h_);
         const float* srow = depth.data() + static_cast<size_t>(sy) * dw;
         uint32_t* drow    = canvas_.data() + static_cast<size_t>(y) * pip_w_;
         for (int x = 0; x < pip_w_; x++) {
-            const int sx = std::min(dw - 1, x * dw / pip_w_);
-            float t = (srow[sx] - p02) / span;  // 0 = nearest, 1 = farthest
-            drow[x] = ramp_argb(t);
+            float t = (srow[xmap_[x]] - p02) * inv_span;  // 0 = nearest
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            drow[x] = lut[static_cast<int>(t * 255.0f)];
         }
     }
 

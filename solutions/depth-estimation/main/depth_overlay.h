@@ -50,6 +50,10 @@ public:
 
 private:
     std::vector<uint32_t> canvas_;
+    /* Column map from the depth map onto the tile; rebuilt only if either
+     * width changes. */
+    std::vector<int> xmap_;
+    int xmap_src_w_ = -1;
     int pip_w_    = 0;
     int pip_h_    = 0;
     int vpss_grp_ = 0;
