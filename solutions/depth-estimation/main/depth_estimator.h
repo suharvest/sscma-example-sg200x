@@ -86,6 +86,17 @@ private:
     int input_h_           = 0;
     int output_w_          = 0;
     int output_h_          = 0;
+    /* Horizontal resample map, rebuilt only when the ROI or frame width
+     * changes (i.e. once, on the first frame). */
+    void buildXMap(const Roi& roi, int frame_width);
+    std::vector<int>   xmap_x0_;
+    std::vector<int>   xmap_x1_;
+    std::vector<float> xmap_ax_;
+    bool xmap_valid_   = false;
+    int  xmap_roi_x_   = -1;
+    int  xmap_roi_w_   = -1;
+    int  xmap_frame_w_ = -1;
+
     float last_inference_ms_ = 0.0f;
     float last_preprocess_ms_ = 0.0f;
     float last_forward_ms_ = 0.0f;

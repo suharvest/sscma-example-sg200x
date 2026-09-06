@@ -200,6 +200,30 @@ bool DepthEstimator::init(const std::string& model_path) {
     return true;
 }
 
+void DepthEstimator::buildXMap(const Roi& roi, int frame_width) {
+    if (xmap_valid_ && xmap_roi_x_ == roi.x && xmap_roi_w_ == roi.w &&
+        xmap_frame_w_ == frame_width) {
+        return;  // geometry is fixed for the life of the stream
+    }
+    xmap_x0_.resize(input_w_);
+    xmap_x1_.resize(input_w_);
+    xmap_ax_.resize(input_w_);
+    const float sx = static_cast<float>(roi.w) / static_cast<float>(input_w_);
+    for (int x = 0; x < input_w_; x++) {
+        const float fx = roi.x + (x + 0.5f) * sx - 0.5f;
+        int x0 = static_cast<int>(fx);
+        if (x0 < 0) x0 = 0;
+        if (x0 > frame_width - 1) x0 = frame_width - 1;
+        xmap_x0_[x] = x0;
+        xmap_x1_[x] = std::min(x0 + 1, frame_width - 1);
+        xmap_ax_[x] = fx - static_cast<float>(x0);
+    }
+    xmap_roi_x_   = roi.x;
+    xmap_roi_w_   = roi.w;
+    xmap_frame_w_ = frame_width;
+    xmap_valid_   = true;
+}
+
 bool DepthEstimator::preprocess(const ma_img_t* frame, const Roi& roi) {
     const uint8_t* src = static_cast<const uint8_t*>(frame->data);
     const int stride   = frame->width * 3;
@@ -213,16 +237,40 @@ bool DepthEstimator::preprocess(const ma_img_t* frame, const Roi& roi) {
     const float sy = static_cast<float>(roi.h) / static_cast<float>(input_h_);
     const size_t plane = static_cast<size_t>(input_w_) * input_h_;
 
+    /* The horizontal map is the same for every row, so resolve it once per
+     * frame instead of per pixel, and resolve the row/weight pair once per
+     * output pixel instead of once per channel: the three channels share every
+     * index and both interpolation weights. */
+    buildXMap(roi, frame->width);
+
     if (input_.type == MA_TENSOR_TYPE_F32) {
         float* dst = input_.data.f32;
+        constexpr float kInv255 = 1.0f / 255.0f;
         for (int y = 0; y < input_h_; y++) {
             const float fy = roi.y + (y + 0.5f) * sy - 0.5f;
+            int y0 = static_cast<int>(fy);
+            if (y0 < 0) y0 = 0;
+            if (y0 > frame->height - 1) y0 = frame->height - 1;
+            const int y1   = std::min(y0 + 1, frame->height - 1);
+            const float ay = fy - static_cast<float>(y0);
+
+            const uint8_t* r0 = src + static_cast<size_t>(y0) * stride;
+            const uint8_t* r1 = src + static_cast<size_t>(y1) * stride;
+            const size_t row_off = static_cast<size_t>(y) * input_w_;
+
             for (int x = 0; x < input_w_; x++) {
-                const float fx = roi.x + (x + 0.5f) * sx - 0.5f;
-                const size_t o = static_cast<size_t>(y) * input_w_ + x;
+                const int   x0 = xmap_x0_[x];
+                const int   x1 = xmap_x1_[x];
+                const float ax = xmap_ax_[x];
+                const size_t o = row_off + x;
+                const uint8_t* p00 = r0 + x0 * 3;
+                const uint8_t* p01 = r0 + x1 * 3;
+                const uint8_t* p10 = r1 + x0 * 3;
+                const uint8_t* p11 = r1 + x1 * 3;
                 for (int c = 0; c < 3; c++) {
-                    dst[c * plane + o] =
-                        sample_channel(src, stride, frame->width, frame->height, fx, fy, c) / 255.0f;
+                    const float top = p00[c] + (p01[c] - p00[c]) * ax;
+                    const float bot = p10[c] + (p11[c] - p10[c]) * ax;
+                    dst[c * plane + o] = (top + (bot - top) * ay) * kInv255;
                 }
             }
         }
