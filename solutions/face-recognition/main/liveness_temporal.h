@@ -37,7 +37,7 @@ struct LivenessConfig {
 
     float motion_window_sec = 1.75f;
     float timeout_sec = 2.0f;
-    float motion_noise_floor = 0.003f;
+    float motion_noise_floor = 0.006f;
     float motion_high = 0.020f;
     float correlation_low = 0.15f;
     float correlation_high = 0.65f;
@@ -51,8 +51,8 @@ struct LivenessConfig {
     float w_motion = 0.30f;
     float w_depth = 0.20f;
     float blink_bonus = 1.0f;
-    float t_live = 0.65f;
-    float t_spoof = 0.45f;
+    float t_live = 0.55f;
+    float t_spoof = 0.35f;
 
     bool depth_enabled = false;
     int capture_max_sec = 60;

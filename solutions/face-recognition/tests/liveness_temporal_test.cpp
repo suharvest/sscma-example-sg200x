@@ -119,6 +119,9 @@ static void test_motion_needs_window() {
 // residual-only threshold would call detector noise "motion".
 static void test_motion_uncorrelated_jitter_scores_low() {
     LivenessConfig cfg;
+    // The synthetic +-0.8 px jitter sits just above the pre-calibration floor;
+    // pin it so the calibrated default (0.006) does not swallow the case.
+    cfg.motion_noise_floor = 0.003f;
     LivenessState st;
     const Landmarks5 base = baseFace();
     unsigned seed = 12345u;
