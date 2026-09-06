@@ -35,3 +35,20 @@ The remaining host cost is the NCHW int8 pack loop (46 ms of the 61); a per-plan
 - `S93sscma-supervisor` holds the camera; `K92face-recognition start` stops node-red/sscma-node/other solutions but not the supervisor — stop it first or start via the app gallery.
 - After a VPSS wedge (`vpss_get_chn_frame … fail` loop) `reboot` does not recover; power cycle. Reproduced with unmodified face-analysis, so it is not app-specific.
 - ArcFace INT8 (MS1M-calibrated) failed the euclid gate (0.762 < 0.8); BF16 is shipped.
+
+## Update 2026-09-06 — Release build, int8 pack path, liveness v2
+
+| Condition | per-frame |
+|---|---|
+| detect-only, Release build + int8 CHW fast pack | **24 ms** (pack 12–25, forward 9) |
+| same code built without CMAKE_BUILD_TYPE | 496–522 ms (pack 460) — never ship an unoptimised build |
+| liveness v2 enabled, no face | 24 ms (no regression; per-face stages not exercised — no face during the window) |
+
+Liveness v2 models resident: SCRFD + ArcFace + MiniFAS V2 + V1SE + FaceMesh =
+14 MB process RSS delta (ION not exposed on this kernel). Defaults follow the
+offline calibration in recamera_pro
+`apps/face-recognition/evaluation/liveness-calibration-offline.md`:
+`LIVENESS_T_LIVE=0.55`, `LIVENESS_T_SPOOF=0.35`,
+`LIVENESS_MOTION_NOISE_FLOOR=0.006`. Per-face liveness cost and the
+`liveness_capture` rows still need a session with a face in view.
+
