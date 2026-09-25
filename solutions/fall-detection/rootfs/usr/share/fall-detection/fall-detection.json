@@ -53,7 +53,8 @@
           {"key": "recovery_torso_angle_deg", "type": "number", "title": "Upright torso angle (deg)", "title_zh": "站立躯干角度（度）", "min": 5, "max": 89, "step": 1, "default": 35},
           {"key": "recovery_aspect_ratio", "type": "number", "title": "Upright box aspect ratio", "title_zh": "站立框宽高比", "min": 1.0, "max": 3.0, "step": 0.05, "default": 1.1},
           {"key": "recovery_window_sec", "type": "number", "title": "Recovery window (s)", "title_zh": "恢复窗口（秒）", "min": 0, "max": 30, "step": 0.1, "default": 2.0},
-          {"key": "cooldown_sec", "type": "number", "title": "Alarm cooldown (s)", "title_zh": "报警冷却（秒）", "min": 0, "max": 60, "step": 0.5, "default": 3.0}
+          {"key": "cooldown_sec", "type": "number", "title": "Alarm cooldown (s)", "title_zh": "报警冷却（秒）", "min": 0, "max": 60, "step": 0.5, "default": 3.0},
+          {"key": "late_confirmation_sec", "type": "number", "title": "Late confirmation window after timeout (s)", "title_zh": "超时后迟到确认窗口（秒）", "min": 0, "max": 10, "step": 0.1, "default": 3.2}
         ]
       }
     ]
