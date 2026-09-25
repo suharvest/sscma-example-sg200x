@@ -42,6 +42,9 @@ configurable (the manifest lists ranges and defaults):
 | `recovery_aspect_ratio` | 1.10 | Upright width/height limit |
 | `recovery_window_sec` | 2.00 | Upright persistence before normal |
 | `cooldown_sec` | 3.00 | Suppress immediate re-alarms after an event |
+| `late_confirmation_sec` | 3.20 | Extra time past `suspected_timeout_sec` a still-lying candidate may be confirmed by a late temporal positive |
+
+Policy (v0.2.1): only geometry arms `suspected` — a fast hip drop plus a horizontal cue, or, when the pose was invalid during the drop, a hip displacement of at least `hip_drop_distance_threshold` below the last upright baseline (at most `motion_window_sec + occlusion_grace_sec` old). A temporal-positive window alone never leaves `normal`. `fallen` is reached only from `suspected` and requires the learned gate plus a valid lying pose in the current frame; the arming drop latches the motion evidence feature, so `min_suspected_features=3` still confirms a victim lying still.
 
 Example:
 
