@@ -74,6 +74,7 @@ bool load_app_config(const std::string& path, AppConfig& out) {
     read_float(cfg, "recovery_aspect_ratio", out.detector.recovery_aspect_ratio, 1.0f, 10.0f);
     read_float(cfg, "recovery_window_sec", out.detector.recovery_window_sec, 0.0f, 60.0f);
     read_float(cfg, "cooldown_sec", out.detector.cooldown_sec, 0.0f, 120.0f);
+    read_float(cfg, "late_confirmation_sec", out.detector.late_confirmation_sec, 0.0f, 30.0f);
     return true;
 }
 

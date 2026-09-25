@@ -54,6 +54,10 @@ struct FallConfig {
     float recovery_aspect_ratio = 1.10f;
     float recovery_window_sec = 2.00f;
     float cooldown_sec = 3.00f;
+    // Extra time after suspected_timeout_sec during which a still-lying
+    // candidate may still be confirmed by a late temporal positive (the
+    // learned gate's 48-frame window at 15 fps).
+    float late_confirmation_sec = 3.20f;
 };
 
 struct FallDiagnostics {
@@ -62,6 +66,7 @@ struct FallDiagnostics {
     float torso_angle_deg = 0.0f;
     float bbox_aspect_ratio = 0.0f;
     int evidence_features = 0;
+    int confirmation_features = 0;  // posture features plus latched motion
     float evidence_score = 0.0f;
     bool lying_posture = false;
     bool upright_posture = false;
@@ -101,6 +106,9 @@ private:
     bool isUpright(const FallObservation& o) const;
     int featureCount(const FallObservation& o, float hip_speed) const;
     void updateDiagnostics(const FallObservation& o, float hip_speed);
+    bool inLateLatch(double now_sec) const;
+    void toFallen(double now_sec, FallOutput& out);
+    void toNormal();
 
     FallConfig config_;
     FallState state_ = FallState::Normal;
@@ -111,7 +119,9 @@ private:
     double previous_timestamp_sec_ = 0.0;
     double last_fast_drop_sec_ = -1.0;
     float baseline_hip_y_ = 0.0f;
+    double baseline_timestamp_sec_ = -1.0;
     bool have_baseline_hip_y_ = false;
+    bool gap_since_baseline_ = false;  // invalid pose seen since the baseline
     float max_drop_distance_ = 0.0f;
     double suspected_since_sec_ = -1.0;
     double last_strong_evidence_sec_ = -1.0;
