@@ -34,7 +34,7 @@ fi
 # option value tells dnsmasq to suppress it; the host keeps a subnet route
 # (SSH/Web/RTSP unaffected) and its default route stays on Wi-Fi. Idempotent.
 DNSMASQ_FIXED=0
-for f in /etc/dnsmasq/usb_only.conf /etc/dnsmasq/usb_wlan1.conf; do
+for f in /etc/dnsmasq/*.conf; do
     if [ -f "$f" ] && grep -q '^dhcp-option=set:usb0,3,' "$f"; then
         sed -i 's|^dhcp-option=set:usb0,3,.*|dhcp-option=set:usb0,3 # suppress gateway: USB link is host-local|' "$f"
         DNSMASQ_FIXED=1
@@ -44,6 +44,28 @@ if [ "$DNSMASQ_FIXED" = "1" ] && [ -f /etc/init.d/S80dnsmasq ]; then
     /etc/init.d/S80dnsmasq stop >/dev/null 2>&1 || true
     sleep 1
     /etc/init.d/S80dnsmasq start >/dev/null 2>&1 || true
+fi
+
+# Hardware masking acceleration kernel modules auto-install:
+# If packaged modules exist and match kernel vermagic, install them into /mnt/system/ko
+# so hardware privacy blur (VPSS mosaic) is enabled out-of-the-box.
+PKG_KO_DIR="/usr/share/supervisor/ko"
+SYS_KO_DIR="/mnt/system/ko"
+BAK_KO_DIR="/userdata/ko-backup"
+if [ -d "$PKG_KO_DIR" ] && [ -d "$SYS_KO_DIR" ] && [ -f "$PKG_KO_DIR/cv181x_vpss.ko" ]; then
+    if ! grep -q "mask_force_alpha" "$SYS_KO_DIR/cv181x_vpss.ko" 2>/dev/null; then
+        KREL="$(uname -r 2>/dev/null || true)"
+        if [ -n "$KREL" ] && grep -q "$KREL" "$PKG_KO_DIR/cv181x_vpss.ko" 2>/dev/null; then
+            mkdir -p "$BAK_KO_DIR" 2>/dev/null || true
+            [ -f "$BAK_KO_DIR/cv181x_vpss.ko" ] || cp -f "$SYS_KO_DIR/cv181x_vpss.ko" "$BAK_KO_DIR/" 2>/dev/null || true
+            [ -f "$BAK_KO_DIR/cv181x_rgn.ko" ] || cp -f "$SYS_KO_DIR/cv181x_rgn.ko" "$BAK_KO_DIR/" 2>/dev/null || true
+            mount -o remount,rw / 2>/dev/null || true
+            cp -f "$PKG_KO_DIR/cv181x_vpss.ko" "$SYS_KO_DIR/" 2>/dev/null || true
+            cp -f "$PKG_KO_DIR/cv181x_rgn.ko" "$SYS_KO_DIR/" 2>/dev/null || true
+            sync 2>/dev/null || true
+            mount -o remount,ro / 2>/dev/null || true
+        fi
+    fi
 fi
 
 if [ -f /etc/init.d/S93sscma-supervisor ]; then

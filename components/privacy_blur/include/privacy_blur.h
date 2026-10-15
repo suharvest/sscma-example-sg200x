@@ -199,6 +199,21 @@ struct TrackedRegion {
     void predict(float dt, float q);
     void update(const BlurBox& box, float r);
     BlurBox getBox() const;
+
+    /*
+     * The box to actually draw, as opposed to the box the tracker believes.
+     *
+     * A mask drawn exactly on the estimate is a mask that trails a moving
+     * subject by however stale the last detection is -- at 10 detections a
+     * second that is up to 100 ms, which at a brisk walk is most of a face
+     * width. So the drawn box leads the motion: its centre is pushed along the
+     * velocity vector by half of `lead_sec` and its extent grows by the full
+     * distance the subject covers in that time, plus a constant fraction as a
+     * floor for the stationary case. The trailing edge stays where the subject
+     * was, the leading edge is where it is about to be, and the lag is spent
+     * inside the margin instead of outside the mask.
+     */
+    BlurBox getRenderBox(float lead_sec, float margin_frac) const;
 };
 
 class PrivacyBlur {
@@ -274,6 +289,9 @@ private:
     bool updateHwLut(const ma_img_t* frame, const std::vector<BlurBox>& boxes,
                      int target_w, int target_h,
                      int offset_x, int offset_y);
+    /* Re-hand the stored colour table to the driver after the regions have
+     * moved, re-shaped to the grid the driver now reports. See lut_layout_. */
+    bool reapplyLutTranslated();
     bool renderPixelated(const std::vector<BlurBox>& boxes, int active_count,
                          const ma_img_t* frame, int target_w, int target_h,
                          int offset_x, int offset_y);
@@ -312,6 +330,27 @@ private:
     int lut_test_ = 0;
     uint8_t frame_avg_ = 0x92;
     std::vector<uint8_t> lut_;
+    /*
+     * The grid geometry lut_ was authored against, remembered so the prediction
+     * thread can re-shape the table after it moves the regions. The driver only
+     * honours a table whose stride and grid match the geometry it is about to
+     * render; the bytes themselves are colours of absolute positions on the
+     * stream, so when the grid origin moves the right table is the old one
+     * shifted by the origin delta -- something that needs no pixels, which is
+     * all the prediction thread is allowed to have. Plain ints rather than the
+     * uapi struct so this header stays free of driver types.
+     */
+    struct LutLayout {
+        int32_t start_x = 0, start_y = 0;
+        int grid_size = 16;
+        int grid_w = 0, grid_h = 0;
+        uint32_t stride = 0;
+        bool valid = false;
+    };
+    LutLayout lut_layout_;
+    /* Scratch for the re-shaped table, reused so the 30 Hz path never
+     * allocates. */
+    std::vector<uint8_t> lut_scratch_;
     /* Per-cell RGB averages, kept between the two passes of updateHwLut(). */
     std::vector<uint8_t> cell_rgb_;
     /* Scratch for the ARGB tile, reused across frames and regions so the hot
@@ -338,6 +377,16 @@ private:
      * a second, short enough that two different people standing apart are never
      * confused for one. */
     static constexpr float kMaxAssocDist = 1.5f;
+
+    /*
+     * How far ahead of the estimate the drawn mask reaches, in seconds of the
+     * subject's own velocity. Sized to the detection interval (~100-160 ms at
+     * 6-10 fps): that is the staleness the margin has to absorb. The constant
+     * fraction is the floor for a stationary subject, whose estimate wanders a
+     * few percent between detections.
+     */
+    static constexpr float kRenderLeadSec   = 0.15f;
+    static constexpr float kRenderMarginFrac = 0.06f;
     unsigned frames_seen_ = 0;
     bool large_box_warned_ = false;
 
@@ -360,6 +409,14 @@ private:
     // Kalman prediction tracking
     std::vector<TrackedRegion> trackers_;
     std::mutex tracker_mutex_;
+    /*
+     * Serialises applyRegions() between the detection thread and the 30 Hz
+     * prediction thread. Region moves and the LUT that describes them have to
+     * land as one unit: interleaving two callers gives the driver a geometry
+     * from one and a table from the other, which it answers by discarding the
+     * table and painting the constant-colour fallback.
+     */
+    std::mutex rgn_mutex_;
     std::thread predict_thread_;
     std::atomic<bool> predicting_;
     float process_noise_;

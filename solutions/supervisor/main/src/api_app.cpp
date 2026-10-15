@@ -2080,7 +2080,8 @@ api_status_t api_app::setBlurConfig(request_t req, response_t res)
     const blur_config::conf prev = blur_config::load();
     const bool cold_changed = prev.backend != next.backend ||
                               prev.block_px != next.block_px ||
-                              prev.max_regions != next.max_regions;
+                              prev.max_regions != next.max_regions ||
+                              prev.enabled != next.enabled;
 
     if (!blur_config::save(next)) {
         response(res, -1, "Failed to persist privacy blur config");
