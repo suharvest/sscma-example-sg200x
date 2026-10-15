@@ -102,6 +102,20 @@ check_avahi() {
 }
 check_avahi
 
+check_dnsmasq_gateway() {
+    local fixed=0
+    for f in /etc/dnsmasq/*.conf; do
+        if [ -f "$f" ] && grep -q '^dhcp-option=set:usb0,3,' "$f"; then
+            sed -i 's|^dhcp-option=set:usb0,3,.*|dhcp-option=set:usb0,3 # suppress gateway: USB link is host-local|' "$f"
+            fixed=1
+        fi
+    done
+    if [ "$fixed" = "1" ] && [ -f /etc/init.d/S80dnsmasq ]; then
+        /etc/init.d/S80dnsmasq restart >/dev/null 2>&1 || true
+    fi
+}
+check_dnsmasq_gateway
+
 start() {
     # #18: reconcile the run mode BEFORE anything else — repair S/K prefix
     # drift and honor the one-shot .force_console flag so the device always

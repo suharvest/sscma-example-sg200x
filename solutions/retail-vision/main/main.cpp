@@ -481,11 +481,7 @@ static void init_onvif_config() {
 static bool init_blur() {
     PrivacyBlurConfig cfg;
     loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, nullptr);
-    if (!cfg.enabled) {
-        MA_LOGI(TAG, "Privacy blur off (no %s or BLUR_ENABLED=0)",
-                privacy_blur::PRIVACY_BLUR_CONFIG_PATH);
-        return true;
-    }
+    if (!cfg.present) cfg.enabled = false;
     if (!g_config.enable_rtsp) {
         // The mask lives in the RGN unit on the encoder's VPSS channel, so with
         // no stream there is nothing to mask.
@@ -501,8 +497,8 @@ static bool init_blur() {
         return false;
     }
 
-    MA_LOGI(TAG, "Privacy blur enabled (backend=%s, max_regions=%d)",
-            cfg.backend.c_str(), cfg.max_regions);
+    MA_LOGI(TAG, "Privacy blur ready (backend=%s, max_regions=%d, enabled=%d)",
+            cfg.backend.c_str(), cfg.max_regions, (int)cfg.enabled);
     return true;
 }
 

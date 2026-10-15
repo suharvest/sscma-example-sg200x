@@ -123,6 +123,20 @@ BlurBox TrackedRegion::getBox() const {
     return b;
 }
 
+BlurBox TrackedRegion::getRenderBox(float lead_sec, float margin_frac) const {
+    BlurBox b = getBox();
+
+    /* Centre leads the motion by half the horizon; extent grows by the whole
+     * of it. Net effect: the trailing edge stays put, the leading edge covers
+     * where the subject will be one detection interval from now. */
+    const float vx = kf[0].v, vy = kf[1].v;
+    b.x += vx * lead_sec * 0.5f;
+    b.y += vy * lead_sec * 0.5f;
+    b.w += std::fabs(vx) * lead_sec + margin_frac * b.w * 2.0f;
+    b.h += std::fabs(vy) * lead_sec + margin_frac * b.h * 2.0f;
+    return b;
+}
+
 // ============ PrivacyBlur ============
 
 PrivacyBlur::PrivacyBlur()
@@ -469,9 +483,29 @@ void PrivacyBlur::predictThreadEntry() {
                 tracker.predict(dt, process_noise_);
             }
 
+            /*
+             * A tracker whose predicted box has left the frame entirely is
+             * dead now, not max_miss_ detections from now. Constant-velocity
+             * extrapolation has no reason to stop: a track that lost its
+             * subject keeps integrating whatever velocity it last believed,
+             * 33 ms at a time, and sails off the edge -- the dmesg log showed
+             * rectangles at x=1680 on a 1280-wide stream, growing 24 px a
+             * tick. There is nothing on screen for such a track to conceal,
+             * and every rectangle it submits is one the kernel rejects.
+             */
+            trackers_.erase(
+                std::remove_if(trackers_.begin(), trackers_.end(),
+                    [](const TrackedRegion& t) {
+                        const BlurBox b = t.getBox();
+                        return b.x + b.w * 0.5f <= 0.0f || b.x - b.w * 0.5f >= 1.0f ||
+                               b.y + b.h * 0.5f <= 0.0f || b.y - b.h * 0.5f >= 1.0f;
+                    }),
+                trackers_.end());
+
             for (const auto& tracker : trackers_) {
                 if (tracker.miss_count <= max_miss_) {
-                    predicted_boxes.push_back(tracker.getBox());
+                    predicted_boxes.push_back(
+                        tracker.getRenderBox(kRenderLeadSec, kRenderMarginFrac));
                 }
             }
 
@@ -522,7 +556,8 @@ void PrivacyBlur::onDetection(const std::vector<geometry::StreamBox>& detections
         std::lock_guard<std::mutex> lock(tracker_mutex_);
         associateAndUpdate(input);
         for (const auto& t : trackers_) {
-            if (t.miss_count <= max_miss_) snapshot.push_back(t.getBox());
+            if (t.miss_count <= max_miss_)
+                snapshot.push_back(t.getRenderBox(kRenderLeadSec, kRenderMarginFrac));
         }
     }
     if (!enabled_.load()) snapshot.clear();
@@ -753,6 +788,7 @@ void PrivacyBlur::deinitRegions() {
 
     handles_.clear();
     regions_inited_ = false;
+    lut_layout_.valid = false;
 
     /* Closed here rather than left to process exit, because an application may
      * tear the blur down and bring it back up (the supervisor switches apps in
@@ -891,6 +927,10 @@ void PrivacyBlur::applyRegions(const std::vector<BlurBox>& boxes,
                               const ma_img_t* frame) {
     if (!regions_inited_ || stream_width_ <= 0 || stream_height_ <= 0) return;
 
+    /* Detection thread and prediction thread both end up here; see rgn_mutex_
+     * for why their region moves and table uploads must not interleave. */
+    std::lock_guard<std::mutex> rgn_lock(rgn_mutex_);
+
     /*
      * Normalised [0,1] -> stream pixels, and nothing else.
      *
@@ -977,7 +1017,11 @@ void PrivacyBlur::applyRegions(const std::vector<BlurBox>& boxes,
                 stChnAttr.unChnAttr.stMosaicChn.stRect.s32Y     = y;
                 stChnAttr.unChnAttr.stMosaicChn.stRect.u32Width  = (CVI_U32)w;
                 stChnAttr.unChnAttr.stMosaicChn.stRect.u32Height = (CVI_U32)h;
-                stChnAttr.unChnAttr.stMosaicChn.enBlkSize        = MOSAIC_BLK_SIZE_16;
+                /* Same block size as at attach: a display update silently
+                 * flipping an 8 px grid to 16 px would change the geometry the
+                 * colour table is checked against. */
+                stChnAttr.unChnAttr.stMosaicChn.enBlkSize        =
+                    (block_px_ == 8) ? MOSAIC_BLK_SIZE_8 : MOSAIC_BLK_SIZE_16;
                 stChnAttr.unChnAttr.stMosaicChn.u32Layer         = i;
             }
         };
@@ -1020,9 +1064,27 @@ void PrivacyBlur::applyRegions(const std::vector<BlurBox>& boxes,
             int w    = (int)(box.w * target_w);
             int h    = (int)(box.h * target_h);
 
-            // Clamp to frame bounds
-            left = std::max(0, left);
-            top  = std::max(0, top);
+            /*
+             * A box with nothing inside the frame is hidden, not clamped. The
+             * off-screen trackers that used to produce these are culled at the
+             * prediction tick, but a detection half out of shot can still put
+             * an edge past the boundary, and a rectangle the kernel rejects is
+             * worse than either drawing or hiding: CVI_RGN_SetDisplayAttr
+             * fails, the region keeps its previous rect, and a mask is drawn
+             * over whatever the subject was doing half a second ago.
+             */
+            if (left >= stream_width_ || top >= stream_height_ ||
+                left + w <= 0 || top + h <= 0) {
+                set_rect(false, 0, 0, 64, 64);
+                CVI_RGN_SetDisplayAttr(handles_[i], &stChn, &stChnAttr);
+                continue;
+            }
+
+            /* Clamp to frame bounds -- both ends. max() alone left the far
+             * edge open, and the kernel's answer to left=1360 on a 1280-wide
+             * channel is to reject the update and freeze the region. */
+            left = std::min(std::max(0, left), stream_width_ - 8);
+            top  = std::min(std::max(0, top), stream_height_ - 8);
             w    = std::min(w, stream_width_ - left);
             h    = std::min(h, stream_height_ - top);
 
@@ -1056,26 +1118,98 @@ void PrivacyBlur::applyRegions(const std::vector<BlurBox>& boxes,
         updateHwLut(frame, boxes, target_w, target_h, offset_x, offset_y);
     } else if (use_hw_pixelate_ && !lut_.empty()) {
         /*
-         * Moving the regions invalidates the colour table, so re-hand it over.
+         * Moving the regions invalidates the colour table, so hand it back --
+         * re-shaped to the geometry the regions have now.
          *
          * The driver only honours a stored table whose stride and grid
          * dimensions match the geometry it is about to render, and it derives
-         * that geometry from wherever the regions are now. This thread has just
-         * moved them, so the table uploaded at the last detection no longer
-         * matches and the driver discards it -- falling back to a constant
-         * fill, which renders as a flat slab of RGB332 index 1. That is the
-         * translucent navy rectangle that appeared over a moving face while a
-         * stationary one was masked properly.
+         * that geometry from wherever the regions are now. This thread has
+         * just moved them, so the table uploaded at the last detection no
+         * longer matches and the driver discards it -- falling back to a
+         * constant fill, which renders as a flat slab of RGB332 index 1. That
+         * is the translucent navy rectangle that appeared over a moving face
+         * while a stationary one was masked properly.
          *
-         * Re-uploading the same bytes fixes it because the upload path
-         * recomputes the geometry and stores the table against it. The colours
-         * are then one prediction tick stale -- at most 33 ms of movement,
-         * across cells 16 px wide -- which is invisible next to the difference
-         * between a mosaic and no mosaic at all. No pixels are read here, so
-         * this stays within what the prediction thread is allowed to do.
+         * Re-uploading the same bytes verbatim is not enough: the driver
+         * stores them against the new geometry, but each byte is the colour of
+         * an absolute position on the stream, and the new grid starts
+         * somewhere else. Indexed under a different origin and stride, the old
+         * bytes render as colours slid diagonally across the mask -- the
+         * scattered misplaced blocks in the field report. So the table is
+         * re-shaped instead: each new cell looks up the old cell covering the
+         * same stream position. Pure table arithmetic, no pixels, which is all
+         * the prediction thread is allowed to have; the colours are one tick
+         * stale, which across 16 px cells is invisible.
          */
-        mosaic_lut_apply(rgn_fd_, vpss_grp_, vpss_chn_, lut_.data(), (uint32_t)lut_.size());
+        reapplyLutTranslated();
     }
+}
+
+/*
+ * Re-shape lut_ from the geometry it was authored against (lut_layout_) to the
+ * geometry the driver reports now, and hand it over.
+ *
+ * Each cell's colour belongs to an absolute rectangle of the stream, so the
+ * translation is: for every cell of the new grid, find the old cell whose
+ * centre the new cell's centre falls into, and take its byte. Cells that map
+ * outside the old grid -- the subject moved, so the grid slid -- borrow the
+ * nearest edge cell, the same policy the sampler uses at frame edges and for
+ * the same reason: an adjacent cell is the closest available truth, and any
+ * gap would otherwise render as index 0, which is black.
+ */
+bool PrivacyBlur::reapplyLutTranslated() {
+    if (rgn_fd_ < 0 || lut_.empty() || !lut_layout_.valid) return false;
+
+    rgn_mosaic_lut_u cur;
+    if (mosaic_lut_query(rgn_fd_, vpss_grp_, vpss_chn_, &cur) != 0) return false;
+    if (cur.grid_w == 0 || cur.grid_h == 0 || cur.stride == 0) return false;
+
+    const bool same = cur.start_x == lut_layout_.start_x &&
+                      cur.start_y == lut_layout_.start_y &&
+                      (int)cur.grid_size == lut_layout_.grid_size &&
+                      (int)cur.grid_w == lut_layout_.grid_w &&
+                      (int)cur.grid_h == lut_layout_.grid_h &&
+                      cur.stride == lut_layout_.stride;
+    if (same) {
+        /* The query itself dropped the driver's stored copy, so the table has
+         * to go back even when nothing changed. */
+        return mosaic_lut_apply(rgn_fd_, vpss_grp_, vpss_chn_,
+                                lut_.data(), (uint32_t)lut_.size()) == 0;
+    }
+
+    const int g     = cur.grid_size ? cur.grid_size : lut_layout_.grid_size;
+    const int old_g = lut_layout_.grid_size > 0 ? lut_layout_.grid_size : g;
+    const size_t need = (size_t)cur.stride * cur.grid_h;
+    lut_scratch_.assign(need, 0);
+
+    for (int gy = 0; gy < (int)cur.grid_h; ++gy) {
+        /* Centre of the new cell, in stream pixels, mapped to an old row. */
+        int oy = (cur.start_y + gy * g + g / 2 - lut_layout_.start_y) / old_g;
+        if (oy < 0) oy = 0;
+        if (oy >= lut_layout_.grid_h) oy = lut_layout_.grid_h - 1;
+        for (int gx = 0; gx < (int)cur.grid_w; ++gx) {
+            int ox = (cur.start_x + gx * g + g / 2 - lut_layout_.start_x) / old_g;
+            if (ox < 0) ox = 0;
+            if (ox >= lut_layout_.grid_w) ox = lut_layout_.grid_w - 1;
+            const uint8_t v = lut_[(size_t)oy * lut_layout_.stride + ox];
+            lut_scratch_[(size_t)gy * cur.stride + gx] = v ? v : 1;
+        }
+    }
+
+    if (mosaic_lut_apply(rgn_fd_, vpss_grp_, vpss_chn_,
+                         lut_scratch_.data(), (uint32_t)need) != 0)
+        return false;
+
+    /* The re-shaped table is now the stored truth, so the next tick translates
+     * from this geometry rather than compounding from the original one. */
+    lut_.swap(lut_scratch_);
+    lut_layout_.start_x  = cur.start_x;
+    lut_layout_.start_y  = cur.start_y;
+    lut_layout_.grid_size = g;
+    lut_layout_.grid_w   = cur.grid_w;
+    lut_layout_.grid_h   = cur.grid_h;
+    lut_layout_.stride   = cur.stride;
+    return true;
 }
 
 /*
@@ -1338,8 +1472,20 @@ bool PrivacyBlur::updateHwLut(const ma_img_t* frame, const std::vector<BlurBox>&
         }
     }
 
-    return mosaic_lut_apply(rgn_fd_, vpss_grp_, vpss_chn_,
-                            lut_.data(), (uint32_t)lut_.size()) == 0;
+    if (mosaic_lut_apply(rgn_fd_, vpss_grp_, vpss_chn_,
+                         lut_.data(), (uint32_t)lut_.size()) != 0)
+        return false;
+
+    /* Remember what geometry these bytes mean, so the prediction thread can
+     * re-shape them after it moves the regions. */
+    lut_layout_.start_x   = layout.start_x;
+    lut_layout_.start_y   = layout.start_y;
+    lut_layout_.grid_size = layout.grid_size ? layout.grid_size : block_px_;
+    lut_layout_.grid_w    = layout.grid_w;
+    lut_layout_.grid_h    = layout.grid_h;
+    lut_layout_.stride    = layout.stride;
+    lut_layout_.valid     = true;
+    return true;
 }
 
 void pixelateRgb888(void* rgb888, int width, int height,
