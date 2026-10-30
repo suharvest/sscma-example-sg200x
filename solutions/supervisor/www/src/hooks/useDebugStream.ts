@@ -85,6 +85,8 @@ export interface IOverlayFrame {
   keypoints?: IResultKeypointGroup[];
   /** present when the latest results message carries a `status_card` */
   statusCard?: IResultStatusCard;
+  /** present when the latest results message carries a top-level `polygons` */
+  polygons?: Array<{ points: number[][]; label?: string }>;
   /** inference resolution the coordinates are relative to */
   resW: number;
   resH: number;
@@ -125,7 +127,31 @@ function parseClassification(
   data: Record<string, unknown>
 ): IResultClassification | null {
   const c = data.classification;
-  if (!c || typeof c !== "object" || Array.isArray(c)) return null;
+  if (!c || typeof c !== "object" || Array.isArray(c)) {
+    // Fallback: waste_sorting_result schema compatibility
+    if (
+      data.type === "waste_sorting_result" &&
+      data.category &&
+      typeof data.category === "object"
+    ) {
+      const cat = data.category as Record<string, unknown>;
+      const label = typeof cat.class_name === "string" ? cat.class_name : "";
+      if (!label) return null;
+      const confidence = Number(data.confidence) || 0;
+      const scores: { name: string; score: number }[] = [];
+      if (Array.isArray(data.top3)) {
+        for (const item of data.top3) {
+          if (!item || typeof item !== "object") continue;
+          const it = item as Record<string, unknown>;
+          const name = String(it.class_name || "");
+          const score = Number(it.confidence) || 0;
+          if (name) scores.push({ name, score });
+        }
+      }
+      return { label, confidence, scores };
+    }
+    return null;
+  }
   const o = c as Record<string, unknown>;
   const label = typeof o.label === "string" ? o.label : "";
   if (!label) return null;
@@ -231,6 +257,32 @@ function parseStatusCard(
   };
 }
 
+/** Parse a top-level `polygons` array (defensive). Each entry carries points
+ *  and an optional label. */
+function parsePolygons(
+  data: Record<string, unknown>
+): Array<{ points: number[][]; label?: string }> | null {
+  const raw = data.polygons;
+  if (!Array.isArray(raw)) return null;
+  const out: Array<{ points: number[][]; label?: string }> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const o = entry as Record<string, unknown>;
+    const label = typeof o.label === "string" ? o.label : undefined;
+    const rawPts = Array.isArray(o.points) ? (o.points as unknown[]) : [];
+    const points: number[][] = [];
+    for (const p of rawPts) {
+      if (Array.isArray(p) && p.length >= 2) {
+        const x = Number(p[0]);
+        const y = Number(p[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+      }
+    }
+    if (points.length >= 2) out.push({ points, label });
+  }
+  return out.length ? out : null;
+}
+
 /** Parse a results JSON message into an overlay frame (defensive). */
 function parseOverlayFrame(
   data: Record<string, unknown> | null
@@ -240,10 +292,11 @@ function parseOverlayFrame(
   const qrcodes = parseQrcodes(data);
   const keypoints = parseKeypoints(data);
   const statusCard = parseStatusCard(data);
+  const polygons = parsePolygons(data);
   const rawBoxes = data.boxes;
   // Box apps require a boxes[] array; classifier apps may omit it entirely
   // (or send an empty one) — a classification, a top-level qrcodes array, a
-  // skeleton or a status card alone still yields a frame (so an empty codes[]
+  // skeleton, a status card or polygons alone still yields a frame (so an empty codes[]
   // clears the overlay). Pose apps draw a skeleton and no box at all, so
   // requiring boxes[] here would blank their overlay entirely.
   if (
@@ -251,7 +304,8 @@ function parseOverlayFrame(
     !classification &&
     !qrcodes &&
     !keypoints &&
-    !statusCard
+    !statusCard &&
+    !polygons
   ) {
     return null;
   }
@@ -321,6 +375,7 @@ function parseOverlayFrame(
     qrcodes: qrcodes ?? undefined,
     keypoints: keypoints ?? undefined,
     statusCard: statusCard ?? undefined,
+    polygons: polygons ?? undefined,
     resW,
     resH,
   };

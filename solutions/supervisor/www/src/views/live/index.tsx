@@ -59,7 +59,7 @@ interface ContentRect {
  *  facemesh's debug envelope is center boxes with a "state EAR" label). */
 function adaptDebugFrame(frame: IOverlayFrame) {
   const layers: Array<Record<string, unknown>> = [];
-  const { resW, resH, boxes, classification, qrcodes, keypoints, statusCard } =
+  const { resW, resH, boxes, classification, qrcodes, keypoints, statusCard, polygons } =
     frame;
   if (boxes && boxes.length) {
     const items = boxes.map((b) => {
@@ -122,6 +122,18 @@ function adaptDebugFrame(frame: IOverlayFrame) {
     layers.push({
       type: "polygons",
       items: qrcodes.map((q) => ({ points: q.points, label: q.text })),
+    });
+  }
+  // Generic polygons (e.g. motion detection ROI or zones)
+  if (polygons && polygons.length) {
+    layers.push({
+      type: "polygons",
+      items: polygons.map((p) => ({
+        points: p.points.map(([x, y]) =>
+          x <= 1 && y <= 1 ? [x, y] : [x / resW, y / resH]
+        ),
+        label: p.label,
+      })),
     });
   }
   return { layers };
