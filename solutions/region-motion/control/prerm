@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+echo "Stopping Region Motion Detection..."
+
+for script in /etc/init.d/[SK]92region-motion; do
+    if [ -x "$script" ]; then
+        "$script" stop || true
+    fi
+done
+
+# Wait for process exit if still running
+for i in 1 2 3 4 5; do
+    if ! pgrep -f /usr/local/bin/region-motion >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+if pgrep -f /usr/local/bin/region-motion >/dev/null 2>&1; then
+    echo "[WARN] Force terminating region-motion..."
+    pkill -9 -f /usr/local/bin/region-motion 2>/dev/null || true
+    sleep 1
+fi
+
+if pgrep -f /usr/local/bin/region-motion >/dev/null 2>&1; then
+    echo "[ERROR] Failed to stop region-motion daemon" >&2
+    exit 1
+fi
+
+exit 0

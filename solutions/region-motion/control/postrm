@@ -1,0 +1,7 @@
+#!/bin/sh
+
+rm -f /userdata/local/apps/region-motion.json
+rm -f /userdata/local/apps/region-motion.md
+rm -f /userdata/local/apps/region-motion.zh.md
+
+exit 0

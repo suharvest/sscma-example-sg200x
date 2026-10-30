@@ -1,0 +1,8 @@
+#!/bin/sh
+
+for script in /etc/init.d/[SK]92region-motion; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/region-motion 2>/dev/null || true
+
+exit 0

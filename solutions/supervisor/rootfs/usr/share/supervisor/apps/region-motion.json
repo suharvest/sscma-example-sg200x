@@ -1,0 +1,76 @@
+{
+  "id": "region-motion",
+  "name": "Region Motion Detection",
+  "name_zh": "选区运动检测",
+  "scene": "Security & Monitoring",
+  "scene_zh": "安防监控",
+  "description": "Monitors custom polygon regions for motion on CPU without NPU models, with real-time overlay and native Home Assistant auto-discovery.",
+  "description_zh": "在 CPU 上监测画面指定多边形区域内的运动变化，无需 NPU 模型，支持在控制台画面上自由划定区域，原生支持 Home Assistant 自动发现与告警联动。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92region-motion",
+  "image": "/apps/region-motion.png",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/region-motion/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "config_schema": {
+    "groups": [
+      {
+        "key": "detection",
+        "title": "Detection",
+        "title_zh": "检测参数",
+        "items": [
+          {
+            "key": "pixel_threshold",
+            "type": "number",
+            "title": "Pixel sensitivity",
+            "title_zh": "像素变化灵敏度",
+            "min": 5,
+            "max": 100,
+            "step": 1,
+            "default": 25
+          },
+          {
+            "key": "min_motion_area",
+            "type": "number",
+            "title": "Minimum motion ratio",
+            "title_zh": "最小触发面积占比",
+            "min": 0.001,
+            "max": 0.5,
+            "step": 0.001,
+            "default": 0.015
+          },
+          {
+            "key": "debounce_frames",
+            "type": "number",
+            "title": "Debounce frames",
+            "title_zh": "防抖确认帧数",
+            "min": 1,
+            "max": 10,
+            "step": 1,
+            "default": 3
+          }
+        ]
+      },
+      {
+        "key": "spatial",
+        "title": "Detection Zone",
+        "title_zh": "检测区域",
+        "items": [
+          {
+            "key": "roi_zone",
+            "type": "zone",
+            "title": "Active zone",
+            "title_zh": "运动触发选区",
+            "maxPoints": 8
+          }
+        ]
+      }
+    ]
+  },
+  "version": "0.1.0",
+  "author": "Seeed Studio"
+}
