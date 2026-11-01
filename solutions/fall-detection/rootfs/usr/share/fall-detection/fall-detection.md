@@ -113,8 +113,8 @@ The app returns every pose person and associates boxes with a lightweight
 IoU/centre-distance tracker. Each `track_id` owns an independent temporal
 history and fall state machine, so nearby people cannot splice their histories.
 Short detector gaps remain in `persons[]` as `person_detected:false` tracks,
-allowing post-impact occlusion confirmation; tracks are retired after the
-configured timeout. Legacy top-level fields are aggregates: `fall_detected`
+keeping their state through a post-impact occlusion; a track missing for
+longer than `occlusion_grace_sec` is retired. Legacy top-level fields are aggregates: `fall_detected`
 and `fall_event` are OR across retained tracks, `person_count` is the number of
 currently visible people, `fallen_count` counts retained fallen states, and
 `state` is the most severe state. Top-level `event_id` is a stream-global

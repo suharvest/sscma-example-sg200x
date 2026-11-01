@@ -382,8 +382,7 @@ static void process_frame() {
                 fresh.detector.bbox_aspect_ratio_threshold,
                 fresh.detector.confirmation_sec);
         g_tracker->setFallConfig(fresh.detector);
-        const float tracker_timeout = std::max(2.0f,
-            fresh.detector.occlusion_grace_sec + fresh.detector.suspected_timeout_sec + 0.5f);
+        const float tracker_timeout = trackRetentionSec(fresh.detector);
         g_tracker->setTimeout(tracker_timeout, trackerMissLimit(tracker_timeout));
         g_pose_detector->setThreshold(fresh.confidence);
         g_pose_detector->setKeypointThreshold(fresh.keypoint_confidence);
@@ -536,12 +535,11 @@ int main(int argc, char** argv) {
 
     TrackerConfig tracker_config;
     tracker_config.fall = cfg.detector;
-    // Keep a track long enough for FallDetector's post-impact occlusion grace
-    // and suspected timeout, while bounding stale-track memory on a quiet
-    // camera. The frame cap covers the normal 15 fps stream as well as brief
-    // scheduling jitter.
-    tracker_config.timeout_sec = std::max(2.0f,
-        cfg.detector.occlusion_grace_sec + cfg.detector.suspected_timeout_sec + 0.5f);
+    // A lost track is kept for occlusion_grace_sec (fed invalid observations,
+    // which retain state but never originate an event), then dropped; see
+    // trackRetentionSec(). The frame cap is only a backstop for timestamp
+    // jitter; the wall-clock timeout is the binding limit at 15 fps.
+    tracker_config.timeout_sec = trackRetentionSec(cfg.detector);
     tracker_config.max_missed_frames = trackerMissLimit(tracker_config.timeout_sec);
     g_tracker = std::make_unique<MultiPersonTracker>(tracker_config);
     g_pose_detector = new PoseDetector();

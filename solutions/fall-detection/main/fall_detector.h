@@ -60,6 +60,16 @@ struct FallConfig {
     float late_confirmation_sec = 3.20f;
 };
 
+// How long MultiPersonTracker keeps a track whose detection is missing. The
+// track is fed invalid observations during this time (FallDetector treats them
+// as occlusion: state is retained, no new event can originate) and is then
+// dropped, matching the reCamera Pro reference (tracker max_lost_sec =
+// occlusion_grace_sec). The 0.2 s floor keeps a zero grace from reissuing a
+// track id on every frame at 15 fps.
+inline float trackRetentionSec(const FallConfig& config) {
+    return config.occlusion_grace_sec > 0.2f ? config.occlusion_grace_sec : 0.2f;
+}
+
 struct FallDiagnostics {
     float hip_drop_speed = 0.0f;
     float hip_drop_distance = 0.0f;
