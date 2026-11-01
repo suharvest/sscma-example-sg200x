@@ -57,7 +57,7 @@ console 写入 `/userdata/local/apps/fall-detection.config.json`，也可通过 
 请让整个人体以及双肩、双髋保持在画面中。应用会返回画面中的所有姿态人体，使用
 轻量 IoU/中心距离跟踪器关联人体框。每个 `track_id` 都有独立的时序历史和跌倒状态机，
 不会把附近两个人的历史拼接在一起。检测短暂丢失时，`persons[]` 会保留
-`person_detected:false` 的轨道，支持落地后的遮挡确认；轨道在超时后清理。
+`person_detected:false` 的轨道，落地后被遮挡时保持原状态；丢失超过 `occlusion_grace_sec` 的轨道被清理。
 顶层旧字段是聚合值：`fall_detected` / `fall_event` 为所有保留轨道的 OR，
 `person_count` 是当前可见人数，`fallen_count` 统计保留轨道中的跌倒状态，`state` 是最严重状态。
 顶层 `event_id` 是流级递增序号（`event_id_scope:"stream_global_event_id"`），

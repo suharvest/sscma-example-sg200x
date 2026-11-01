@@ -363,6 +363,34 @@ int main() {
         assert(events == 0 && d.eventId() == 0);
     }
 
+    // 8. Lost-track retention follows the occlusion grace (reference
+    // max_lost_sec = occlusion_grace_sec). Within it, invalid observations keep
+    // a confirmed Fallen state and never raise a second edge.
+    {
+        FallConfig rc;
+        assert(std::fabs(fall::trackRetentionSec(rc) - 0.75f) < 1e-6f);
+        rc.occlusion_grace_sec = 2.0f;
+        assert(std::fabs(fall::trackRetentionSec(rc) - 2.0f) < 1e-6f);
+        rc.occlusion_grace_sec = 0.0f;
+        assert(std::fabs(fall::trackRetentionSec(rc) - 0.2f) < 1e-6f);
+
+        FallDetector d(cfg);
+        d.update(frame(0.0, 0.50f, 10.0f, 0.65f));
+        d.update(frame(0.25, 0.72f, 65.0f, 1.45f));
+        d.update(frame(0.55, 0.75f, 72.0f, 1.55f));
+        auto r = d.update(frame(1.25, 0.75f, 72.0f, 1.55f));
+        assert(r.state == FallState::Fallen && r.fall_event && r.event_id == 1);
+        const double lost_at = 1.25;
+        for (double t = lost_at + 1.0 / 15.0;
+             t - lost_at <= fall::trackRetentionSec(cfg); t += 1.0 / 15.0) {
+            FallObservation gap;
+            gap.timestamp_sec = t;
+            r = d.update(gap);
+            assert(r.state == FallState::Fallen && r.fall_detected);
+            assert(!r.fall_event && r.event_id == 1);
+        }
+    }
+
     std::cout << "fall_detector_test: all scenarios passed\n";
     return 0;
 }
