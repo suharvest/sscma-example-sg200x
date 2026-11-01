@@ -39,13 +39,18 @@ console 写入 `/userdata/local/apps/fall-detection.config.json`，也可通过 
 | `recovery_aspect_ratio` | 1.10 | 站立框宽高比上限 |
 | `recovery_window_sec` | 2.00 | 站立持续恢复时间 |
 | `cooldown_sec` | 3.00 | 事件后的再次报警抑制时间 |
+| `location_cooldown_sec` | 10.0 | 该时间内已报警位置附近、原轨道已消失时的再次跌倒不报警；0 关闭（0-120） |
 
 ## MQTT / Home Assistant
 
 主题：`recamera/fall-detection/results`，每处理一帧发布一条 JSON。自动发现
 实体包括 **Fall Detected**、**Fall State**、**Fall Event ID**、**Person Count**、
 **Fallen Count** 和 **Person Present**。`fall_event` 是边沿标志，`event_id` 可用于去重；
-`fall_detected` 在 `fallen` 和 `recovering` 期间保持 true。`features` 中每帧
+`fall_detected` 在 `fallen` 和 `recovering` 期间保持 true。
+`location_cooldown_sec`：在该时间内已报警事件的位置附近、且该事件的轨道已不可见时（同一人换了新 `track_id`），
+新的跌倒边沿被抑制：不置 `fall_event`，顶层 `event_id` 不递增；该轨道处于被抑制的跌倒期间，`persons[]` 项保留检测器
+`state`，但 `fall_detected:false`、附带 `fall_suppressed:true`，`event_id` 为该轨道最后一次实际报警的序号（无则 `0`）。
+被抑制的边沿不延长冷却窗口；原事件轨道仍可见时，不会抑制其他人的跌倒。`features` 中每帧
 输出诊断值，便于离线调阈值。
 
 ## 视频、相机和多人说明
