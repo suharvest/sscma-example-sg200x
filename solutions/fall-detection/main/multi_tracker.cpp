@@ -58,6 +58,8 @@ MultiPersonTracker::MultiPersonTracker(TrackerConfig config) : config_(std::move
     config_.center_distance_threshold = std::max(0.0f, config_.center_distance_threshold);
     config_.max_missed_frames = std::max(1, config_.max_missed_frames);
     config_.timeout_sec = std::max(0.0f, config_.timeout_sec);
+    location_cooldown_.setWindow(config_.location_cooldown_sec);
+    config_.location_cooldown_sec = location_cooldown_.window();
 }
 
 void MultiPersonTracker::reset() {
@@ -65,6 +67,7 @@ void MultiPersonTracker::reset() {
     next_id_ = 1;
     global_event_id_ = 0;
     event_edge_count_ = 0;
+    location_cooldown_.reset();
 }
 
 void MultiPersonTracker::setFallConfig(const FallConfig& config) {
@@ -75,6 +78,11 @@ void MultiPersonTracker::setFallConfig(const FallConfig& config) {
 void MultiPersonTracker::setTimeout(float timeout_sec, int max_missed_frames) {
     config_.timeout_sec = std::max(0.0f, timeout_sec);
     if (max_missed_frames >= 0) config_.max_missed_frames = std::max(1, max_missed_frames);
+}
+
+void MultiPersonTracker::setLocationCooldown(float window_sec) {
+    location_cooldown_.setWindow(window_sec);
+    config_.location_cooldown_sec = location_cooldown_.window();
 }
 
 void MultiPersonTracker::updateVisible(TrackedPerson& track, const Subject& subject,
@@ -156,6 +164,18 @@ std::vector<TrackedPerson*> MultiPersonTracker::update(
     // temporal window receives an explicit blank frame rather than stale pose.
     for (auto& track : tracks_) {
         if (!track->updated_this_frame) updateOccluded(*track, timestamp_sec);
+    }
+
+    // Same-location cooldown, in track order like the reference: an edge
+    // near a recent emitted event whose track is no longer visible is the
+    // same person under a new id and is not published.
+    std::vector<std::uint64_t> visible_ids;
+    for (const auto& track : tracks_) {
+        if (track->visible) visible_ids.push_back(track->track_id);
+    }
+    for (auto& track : tracks_) {
+        location_cooldown_.apply(track->track_id, track->subject.box, timestamp_sec,
+                                 visible_ids, track->output, track->cooldown);
     }
 
     // FallDetector emits a one-frame edge. Assign a stream-level sequence

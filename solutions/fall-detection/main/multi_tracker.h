@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "fall_detector.h"
+#include "location_cooldown.h"
 #include "pose_detector.h"
 #include "temporal_classifier.h"
 
@@ -24,8 +25,11 @@ struct TrackedPerson {
 
     FallDetector fall;
     TemporalClassifier temporal;
+    // Published output: detector output after the location cooldown (see
+    // LocationCooldown::apply); event_id is the last emitted event.
     FallOutput output;
     FallObservation observation;
+    CooldownTrackState cooldown;
 
     // Internal generation marker used while updating a vector that can grow
     // during a frame. It is kept public only to avoid another allocation.
@@ -37,6 +41,7 @@ struct TrackerConfig {
     float center_distance_threshold = 0.25f;
     int max_missed_frames = 30;
     float timeout_sec = 3.0f;
+    float location_cooldown_sec = 10.0f;  // 0 disables
     FallConfig fall;
 };
 
@@ -51,6 +56,7 @@ public:
     void reset();
     void setFallConfig(const FallConfig& config);
     void setTimeout(float timeout_sec, int max_missed_frames = -1);
+    void setLocationCooldown(float window_sec);
 
     std::vector<TrackedPerson*> update(const std::vector<Subject>& detections,
                                        double timestamp_sec,
@@ -59,7 +65,8 @@ public:
 
     int activeCount() const;
     // Monotonic stream-level event sequence. It increments once for every
-    // per-track fall_event edge; per-track FallOutput::event_id remains local
+    // emitted per-track fall_event edge (location-cooldown suppressed edges
+    // are not counted); per-track FallOutput::event_id remains local
     // and is emitted inside persons[].
     std::uint64_t globalEventId() const { return global_event_id_; }
     // Number of frames that carried at least one fall_event edge. This differs
@@ -79,6 +86,7 @@ private:
     std::uint64_t global_event_id_ = 0;
     std::uint64_t event_edge_count_ = 0;
     std::vector<std::unique_ptr<TrackedPerson>> tracks_;
+    LocationCooldown location_cooldown_;
 };
 
 // Convert a detector subject into the geometric observation consumed by the

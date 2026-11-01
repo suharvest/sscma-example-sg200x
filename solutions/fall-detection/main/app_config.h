@@ -16,6 +16,9 @@ struct AppConfig {
     // State-machine thresholds. Keep these in the manifest so deployments can
     // tune camera angle/model behaviour without rebuilding the binary.
     FallConfig detector{};
+
+    // Same-location alarm cooldown (s) across track ids; 0 disables.
+    float location_cooldown_sec = 10.0f;
 };
 
 bool load_app_config(const std::string& path, AppConfig& out);

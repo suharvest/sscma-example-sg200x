@@ -2,6 +2,8 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 
 #include "json.hpp"
@@ -40,6 +42,15 @@ void read_float(const json& cfg, const char* key, float& out, float lo, float hi
     out = v;
 }
 
+// Out-of-range values are clamped rather than ignored.
+void read_float_clamped(const json& cfg, const char* key, float& out, float lo, float hi) {
+    if (!cfg.contains(key) || !cfg[key].is_number()) return;
+    const float v = cfg[key].get<float>();
+    if (!std::isfinite(v)) return;
+    if (v < lo || v > hi) MA_LOGW(TAG, "%s = %.3f out of [%.3f,%.3f], clamped", key, v, lo, hi);
+    out = std::clamp(v, lo, hi);
+}
+
 }  // namespace
 
 bool load_app_config(const std::string& path, AppConfig& out) {
@@ -75,6 +86,7 @@ bool load_app_config(const std::string& path, AppConfig& out) {
     read_float(cfg, "recovery_window_sec", out.detector.recovery_window_sec, 0.0f, 60.0f);
     read_float(cfg, "cooldown_sec", out.detector.cooldown_sec, 0.0f, 120.0f);
     read_float(cfg, "late_confirmation_sec", out.detector.late_confirmation_sec, 0.0f, 30.0f);
+    read_float_clamped(cfg, "location_cooldown_sec", out.location_cooldown_sec, 0.0f, 120.0f);
     return true;
 }
 

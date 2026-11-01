@@ -42,6 +42,7 @@ configurable (the manifest lists ranges and defaults):
 | `recovery_aspect_ratio` | 1.10 | Upright width/height limit |
 | `recovery_window_sec` | 2.00 | Upright persistence before normal |
 | `cooldown_sec` | 3.00 | Suppress immediate re-alarms after an event |
+| `location_cooldown_sec` | 10.0 | Suppress a fall at the spot of an event emitted within this window whose track is gone; 0 disables (0-120) |
 | `late_confirmation_sec` | 3.20 | Extra time past `suspected_timeout_sec` a still-lying candidate may be confirmed by a late temporal positive |
 
 Policy (v0.2.1): only geometry arms `suspected` — a fast hip drop plus a horizontal cue, or, when the pose was invalid during the drop, a hip displacement of at least `hip_drop_distance_threshold` below the last upright baseline (at most `motion_window_sec + occlusion_grace_sec` old). A temporal-positive window alone never leaves `normal`. `fallen` is reached only from `suspected` and requires the learned gate plus a valid lying pose in the current frame; the arming drop latches the motion evidence feature, so `min_suspected_features=3` still confirms a victim lying still.
@@ -98,7 +99,17 @@ One JSON document is published per processed frame on
 ```
 
 `fall_event` is an edge flag; use `event_id` for de-duplication. `fall_detected`
-remains true throughout `fallen` and `recovering`. Diagnostic features are
+remains true throughout `fallen` and `recovering`.
+
+`location_cooldown_sec` suppresses a fall edge near the location of an event
+emitted within that window whose track is no longer visible (the same person
+re-detected under a new `track_id`). A suppressed edge sets no `fall_event`
+and does not advance the top-level `event_id`. While that track stays in the
+suppressed episode, its `persons[]` item keeps the detector `state` but reports
+`fall_detected:false`, carries `fall_suppressed:true`, and reports the track's
+last emitted `event_id` (`0` if none). Suppressed edges do not extend the
+window, and an event whose track is still visible never suppresses another
+person's fall. Diagnostic features are
 included on every frame so threshold tuning can be done from recorded MQTT
 without rerunning inference.
 

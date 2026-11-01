@@ -184,6 +184,8 @@ json personJson(const PayloadContext& ctx, const TrackedPerson& person) {
     p["fall_detected"] = person.output.fall_detected;
     p["fall_event"] = person.output.fall_event;
     p["event_id"] = person.output.event_id;
+    // Present only while the track is in a location-cooldown suppressed episode.
+    if (person.cooldown.fall_suppressed) p["fall_suppressed"] = true;
     p["state"] = fallStateName(person.output.state);
     p["tracking"] = person.visible;
     p["missed_frames"] = person.missed;

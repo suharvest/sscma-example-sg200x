@@ -359,6 +359,11 @@ static void process_frame() {
     }
 
     for (const auto* track : tracks) {
+        if (track != nullptr && track->cooldown.suppressed_edge) {
+            MA_LOGI(TAG, "Fall suppressed track=%llu detector_event=%llu (location cooldown)",
+                    static_cast<unsigned long long>(track->track_id),
+                    static_cast<unsigned long long>(track->cooldown.suppressed_event_id));
+        }
         if (track == nullptr || !track->output.fall_event) continue;
         MA_LOGI(TAG, "Fall event track=%llu event_id=%llu (temporal=%.3f hip_speed=%.3f torso=%.1f aspect=%.2f)",
                 static_cast<unsigned long long>(track->track_id),
@@ -384,6 +389,7 @@ static void process_frame() {
         g_tracker->setFallConfig(fresh.detector);
         const float tracker_timeout = trackRetentionSec(fresh.detector);
         g_tracker->setTimeout(tracker_timeout, trackerMissLimit(tracker_timeout));
+        g_tracker->setLocationCooldown(fresh.location_cooldown_sec);
         g_pose_detector->setThreshold(fresh.confidence);
         g_pose_detector->setKeypointThreshold(fresh.keypoint_confidence);
     }
@@ -541,6 +547,7 @@ int main(int argc, char** argv) {
     // jitter; the wall-clock timeout is the binding limit at 15 fps.
     tracker_config.timeout_sec = trackRetentionSec(cfg.detector);
     tracker_config.max_missed_frames = trackerMissLimit(tracker_config.timeout_sec);
+    tracker_config.location_cooldown_sec = cfg.location_cooldown_sec;
     g_tracker = std::make_unique<MultiPersonTracker>(tracker_config);
     g_pose_detector = new PoseDetector();
     if (!g_pose_detector->init(g_config.model_path)) { cleanup(); return 1; }
