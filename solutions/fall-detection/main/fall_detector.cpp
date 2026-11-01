@@ -235,7 +235,7 @@ FallOutput FallDetector::update(const FallObservation& o) {
                             ? std::max(0.0f, o.hip_y - baseline_hip_y_) : 0.0f;
                     }
                     break;
-}
+                }
 
                 case FallState::Suspected: {
                     // The motion feature is latched by the arming drop; the
