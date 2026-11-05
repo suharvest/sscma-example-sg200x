@@ -99,7 +99,9 @@ To prepare the application for distribution, package it using `cpack`:
 cd build && cpack
 ```  
 
-This will generate a **.deb** package, which can be installed on the device.  
+This will generate a **.deb** package (using gzip compression), which can be installed on the device.  
+
+> **Note on manual packaging**: If repacking or patching deb packages manually with `dpkg-deb`, you **must** use `dpkg-deb -Zgzip -b <pkg_dir> <output.deb>`. Modern Ubuntu (22.04+) defaults to zstd compression (`control.tar.zst`, `data.tar.zst`), which the embedded `opkg` on reCamera cannot extract.  
 
 ## Deploying the Application  
 
