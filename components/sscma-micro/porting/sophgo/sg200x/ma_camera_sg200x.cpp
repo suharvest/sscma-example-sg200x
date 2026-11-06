@@ -137,7 +137,10 @@ int CameraSG200X::vpssCallback(void* pData, void* pArgs) {
         uint32_t offset = 0;
         for (int i = 0; i < 3; i++) {
             if (f->u32Length[i]) {
-                f->pu8VirAddr[i] = (CVI_U8*)CVI_SYS_Mmap(f->u64PhyAddr[i], f->u32Length[i]);
+                // Cached mapping: memcpy from the default uncached mapping reads DRAM
+                // word by word. Invalidate first so the CPU sees what VPSS wrote.
+                f->pu8VirAddr[i] = (CVI_U8*)CVI_SYS_MmapCache(f->u64PhyAddr[i], f->u32Length[i]);
+                CVI_SYS_IonInvalidateCache(f->u64PhyAddr[i], f->pu8VirAddr[i], f->u32Length[i]);
                 memcpy(frame->data + offset, f->pu8VirAddr[i], f->u32Length[i]);
                 CVI_SYS_Munmap(f->pu8VirAddr[i], f->u32Length[i]);
                 offset += f->u32Length[i];
