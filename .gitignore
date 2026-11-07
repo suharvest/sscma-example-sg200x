@@ -12,3 +12,13 @@ tools/face-analysis-debugger/
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Local runtime & test artifacts
+*.png
+.playwright-cli/
+.claude/settings.local.json
+models/convert-work/
+solutions/jetson-fall-detection/
+build-*/
+solutions/*/build*/
+

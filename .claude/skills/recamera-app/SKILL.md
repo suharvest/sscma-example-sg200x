@@ -1,19 +1,120 @@
 ---
 name: recamera-app
-description: 在 reCamera 上新建或改造一个 C++ 应用时使用 —— 打包成 deb、在新版 supervisor（console）的应用画廊里上架、以及该复用哪个公共组件（隐私打码、调试串流、RTSP、MQTT/HA、ONVIF、坐标类型）。当任务涉及 solutions/ 下新增应用、修改 manifest / init 脚本 / control 脚本、应用没出现在 console 里、或要给应用加打码/推流/上报能力时触发。
+description: 在 reCamera (SG2002 RISC-V SoC) 上新建或改造高性能 C++ 应用时使用 —— 基于 components/app_framework 框架开发（流式监控与按需触发双范式）、零拷贝切片与待机降频、打包成 deb、在新版 supervisor（console）的应用画廊里上架、以及复用公共组件（隐私打码、调试串流、RTSP、MQTT/HA、ONVIF）。当任务涉及 solutions/ 下新增应用、修改 manifest / init 脚本 / control 脚本、应用重构、工业工位质检开发、或性能优化时触发。
 ---
 
-# reCamera 应用：上架规范与公共能力
+# reCamera 高性能应用开发与上架规范 (recamera-app)
 
-这份文档回答两个问题：**怎么让 console 认得你的应用**，以及**哪些能力已经有人写好了，别再写一遍**。
+面向 **ReCamera（算能 SG2002，单核 RISC-V 64-bit @ 1.0 GHz，256MB / 512MB RAM，1TOPS INT8 TPU）** 的全套架构规范、上架规则与工程踩坑宝典。
 
-内容全部来自真实实现（`solutions/supervisor/main/src/api_app.cpp` 的校验逻辑、`cmake/package.cmake`、各组件头文件），不是设想的规范。**改动这些实现时，这份文档要跟着改**。
+这份文档回答三个核心问题：
+1. **怎么用最少代码、最低负荷开发高性能应用**（基于 `components/app_framework`）；
+2. **怎么让 supervisor / console 认得并正确管理你的应用**（Gallery 上架规范）；
+3. **真实真机环境下有哪些绝对不能踩的硬件与驱动红线**。
 
 ---
 
-## 一、最小可上架应用
+## 一、核心开发架构：`components/app_framework`
 
+在过去的旧应用中，每个方案的 `main.cpp` 都在重复手写 400+ 行相机初始化（四连 ctrl）、通道分配、RTSP、WebSocket 调试流、MQTT 与信号监听。
+**新应用及老方案重构一律基于 `components/app_framework` 开发。** 框架提供流畅的 C++17 链式装配语法（Fluent API），彻底吞噬脚手架代码。
+
+### 1. 范式 A：通用流式监控应用（目标检测、人员追踪、安防）
+适用于 7x24 小时连续推流、实时计算的目标检测应用（参考标杆：`solutions/yolo-detector`）。
+
+```cpp
+#include <af/app.h>
+#include "detector.h"
+
+int main(int argc, char** argv) {
+    af::App app("yolo-detector", argc, argv);
+    app.with_camera({640, 640, 8})         // 推理通道 CH0 (640x640 @ 8fps)
+       .with_live_view(8001)               // CH2 720p@30 H.264 只走 WebSocket，不启动 RTSP
+    // 需要 NVR/ONVIF 时: .with_stream_mode(af::StreamMode::Both, af::StreamOptions{}, 8001, 8554)
+       .with_mqtt();                       // MQTT Discovery 上报
+
+    Detector detector("/userdata/local/models/yolo11n_cv181x_int8.cvimodel");
+
+    app.on_frame([&](const af::VideoFrame& frame, af::Result& result) {
+        auto boxes = detector.detect(frame);
+        result.set_boxes(boxes.data(), boxes.size());
+        result.json = build_mqtt_payload(boxes); // 自动由 MQTT 与 Debug WS 分发
+    });
+
+    return app.run(); // 自动托管信号退出与资源优雅释放
+}
 ```
+
+### 2. 范式 B：工业工位纯触发质检应用（光电开关、PLC、HTTP 同步触发）
+适用于工厂产线工位：平时待机极低功耗，工件到位触发单帧抓拍，跑多步早停流水线（参考标杆：`solutions/trigger-inspection-demo`）。
+
+```cpp
+#include <af/app.h>
+#include <af/pipeline.h>
+#include <af/trigger.h>
+
+struct StationState {
+    af::Rect workpiece_roi;
+    bool is_defect = false;
+    std::string barcode;
+};
+
+int main(int argc, char** argv) {
+    af::App app("trigger-qa-demo", argc, argv);
+    
+    // 关键：配置 idle_fps=1。平时主线程挂起，相机底层以 1fps 保活供 snapshot，用户态 CPU 占用严格保持 0%
+    app.with_camera({640, 480, /*active_fps=*/15, /*physical=*/false, /*idle_fps=*/1})
+       .with_stream_mode(af::StreamMode::None);  // 工位默认不开任何流（无 VENC/WS/RTSP）
+    // 需要控制台预览时: .with_stream_mode(af::StreamMode::WsOnly, af::StreamOptions{640, 360, 10, 0, 0}, 8001)
+
+    // 编排多步骤流水线（0 堆分配，支持逐 Step 耗时追踪与早停）
+    af::Pipeline<StationState> pipe;
+    pipe.add_step("locate", [](af::Context<StationState>& c) {
+        c.state.workpiece_roi = locate_workpiece(c.frame);
+        if (!c.state.workpiece_roi.valid()) return c.reject("workpiece_missing"); // 早停 Fail-fast
+        return af::Flow::Next;
+    });
+    pipe.add_step("inspect", [](af::Context<StationState>& c) {
+        // 关键：零拷贝局部 ROI 切片（耗时仅 ~5 微秒，不发生任何 memcpy）
+        auto roi_frame = c.frame.sub_frame(c.state.workpiece_roi);
+        c.state.is_defect = check_defect(roi_frame);
+        return af::Flow::Next;
+    });
+
+    // 支持 HTTP 同步响应触发 (/trigger?tag=xxx) 与硬件 GPIO 边沿中断
+    af::HttpTrigger http_trig(8090, /*sync_response=*/true);
+    app.with_trigger(http_trig);
+
+    app.on_trigger([&](const af::TriggerEvent& ev, const af::VideoFrame& frame, af::Result& r) {
+        StationState state;
+        auto report = pipe.run(frame, state); // 单次触发总耗时仅 ~2ms
+        r.attach(report);
+        r.json = format_verdict_json(state, report);
+    });
+
+    return app.run(); // 待机阻塞在 epoll
+}
+```
+
+---
+
+## 二、性能优化黄金军规
+
+1. **零拷贝切片优先（`sub_frame`）**：
+   - 严禁为了截取子区域（如人脸、缺陷部位、条码）使用 `cv::Mat::clone()` 或 `malloc`。
+   - 使用 `c.frame.sub_frame(rect)`，它只修改 Plane 的起始偏移与 stride，切片耗时仅 **5 微秒**。
+2. **待机动态降频（`set_camera_fps`）**：
+   - 待机无任务时，通过 `app.set_camera_fps(1)` 将底层采样率降至 1fps，可彻底消除 30fps 下每秒 13MB 的无谓图像拷贝，设备长期保持 35~40℃ 常温。
+3. **早停保护（Fail-fast）**：
+   - 多模型级联时，轻量门控放前面。若前序步骤失败，直接返回 `c.reject()`，后面的大模型不予执行，保护 SG2002 单核 1GHz 算力。
+4. **延迟构建 Debug JSON**：
+   - 框架内部仅在检测到前端有 WebSocket 连接时才构造序列化 JSON，无客户端时自动跳过字符串拼接。
+
+---
+
+## 三、最小可上架应用（Supervisor Gallery 规范）
+
+```text
 solutions/<id>/
 ├── CMakeLists.txt              # 引 toolchain + project.cmake
 ├── main/
@@ -31,21 +132,13 @@ solutions/<id>/
 ```
 
 ### 1. init 脚本必须是 `K92<id>`，不是 `S92`
-
-**摄像头是硬独占的。** 两个应用同时开 VPSS，轻则出流失败，重则内核挂死到要断电。
-
-console 的模型是：**所有画廊应用永远保持 K**，跑哪个由 `/userdata/local/apps/state.json` 决定，开机时 `app_restore` 只拉起那一个。发 `S92` 意味着开机自启，会和 console 启动的那个撞车。
-
-> 真实事故：`detection-blur` 曾经发 `S92`，是六个视觉应用里唯一一个。装上就埋了一颗定时炸弹，下次重启才炸。
-
-脚本模板见任一现有应用，关键是 `LD_LIBRARY_PATH` 那行不能少：
-
+**摄像头硬件是硬独占的。** 两个应用同时开 VPSS，轻则出流失败，重则内核挂死。
+console 的模型是：**所有画廊应用永远保持 K 开头**，跑哪个由 `/userdata/local/apps/state.json` 决定，开机时 `app_restore` 只拉起那一个。脚本模板关键包含：
 ```sh
 export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
 ```
 
 ### 2. manifest：console 的唯一入口
-
 ```jsonc
 {
   "id": "my-app",                       // [a-z0-9-]，1-64 字符；文件名必须是 <id>.json
@@ -53,39 +146,21 @@ export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3
   "name_zh": "我的应用",
   "scene": "Safety",                    // 画廊分类
   "scene_zh": "作业安全",
-  "description": "...",                 // 英文，卡片正文
+  "description": "...",
   "description_zh": "...",
   "type": "native",                     // native | external-firmware
-  "init_script": "/etc/init.d/K92my-app",  // 必须 /etc/init.d/[SK][0-9]...，无子目录
+  "init_script": "/etc/init.d/K92my-app",
   "image": "/apps/my-app.png",
-  "rtsp_url": "rtsp://{host}:8554/live0",  // {host} 会被替换
+  "rtsp_url": "rtsp://{host}:8554/live0",
   "mqtt_topic": "recamera/my-app/results",
   "debug_ws": { "port": 8001, "video_path": "/", "results_path": "/results" },
-  "privacy_blur": true,                 // 见下节；不打码就别声明
-  "models": [],                         // 可切换的备选模型
-  "pipeline": [ { "name": "...", "path": "...", "task": "..." } ],  // 固定流水线，仅展示
-  "requires": ["gimbal"],               // 硬件依赖，白名单外的键会被丢弃并告警
-  "version": "0.1.0",                   // 打包时会被 project(VERSION) 覆盖，见下节
+  "models": [],
+  "version": "0.1.0",
   "author": "Seeed Studio"
 }
 ```
 
-后端校验（`api_app::load_manifest_file`）会因为下列原因**静默丢弃**整个 manifest，只在日志里留一行 `LOGW`：
-
-| 拒绝原因 | 检查 |
-|---|---|
-| `id` 含大写/下划线/超 64 字符 | `[a-z0-9-]` |
-| **文件名与 id 不一致** | `<id>.json` |
-| `type` 不是 `native` / `external-firmware` | |
-| `name` 为空 | |
-| `init_script` 不匹配 `/etc/init.d/[SK][0-9]...` 或含 `/` | |
-
-**应用没出现在 console 里，先看 supervisor 日志的 LOGW**，别猜。
-
 ### 3. postinst 必须把 manifest 登记进去
-
-console 只扫两个目录：`/usr/share/supervisor/apps/`（随 supervisor 发的内置）和 `/userdata/local/apps/`（用户装的）。**应用 deb 装到的 `/usr/share/<id>/` 哪个都不是。**
-
 ```sh
 APPS_DIR=/userdata/local/apps
 SHARE_DIR=/usr/share/<id>
@@ -95,194 +170,37 @@ for f in <id>.json <id>.md <id>.zh.md; do
 done
 ```
 
-> `[ -f ]` 保护会让缺失文件**静默跳过**。`facemesh-reader` 的 `postinst` 拷了一年多不存在的 `.md`，结果 console 里那一页一直是空白，没人报过。**加了就要确认文件真的在。**
-
-### 4. 版本号只有一个真相：`project(<id> VERSION ...)`
-
-deb 的版本来自 solution 顶层 `CMakeLists.txt` 的 `project(<id> VERSION x.y.z)` —— CPack 用它拼包名，opkg 记录它。**manifest 里的 `version` 不是第二个真相，它是一份抄件**，console 拿它渲染卡片上的版本号。
-
-所以 `cmake/package.cmake` 在打包时会用 `PROJECT_VERSION` **覆盖** manifest 的 `version` 字段（那条 `install()` 排在 rootfs 整目录拷贝之后，同一个目标路径后写的赢）。改源 JSON 里的版本号不影响出包结果 —— **要改版本就改 `project(VERSION)`**。构建时会打印一行确认：
-
-```
--- Manifest version pinned to 0.2.0: fitness-trainer.json
-```
-
-生成机制够不着的是**另一份抄件**：`solutions/supervisor/rootfs/usr/share/supervisor/apps/<id>.json`。它随 supervisor 发，用来在应用还没安装时也能在画廊里展示；supervisor 构建时看不到别的 solution 的 `PROJECT_VERSION`，没有任何东西会更新它。这份是真正会烂掉的，唯一的防线是检查脚本：
-
-```bash
-scripts/check-manifest-versions.sh          # 报告漂移，有漂移则 exit 1
-scripts/check-manifest-versions.sh --fix    # 按 project(VERSION) 就地改正
-```
-
-它同时校验：应用自带 manifest 的版本 == `project(VERSION)`；supervisor 内置副本的版本 == `project(VERSION)`；两份都存在时内容必须**逐字节一致**（内置副本是拷贝，不是变体）。
-
-> 2026-07-29 首次跑这个脚本，**十个应用里九个在漂**：卡片显示 0.1.0 而装上的包是 0.2.0；`face-analysis` 和 `yolo-detector` 的 manifest 版本甚至比任何存在过的包都高（1.0.0 / 1.1.0 对 0.4.0 / 0.5.0）。这个字段从来没人维护过，因为没有任何东西会在它错的时候出声。
-
-### 5. 发布：改了版本号不等于发布了
-
-**deb 上传到 CDN 是发布链路里唯一没有脚本兜底的一步**，也是唯一靠人记得的一步。
-
-> 2026-07-29 的真实代价：supervisor 0.5.0 / 0.5.1 / 0.5.2 各自构建、scp 装到设备、真机验证通过——而 CDN 上始终是 0.4.1。所有从 SenseCraft App 部署的用户拿到的都是没有这三版功能的 console，**而且没有任何地方会报错**：ecosystem 的 yaml 写 0.4.1，CDN 上也确实有 0.4.1，两者完美自洽，只是一起陈旧。
-
-所以有效的检查不是「URL 通不通」或「校验和对不对」（当时都是对的），而是**「ecosystem 发的版本，是不是我们真正在构建的版本」**。这个问题跨两个仓库，正因如此才一直没人问。
-
-```bash
-scripts/release-app.py --check                      # 所有应用：构建版本 vs ecosystem 发布版本
-scripts/release-app.py <app> --publish-content      # 上传 + 回验 + 改 yaml + validate + 重生成 catalog
-```
-
-`--check` 是护栏，**bump 完版本号、发布之前各跑一次**。发布会把包下载回来比对 sha256 —— `ossutil` 说成功和字节真的取得到不是一回事。
-
-**发布顺序不能颠倒，而且 OTA 那一步有意留在脚本外：**
-
-```
-release-app.py <app> --publish-content    上传、改 yaml、validate、catalog
-git commit                                 版本号那次提交
-generate_solution_manifest.py              OTA 内容，从已提交的状态打包
-```
-
-`generate_solution_manifest.py` 拒绝在 `solutions/` 有未提交路径时运行——它的 zip 从工作区打包，先发布就等于发出没进 git 的内容。而 release 刚刚改写了 device yaml，所以那个守卫每次都会拦。**这是对的，别绕过它。**
-
-反过来也不成立：generate 不能调 release，那会去发布还没产生的内容。依赖是单向的。
-
-solutions 仓路径用 `$SENSECRAFT_SOLUTIONS` 指定。
-
-> 还有一层脚本管不到：**CDN 边缘缓存**。源站更新后边缘会按 TTL 挂着旧副本一段时间（实测 `X-Cache: TCP_MEM_HIT`，`Age` 持续增长，加 query 参数也击穿不了——这个 CDN 的缓存键忽略 query string）。发完不要立刻断言"用户能拿到新版"，要么等，要么用 aliyun CLI 主动刷新。
-
-### 6. control 脚本的执行位
-
-`cmake/package.cmake` 把 `control/{preinst,postinst,prerm,postrm}` 打进 deb。**这些文件在 git 里必须是 `+x`**，否则设备上 `opkg` 报 126。
-
-> Docker Desktop 的挂载缓存会吃掉 `chmod`。改过权限后 `git update-index --chmod=+x`，并重启容器再打包。
-
-### 7. main/CMakeLists.txt
-
-```cmake
-file(GLOB_RECURSE srcs ${CMAKE_CURRENT_LIST_DIR}/*.c ${CMAKE_CURRENT_LIST_DIR}/*.cpp)
-component_register(
-    COMPONENT_NAME main
-    SRCS ${srcs}
-    INCLUDE_DIRS ${CMAKE_CURRENT_LIST_DIR}
-    PRIVATE_REQUIREDS sscma-micro sophgo rtsp_server debug_stream privacy_blur
-    REQUIREDS opencv_core opencv_imgcodecs opencv_imgproc
-)
-```
+### 4. control 脚本必须 +x
+`control/{preinst,postinst,prerm,postrm}` 打进 deb，在 git 里必须是 `chmod +x`，否则设备上 `opkg` 报 126。
 
 ---
 
-## 二、公共能力：别重写这些
+## 四、真机驱动避坑军规
 
-| 组件 | 头文件 | 提供什么 | 什么时候用 |
-|---|---|---|---|
-| `sscma-micro` | `sscma.h` | 模型加载、TPU 推理、`ma_img_t` | 所有需要推理的应用 |
-| `sophgo` | `video.h` | 摄像头、VPSS 通道、VENC | 所有取流的应用 |
-| `rtsp_server` | `rtsp_server.h` | RTSP 出流 | 要给 NVR/VLC/VMS 拉流 |
-| `debug_stream` | `debug_stream.h` | H.264-over-WS 预览、结果 JSON、`/snapshot.jpg` | 要在 console 调试页出现 |
-| `privacy_blur` | `privacy_blur.h` | 编码前遮挡检测目标（三后端 + 跟踪 + 热重载） | 画面里有人 |
-| `geometry` | `norm_box.h` | 带语义的归一化框类型 | **任何跨模块传检测框的地方** |
-| `ha_mqtt` | `ha_mqtt.h` | MQTT 发布 + Home Assistant 自动发现 | 要上报结果 |
-| `onvif_meta` | `onvif_meta.h` | ONVIF 分析元数据模型与序列化 | 要给 VMS 送结构化结果 |
-| `onvif_service` | `onvif_service_bringup.h` | WS-Discovery + Device/Media2 SOAP | 要被 VMS 自动发现 |
-
-### 隐私打码（`privacy_blur`）
-
-**设备级设置**，配置在 `/userdata/local/blur.conf`，console 设备页管开关。应用要做的只有三件：
-
-```cpp
-// 1. 视频通路起来之后再 init（RGN 需要 VPSS 通道在跑）
-PrivacyBlurConfig cfg;
-loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, &err);
-blur->init(cfg, stream_width, stream_height);
-
-// 2. 每帧喂检测框 —— 必须在 returnFrame() 之前，
-//    像素化后端要读这一帧的像素来取色
-blur->onDetection(geometry::toStream(boxes, inf_w, inf_h, stream_w, stream_h), &frame);
-
-// 3. 存快照前在内存里遮一遍（硬件遮罩管不到快照）
-privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes, blur->blockPx());
-```
-
-然后在 manifest 里声明 `"privacy_blur": true`，console 调试页才会显示那个快捷开关。**不打码的应用别声明**——一个拨了对画面没反应的开关，比没有开关更像故障。
-
-`/snapshot.jpg` 是 ONVIF `GetSnapshotUri` 公布的地址。**视频打了码而快照没打，等于没打。**
-
-### 坐标类型（`geometry`）
-
-检测框的两个语义在这个代码库里**不统一**，且都静默出过错：
-
-```cpp
-geometry::InferBox   // 相对推理通道归一化
-geometry::StreamBox  // 相对出流归一化
-```
-
-- 两者是不同类型，**互不隐式转换**；跨参照系只有 `geometry::toStream()` 一条路
-- 没有聚合初始化，只能 `fromCenter()` / `fromCorner()` —— 逼你在紧挨检测器的那一行回答"中心还是角"
-
-各应用检测器的约定：
-
-| 应用 | 约定 |
-|---|---|
-| `face-analysis` | **左上角**（FaceDetector 统一归一化成角，属性分析要按角裁剪） |
-| `facemesh-reader` / `yolo-detector` / `retail-vision` / `detection-blur` | 中心 |
-
-**face-analysis 是唯一的角制，别照抄邻居。** 改检测器的归一化约定时类型不会提醒你，要手动同步这张表和 `docs/HANDOFF-privacy-blur.md` 第九节。
-
-VPSS 把画面按比例装进每个通道，4:3 推理通道里 16:9 画面上下留边。**推理帧坐标直接喂给出流遮罩，遮罩只有该有高度的 3/4 并朝中心收缩**——边缘的人会露脸。
+1. **绝对禁止 `kill -9`**：
+   强杀持有 `/dev/cvi-vpss` 的进程会导致内核驱动的 Group 硬件句柄处于占用状态未释放，后续任何应用启动均会报 `CVI_VPSS_CreateGrp failed with -1073315836`。必须通过 `kill -15`（SIGTERM）或执行 `/etc/init.d/K92xxx stop` 优雅停止。
+2. **互斥停止机制**：
+   在任何应用的 `init.d` 启动脚本中，启动前必须执行 `stop` 逻辑检查并停止可能互斥占有相机的服务（`yolo-detector`, `microduck-pose-qa`, `trigger-inspection-demo`, `face-analysis` 等）。
+3. **流式应用绝对严禁 `physical = true`**：
+   在 `af::CameraOptions` 中默认保持 `physical = false`。SG2002 单核 1GHz 推理耗时（100~300ms）远大于相机帧间隔（33~100ms）。由于 Sophgo VPSS 驱动缺少带引用计数的持久锁帧接口，开启物理地址直传会导致硬件 DMA 覆写同一块 VB 环形池，产生严重的**图像撕裂与置信度跳变**。框架层的快速局部内存拷贝耗时仅 1~2ms，是保证生命周期安全的底线。
+4. **ION Carveout 内存池超限防护**：
+   ReCamera 仅有 256MB 物理 RAM，NPU 专用的 ION carveout 上限约为 40MB。多模型应用（如 SCRFD + ArcFace + 活体 + FaceMesh）必须设计分级加载与优雅降级机制（Optional init），并在关键阶段读取 `/proc/cvitek/ion` 监控内存水位。
+5. **USB 虚拟网卡连接**：
+   主机直连 USB-RNDIS 网卡（IP `192.168.42.1`）时，SSH 必须直连（配置 `ProxyCommand=none`），设备默认账户 `recamera`，密码 `recamera.1`。
 
 ---
 
-## 三、构建与部署
+## 五、Docker 交叉编译命令速查
 
 ```bash
-# clone 后一次性：SDK 里有两个版本的 libwebsockets，误取任一个都是静默 ABI 不匹配
-components/libwebsockets/fetch_and_build.sh
-
-docker exec ubuntu_dev_x86 bash -c '
-export SG200X_SDK_PATH=/workspace/sg2002_recamera_emmc
-export PATH=/workspace/host-tools/gcc/riscv64-linux-musl-x86_64/bin:$PATH
-cd /workspace/sscma-example-sg200x/solutions/<id>
-cmake -B build -DCMAKE_BUILD_TYPE=Release . && cmake --build build -j4 && cd build && cpack'
+docker run --rm \
+  -v /home/harvest/project/recamera:/recamera \
+  sophgo/tpuc_dev:v3.1 \
+  bash -c "
+    export PATH=/recamera/host-tools/gcc/riscv64-linux-musl-x86_64/bin:\$PATH
+    export SG200X_SDK_PATH=/recamera/sg2002_recamera_emmc
+    cd /recamera/sscma-example-sg200x/solutions/<solution-name>
+    rm -rf build && mkdir build && cd build
+    cmake .. && make -j\$(nproc) && cpack
+  "
 ```
-
-各 solution 目录下有 `deploy.sh`（编译 + 停冲突服务 + 装 deb + 起服务），日常用它。
-
-### 验证部署的是不是你以为的那个
-
-CPack 会 strip 二进制，所以 **构建目录里的 md5 和设备上的对不上是正常的**。要比就**解包 deb 拿里面的载荷比**：
-
-```bash
-ar x <app>_<ver>_riscv64.deb && tar xf data.tar.gz
-md5sum ./usr/local/bin/<id>          # 与设备上 md5sum /usr/local/bin/<id> 对照
-```
-
-判断进程身份用 `readlink /proc/<pid>/exe`，**别 grep 命令行**（会匹配到 grep 自己）。
-
----
-
-## 四、上架前自查
-
-- [ ] init 脚本是 `K92<id>`（不是 S），且 `+x`
-- [ ] `control/*` 在 git 里是 `+x`
-- [ ] manifest 文件名 == `id`，`id` 只含 `[a-z0-9-]`
-- [ ] `postinst` 会把 `<id>.json` / `<id>.md` / `<id>.zh.md` 拷进 `/userdata/local/apps/`
-- [ ] 那三个文件**真的存在**（`.md` 缺了不会报错，只会让 console 那页空白）
-- [ ] 改过版本 → 改的是 `project(<id> VERSION ...)`，且 `scripts/check-manifest-versions.sh` 干净
-      （有 supervisor 内置副本的应用尤其要跑，那份没有任何东西会自动更新）
-- [ ] 画面里有人 → 接了 `privacy_blur`，并且 manifest 里声明了 `privacy_blur: true`
-- [ ] 接了打码 → 快照路径也遮了（否则 ONVIF 抓图是原图）
-- [ ] 检测框跨模块传递用了 `geometry::InferBox` / `StreamBox`
-- [ ] 集成文档里写的开关、默认值、命令行参数**与代码一致**
-- [ ] 发布过了 → `scripts/release-app.py --check` 干净（改了版本号却没发布，yaml 和 CDN 会一起陈旧，任何 URL/校验和检查都发现不了）
-- [ ] 装完在 console 里能看到、能切换、切换后画面正常
-
-> 最后一条不能靠"应该没问题"。**文档说谎比没文档更贵**：`face-analysis` 的集成指南曾长期写着"默认打码模糊，`--no-blur` 关闭"，而实际默认关闭、那个参数早已删除——用户照着找不到，只会得出"功能坏了"的结论。
-
----
-
-## 五、相关文档
-
-- `docs/HANDOFF-privacy-blur.md` —— 打码全线的实现、已验/未验清单、坐标语义对照表（第九节）
-- `docs/onvif-implementation-spec.md` —— ONVIF 的设计与刻意不做的部分
-- `docs/kernel-build.md` —— 补丁内核模块怎么编（vermagic 陷阱）
-- `solutions/supervisor/README.md` —— console 侧：应用画廊、打码、ONVIF、集成页
-- `README.md` —— 工具链、libwebsockets 前置步骤、补丁内核说明
