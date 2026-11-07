@@ -14,6 +14,7 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { getCurrentAppApi, setAppModelApi } from "@/api/app";
 import { getBlurConfigApi, setBlurConfigApi } from "@/api/blur";
+import { getOnvifConfigApi } from "@/api/onvif";
 import {
   getFocusValueApi,
   getCameraConfigApi,
@@ -30,6 +31,8 @@ import { isOk, isBusy } from "@/utils/api";
 import { copyText } from "@/utils/clipboard";
 import {
   resolveRtspUrl,
+  resolveStreamMode,
+  streamModeHasRtsp,
   resolveDebugVideoUrl,
   resolveDebugResultsUrl,
 } from "@/utils/appStream";
@@ -425,6 +428,30 @@ const Live = () => {
   const resultsUrl = useMemo(() => resolveDebugResultsUrl(app), [app]);
   const rtspUrl = useMemo(() => resolveRtspUrl(app), [app]);
   const hasDebugWs = !!videoUrl;
+  // Only consulted when the manifest default leaves RTSP off: the ONVIF
+  // device service makes the app start RTSP anyway (see resolveStreamMode).
+  const [onvifService, setOnvifService] = useState(false);
+  const declaredRtspOff =
+    !!app?.rtsp_url && !streamModeHasRtsp(resolveStreamMode(app));
+  useEffect(() => {
+    setOnvifService(false);
+    if (!declaredRtspOff) return;
+    getOnvifConfigApi()
+      .then((res) => {
+        if (isOk(res)) setOnvifService(!!res.data?.service_enabled);
+      })
+      .catch(() => {
+        /* Unknown ONVIF state: keep the manifest default. */
+      });
+  }, [app?.id, declaredRtspOff]);
+  const streamMode = useMemo(
+    () => resolveStreamMode(app, onvifService),
+    [app, onvifService]
+  );
+  // RTSP is not started by default. The address is still offered: it can be
+  // enabled per device (e.g. STREAM_MODE=both / --rtsp) where the console
+  // cannot see it.
+  const rtspOff = !!rtspUrl && !streamModeHasRtsp(streamMode);
 
   const { status, messages, overlay, lastFrameDelay } = useDebugStream({
     enabled: debugOn && hasDebugWs,
@@ -621,6 +648,9 @@ const Live = () => {
           ? t("live.fallbackDebugUnavailable")
           : t("live.fallbackNoDebug")}
       </div>
+      {rtspOff && (
+        <div className="text-13 text-muted mb-8">{t("live.rtspOffHint")}</div>
+      )}
       {rtspUrl ? (
         <div className="bg-white border border-line rounded-8 px-12 py-8 flex items-center justify-between gap-8">
           <span className="rc-mono text-12 break-all">{rtspUrl}</span>
@@ -1110,6 +1140,11 @@ const Live = () => {
                             <div className="text-12 text-muted mb-4">
                               {t("live.rtspStream")}
                             </div>
+                            {rtspOff && (
+                              <div className="text-12 text-muted mb-4">
+                                {t("live.rtspOffHint")}
+                              </div>
+                            )}
                             {rtspUrl ? (
                               <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
                                 <span className="rc-mono text-12 break-all">

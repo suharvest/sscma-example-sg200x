@@ -10,6 +10,7 @@
   "init_script": "/etc/init.d/K92yolo-detector",
   "image": "/apps/yolo-detector.png",
   "rtsp_url": "rtsp://{host}:8554/live0",
+  "stream_mode": "ws",
   "mqtt_topic": "recamera/yolo-detector/results",
   "debug_ws": {
     "port": 8001,

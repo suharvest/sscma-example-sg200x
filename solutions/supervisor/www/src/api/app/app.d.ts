@@ -48,6 +48,12 @@ export interface IAppManifest {
   /** Optional preview image URL (e.g. "/apps/<id>.svg"), shown on the card. */
   image?: string;
   rtsp_url?: string; // may contain "{host}" placeholder
+  /**
+   * Stream endpoints the app starts by default (af::StreamMode):
+   * "ws" = WebSocket only (RTSP off), "rtsp", "both", "none".
+   * Absent -> inferred from debug_ws / rtsp_url.
+   */
+  stream_mode?: "ws" | "rtsp" | "both" | "none";
   mqtt_topic?: string;
   debug_ws?: IDebugWsInfo;
   /**

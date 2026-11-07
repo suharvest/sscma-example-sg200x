@@ -16,6 +16,34 @@ export function resolveRtspUrl(app?: IAppManifest | null): string {
   return app.rtsp_url.replace(/\{host\}/g, getDeviceHost());
 }
 
+export type StreamMode = "ws" | "rtsp" | "both" | "none";
+
+/**
+ * Stream mode the app is expected to run with: the manifest's declared
+ * default, else inferred from the debug_ws / rtsp_url endpoints.
+ *
+ * `onvifService`: the console ONVIF device service is on. A VMS needs RTSP,
+ * so yolo-detector adds it to its WebSocket-only default at startup; a
+ * declared "ws" with an rtsp_url is then reported as "both". Apps that do not
+ * (face-recognition) are reported the same way: their RTSP address is shown
+ * without the "off by default" hint, as before stream_mode existed.
+ */
+export function resolveStreamMode(
+  app?: IAppManifest | null,
+  onvifService = false
+): StreamMode {
+  if (!app) return "none";
+  const ws = !!app.debug_ws?.port;
+  const rtsp = !!app.rtsp_url;
+  const mode: StreamMode =
+    app.stream_mode ??
+    (ws && rtsp ? "both" : ws ? "ws" : rtsp ? "rtsp" : "none");
+  return mode === "ws" && rtsp && onvifService ? "both" : mode;
+}
+
+export const streamModeHasRtsp = (mode: StreamMode): boolean =>
+  mode === "rtsp" || mode === "both";
+
 function normalizePath(path: string | undefined, fallback: string): string {
   const p = path || fallback;
   return p.startsWith("/") ? p : `/${p}`;

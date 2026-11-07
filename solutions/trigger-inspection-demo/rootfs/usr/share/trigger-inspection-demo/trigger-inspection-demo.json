@@ -9,6 +9,7 @@
   "type": "native",
   "init_script": "/etc/init.d/K92trigger-inspection-demo",
   "mqtt_topic": "recamera/trigger-inspection-demo/results",
+  "stream_mode": "none",
   "debug_ws": {
     "port": 8001,
     "video_path": "/",

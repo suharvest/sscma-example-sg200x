@@ -214,6 +214,7 @@
     "fallbackDebugUnavailable": "The debug stream is unavailable right now. You can still open the application's RTSP stream directly:",
     "fallbackNoDebug": "This application does not provide a browser debug stream. Open its RTSP stream with a player such as VLC:",
     "fallbackNoRtsp": "No RTSP address declared by this application.",
+    "rtspOffHint": "RTSP is not started by default for this app. The address below works once RTSP is enabled for it.",
     "vlcHint": "VLC: Media → Open Network Stream → paste the address above.",
     "switchModelTitle": "Switch model to \"{{model}}\"?",
     "switchModelContent": "The application will restart to load the new model. Streams will be briefly interrupted.",

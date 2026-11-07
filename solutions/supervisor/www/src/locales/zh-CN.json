@@ -213,6 +213,7 @@
     "fallbackDebugUnavailable": "调试串流当前不可用。您仍可直接打开该应用的 RTSP 流：",
     "fallbackNoDebug": "该应用未提供浏览器调试串流。请使用 VLC 等播放器打开其 RTSP 流：",
     "fallbackNoRtsp": "该应用未声明 RTSP 地址。",
+    "rtspOffHint": "该应用默认不启动 RTSP，为其开启 RTSP 后下方地址可用。",
     "vlcHint": "VLC：媒体 → 打开网络串流 → 粘贴上方地址。",
     "switchModelTitle": "切换模型为“{{model}}”？",
     "switchModelContent": "应用将重启以加载新模型，输出流会短暂中断。",
