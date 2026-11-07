@@ -2,29 +2,26 @@
 //
 // Pipeline: camera -> Microduck Pose (SG2002 TPU) -> 17 keypoints ->
 // kinematic QA -> MQTT / debug WebSocket / RTSP / HTTP Control (8082)
+//
+// Camera, streaming, MQTT, signal handling and the frame loop are owned by
+// af::App (components/app_framework); this file holds the QA logic only.
 
-#include <signal.h>
-#include <unistd.h>
 #include <getopt.h>
 #include <sys/stat.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
-#include <sscma.h>
-#include <video.h>
+#include <af/app.h>
+#include <af/ma_image.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
-#include "rtsp_server.h"
+#include <sscma.h>
 
 extern "C" {
 #include <cvi_comm_isp.h>
@@ -34,6 +31,7 @@ extern "C" {
 }
 
 #include "app_config.h"
+#include "face_led_inspector.h"
 #include "http_control.h"
 #include "pose.h"
 #include "pose_detector.h"
@@ -89,10 +87,7 @@ static std::string findPoseModel() {
 
 static const char* APP_CONFIG_PATH = "/userdata/local/apps/microduck-pose-qa.config.json";
 
-static std::atomic<bool> g_running(true);
 static PoseDetector* g_detector = nullptr;
-static ha_mqtt::MqttPublisher* g_mqtt = nullptr;
-static Camera* g_camera = nullptr;
 static ConfigWatcher* g_watcher = nullptr;
 static ActionStateMachine g_state_machine;
 static HttpControlServer g_http_control;
@@ -144,13 +139,8 @@ struct LatencyTracker {
 
 static LatencyTracker g_perf_tracker;
 
-static void signal_handler(int sig) {
-    MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
-    g_running.store(false);
-}
-
 static void print_usage(const char* prog) {
-    printf("Microduck Pose QA for reCamera SG2002 (v1.0.6)\n\n");
+    printf("Microduck Pose QA for reCamera SG2002 (v1.0.7)\n\n");
     printf("Usage: %s [options]\n\n", prog);
     printf("Options:\n");
     printf("  -m, --model PATH        Pose model (default: /userdata/local/models/microduck_pose_17kpt_384_int8.cvimodel)\n");
@@ -211,80 +201,7 @@ static bool parse_args(int argc, char** argv) {
     return true;
 }
 
-static bool init_camera() {
-    Device* device = Device::getInstance();
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() != ma::Sensor::Type::kCamera) continue;
-
-        g_camera = static_cast<Camera*>(sensor);
-        g_camera->init(0);
-
-        Camera::CtrlValue value;
-        value.i32 = 0;
-        g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-        value.i32 = g_config.inference_fps;
-        g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-        value.u16s[0] = static_cast<uint16_t>(g_config.inference_width);
-        value.u16s[1] = static_cast<uint16_t>(g_config.inference_height);
-        g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-        value.i32 = 0;
-        g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-        const AppConfig& initial_cfg = g_watcher->config();
-        MA_LOGI(TAG, "Camera initialized (%dx%d @ %dfps, ISP anti-flicker target exposure=%u us)",
-                g_config.inference_width, g_config.inference_height, g_config.inference_fps,
-                initial_cfg.exposure_us);
-        return true;
-    }
-    MA_LOGE(TAG, "No camera found");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (initVideo() != 0) {
-        MA_LOGE(TAG, "Failed to initialize video subsystem");
-        return false;
-    }
-
-    video_ch_param_t stream_param;
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width = g_config.stream_width;
-    stream_param.height = g_config.stream_height;
-    stream_param.fps = g_config.stream_fps;
-
-    setupVideo(VIDEO_CH2, &stream_param);
-
-    APP_PARAM_VENC_CTX_S* venc = app_ipcam_Venc_Param_Get();
-    if (venc && VIDEO_CH2 < venc->s32VencChnCnt) {
-        venc->astVencChnCfg[VIDEO_CH2].u32Gop = 30; // 2 seconds GOP at 15fps
-        venc->astVencChnCfg[VIDEO_CH2].u32BitRate = 1200; // 1200 kbps
-        venc->astVencChnCfg[VIDEO_CH2].u32MaxBitRate = 1500; // max 1500 kbps
-    }
-
-    if (g_config.enable_rtsp) {
-        registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-        initRtsp((0x01 << VIDEO_CH2));
-        MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps, GOP=%u, bitRate=%u)",
-                g_config.stream_width, g_config.stream_height, g_config.stream_fps,
-                venc ? venc->astVencChnCfg[VIDEO_CH2].u32Gop : 0,
-                venc ? venc->astVencChnCfg[VIDEO_CH2].u32BitRate : 0);
-    } else {
-        MA_LOGI(TAG, "RTSP streaming disabled (VIDEO_CH2 reserved for debug_stream, GOP=%u, bitRate=%u)",
-                venc ? venc->astVencChnCfg[VIDEO_CH2].u32Gop : 0,
-                venc ? venc->astVencChnCfg[VIDEO_CH2].u32BitRate : 0);
-    }
-    return true;
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        MA_LOGI(TAG, "MQTT publishing disabled");
-        return true;
-    }
-
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "microduck-pose-qa";
     opts.client_id     = "recamera-microduck-pose-qa";
@@ -308,121 +225,111 @@ static bool init_mqtt() {
         EntityConfig{EntityType::Sensor, "visible_joints", "Visible Joints",
                      "{{ value_json.visible_joints }}", "", "", "measurement"},
     };
-
-    g_mqtt = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt->init(opts)) {
-        MA_LOGE(TAG, "Failed to initialize MQTT publisher");
-        return false;
-    }
-    return true;
+    return opts;
 }
 
-static void cleanup() {
-    g_http_control.stop();
-    if (g_camera) g_camera->stopStream();
-    if (g_config.enable_debug) debug_stream_destroy();
-    if (g_config.enable_rtsp) { deinitRtsp(); }
-    deinitVideo();
-    if (g_mqtt) { g_mqtt->deinit(); delete g_mqtt; g_mqtt = nullptr; }
-    if (g_detector) { delete g_detector; g_detector = nullptr; }
-    if (g_watcher) { delete g_watcher; g_watcher = nullptr; }
-    MA_LOGI(TAG, "Cleanup completed");
-}
-
-static void process_frame() {
-    // Read generation token BEFORE retrieveFrame
-    const uint64_t pre_gen = g_state_machine.getActionGeneration();
-
-    ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-        // Starved or disconnected: autonomously check and finalize timeout
-        g_state_machine.checkTimeout();
-        uint64_t starved_gen = 0;
-        const bool bcast_pending = g_state_machine.isBroadcastPending(starved_gen);
-        static auto s_last_starved_replay = std::chrono::steady_clock::time_point{};
-        const auto now_mono = std::chrono::steady_clock::now();
-        const bool periodic_replay_due = g_state_machine.hasReport() &&
-            (std::chrono::duration_cast<std::chrono::milliseconds>(now_mono - s_last_starved_replay).count() >= 200);
-
-        if ((bcast_pending || periodic_replay_due) && g_config.enable_debug && debug_stream_results_client_count() > 0) {
-            const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            PayloadContext ctx;
-            ctx.timestamp_ms = static_cast<uint64_t>(wall_ms);
-            ctx.frame_id = g_frame_id++;
-            ctx.fps = g_perf_tracker.getFps();
-            ctx.robot_detected = false;
-            ctx.duck_count = 0;
-            ctx.config = g_state_machine.getActiveConfig();
-            FrameQAResult empty_qa;
-            empty_qa.qa_status = "NO_ROBOT";
-            empty_qa.qa_passed = false;
-            const std::vector<debug_stream_box_t> no_boxes;
-            const std::string json_str = debug_stream_build_results(
-                ctx.timestamp_ms, ctx.frame_id, 0.0f,
-                g_config.stream_width, g_config.stream_height, no_boxes, nullptr,
-                buildDebugExtraJson(ctx, {}, empty_qa, g_state_machine));
-            if (debug_stream_publish_result(json_str.c_str(), json_str.size()) == 0 &&
-                debug_stream_results_client_count() > 0) {
-                if (bcast_pending) {
-                    g_state_machine.markBroadcastCompleted(starved_gen);
-                }
-                s_last_starved_replay = now_mono;
-            }
+// Configure ISP exposure and AWB for natural display capture. Needs a running
+// ISP, hence App::on_started(); the App then drops warmup_frames so the
+// optical parameters settle before the first QA frame.
+static void configure_isp() {
+    ISP_EXPOSURE_ATTR_S exp_attr;
+    std::memset(&exp_attr, 0, sizeof(exp_attr));
+    if (CVI_ISP_GetExposureAttr(0, &exp_attr) == CVI_SUCCESS) {
+        exp_attr.bByPass = CVI_FALSE;
+        exp_attr.enOpType = OP_TYPE_AUTO;
+        exp_attr.stAuto.stAntiflicker.bEnable = CVI_TRUE;
+        exp_attr.stAuto.stAntiflicker.enFrequency = AE_FREQUENCE_60HZ;
+        if (CVI_ISP_SetExposureAttr(0, &exp_attr) == CVI_SUCCESS) {
+            MA_LOGI(TAG, "ISP exposure set to OP_TYPE_AUTO (anti-flicker 60Hz)");
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        return;
     }
 
-    // Capture monotonic steady_clock timestamp immediately upon successful frame retrieval
+    ISP_WB_ATTR_S wb_attr;
+    std::memset(&wb_attr, 0, sizeof(wb_attr));
+    if (CVI_ISP_GetWBAttr(0, &wb_attr) == CVI_SUCCESS) {
+        wb_attr.bByPass = CVI_FALSE;
+        wb_attr.enOpType = OP_TYPE_AUTO;
+        if (CVI_ISP_SetWBAttr(0, &wb_attr) == CVI_SUCCESS) {
+            MA_LOGI(TAG, "ISP AWB set to OP_TYPE_AUTO (dynamic white balance)");
+        }
+    }
+}
+
+// Action generation sampled right before each frame retrieval (App::on_before_grab):
+// a frame already in flight when an action starts carries the old generation and
+// is rejected by ActionStateMachine::addFrame.
+static uint64_t g_pre_gen = 0;
+
+// Payload strings must outlive the handler: the App's sinks publish them after it returns.
+static std::string g_mqtt_payload;
+static std::string g_debug_extra;
+
+static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
+    const uint64_t pre_gen = g_pre_gen;
+
+    // Monotonic steady_clock timestamp of frame retrieval (ActionStateMachine compares it with the action start).
     const auto t_frame_in = std::chrono::steady_clock::now();
     const uint64_t frame_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         t_frame_in.time_since_epoch()).count();
 
-    const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    const ActionState cur_state = g_state_machine.getState();
+    const std::string cur_action = g_state_machine.getCurrentActionId();
+    const bool is_collecting = (cur_state == ActionState::COLLECTING);
+    const bool is_pose_action = (is_collecting && cur_action == "stand");
+    const bool is_optical_action = (is_collecting && cur_action == "face_led");
 
     // Lock detector thresholds with snapshot if COLLECTING, or watcher otherwise
-    const AppConfig cfg = (g_state_machine.getState() == ActionState::COLLECTING)
+    const AppConfig cfg = is_collecting
         ? g_state_machine.getActiveConfig()
         : g_watcher->config();
-    g_detector->setThreshold(cfg.confidence);
-    g_detector->setKeypointThreshold(cfg.keypoint_confidence);
-
-    const auto t_infer_start = std::chrono::steady_clock::now();
 
     bool sys_error = false;
     const Subject* primary = nullptr;
-    try {
-        primary = g_detector->detectPrimary(&frame);
-        if (!g_detector->lastInferenceOk()) {
+    std::vector<Subject> active_subjects;
+    float inference_ms = 0.0f;
+    FaceLedFrameResult opt_res;
+
+    if (is_pose_action) {
+        // Heavy TPU Pose inference runs ONLY when a POSE action (e.g. action_id == "stand") is active!
+        const float effective_conf = (g_config.cli_confidence > 0.0f) ? g_config.cli_confidence : cfg.confidence;
+        const float effective_kpt_conf = (g_config.cli_kpt_confidence > 0.0f) ? g_config.cli_kpt_confidence : cfg.keypoint_confidence;
+        g_detector->setThreshold(effective_conf);
+        g_detector->setKeypointThreshold(effective_kpt_conf);
+
+        ma_img_t img = af::to_ma_img(frame);
+        const auto t_infer_start = std::chrono::steady_clock::now();
+        try {
+            primary = g_detector->detectPrimary(&img);
+            if (!g_detector->lastInferenceOk()) {
+                sys_error = true;
+                g_state_machine.setSysError("TPU_INFERENCE_FATAL_ERROR", pre_gen);
+            }
+        } catch (const std::exception& e) {
+            MA_LOGE(TAG, "TPU inference exception: %s", e.what());
             sys_error = true;
             g_state_machine.setSysError("TPU_INFERENCE_FATAL_ERROR", pre_gen);
         }
-    } catch (const std::exception& e) {
-        MA_LOGE(TAG, "TPU inference exception: %s", e.what());
-        sys_error = true;
-        g_state_machine.setSysError("TPU_INFERENCE_FATAL_ERROR", pre_gen);
+        inference_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t_infer_start).count();
+
+        if (primary != nullptr) {
+            active_subjects.push_back(*primary);
+        }
+    } else if (is_optical_action) {
+        // Face LED Optical Inspection Operator (action_id == "face_led")
+        // No TPU inference! Uses OpenCV optical analysis
+        const auto t_opt_start = std::chrono::steady_clock::now();
+        opt_res = inspectFaceLed(frame.planes[0].vir, frame.width, frame.height, cfg);
+        inference_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t_opt_start).count();
     }
-
-    std::vector<Subject> active_subjects;
-    if (primary != nullptr) {
-        active_subjects.push_back(*primary);
-    }
-
-    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
-    g_camera->returnFrame(frame);
-
-    const auto t_infer_end = std::chrono::steady_clock::now();
-    const float inference_ms = std::chrono::duration<float, std::milli>(t_infer_end - t_infer_start).count();
+    // else: IDLE or non-active state -- no TPU inference; the App keeps frame
+    // retrieval and the debug stream alive.
 
     PayloadContext ctx;
-    ctx.timestamp_ms = static_cast<uint64_t>(wall_ms);
+    ctx.timestamp_ms = r.wall_ms;
     ctx.frame_id = g_frame_id;
     ctx.inference_time_ms = inference_ms;
     ctx.fps = g_perf_tracker.getFps();
-    ctx.robot_detected = (!sys_error && primary != nullptr);
-    ctx.duck_count = ctx.robot_detected ? 1 : 0;
+    ctx.action_id = cur_action;
     ctx.infer_w = g_config.inference_width;
     ctx.infer_h = g_config.inference_height;
     ctx.stream_w = g_config.stream_width;
@@ -430,57 +337,75 @@ static void process_frame() {
     ctx.config = cfg;
 
     FrameQAResult qa;
-    if (sys_error) {
-        qa.qa_status = "SYS_ERROR";
-        qa.qa_passed = false;
+
+    if (is_pose_action) {
+        ctx.robot_detected = (!sys_error && primary != nullptr);
+        ctx.duck_count = ctx.robot_detected ? 1 : 0;
+        if (sys_error) {
+            qa.qa_status = "SYS_ERROR";
+            qa.qa_passed = false;
+            qa.visible_joints = 0;
+        } else if (ctx.robot_detected && primary != nullptr) {
+            qa = evaluateQA(ctx, primary->pose);
+        } else {
+            qa.qa_status = "NO_ROBOT";
+            qa.qa_passed = false;
+            qa.visible_joints = 0;
+        }
+    } else if (is_optical_action) {
+        ctx.robot_detected = (opt_res.metrics.lit_pixels > 0);
+        ctx.duck_count = ctx.robot_detected ? 1 : 0;
+        ctx.optical = opt_res.metrics;
+        qa.qa_status = opt_res.ok ? "PASS" : "FAIL_OPTICAL";
+        qa.qa_passed = opt_res.ok;
         qa.visible_joints = 0;
-    } else if (ctx.robot_detected && primary != nullptr) {
-        qa = evaluateQA(ctx, primary->pose);
     } else {
-        qa.qa_status = "NO_ROBOT";
+        ctx.robot_detected = false;
+        ctx.duck_count = 0;
+        qa.qa_status = (cur_state == ActionState::IDLE) ? "IDLE" : "READY";
         qa.qa_passed = false;
         qa.visible_joints = 0;
     }
 
     // Advance action state machine with generation & monotonic steady_clock timestamp validation
     g_state_machine.checkTimeout();
-    g_state_machine.addFrame(g_frame_id, frame_time_ms, pre_gen, ctx.robot_detected, ctx.duck_count, qa);
-
-    uint64_t post_frame_bcast_gen = 0;
-    const bool post_frame_bcast_pending = g_state_machine.isBroadcastPending(post_frame_bcast_gen);
-
-    // Publish WebSocket debug telemetry (8001)
-    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
-        const std::vector<debug_stream_box_t> no_boxes;
-        const std::string json = debug_stream_build_results(
-            ctx.timestamp_ms, ctx.frame_id, ctx.inference_time_ms,
-            g_config.stream_width, g_config.stream_height, no_boxes, nullptr,
-            buildDebugExtraJson(ctx, active_subjects, qa, g_state_machine));
-        if (debug_stream_publish_result(json.c_str(), json.size()) == 0 &&
-            debug_stream_results_client_count() > 0) {
-            if (post_frame_bcast_pending) {
-                g_state_machine.markBroadcastCompleted(post_frame_bcast_gen);
-            }
-        }
+    if (is_collecting) {
+        g_state_machine.addFrame(g_frame_id, frame_time_ms, pre_gen, ctx.robot_detected, ctx.duck_count, qa, opt_res);
     }
 
-    // Publish MQTT telemetry
-    if (g_config.enable_mqtt && g_mqtt) {
-        const std::string payload = buildResultJson(ctx, active_subjects, qa, g_state_machine);
-        g_mqtt->publishResultsJson(payload);
+    // Debug /results (8001): the App's debug sink publishes the envelope with
+    // these fields; no overlay boxes. Built only while a /results client listens.
+    r.seq = g_frame_id;
+    r.inference_ms = inference_ms;
+    g_debug_extra.clear();
+    if (debug_stream_results_client_count() > 0) {
+        g_debug_extra = buildDebugExtraJson(ctx, active_subjects, qa, g_state_machine);
+    }
+    r.debug_extra = g_debug_extra;
+
+    // The broadcast is considered delivered once this frame's debug telemetry
+    // is built -- the same point as before, independent of client count.
+    uint64_t bcast_gen = 0;
+    if (g_state_machine.isBroadcastPending(bcast_gen)) {
+        g_state_machine.markBroadcastCompleted(bcast_gen);
     }
 
-    // T_emit: exactly when results are enqueued
-    const auto t_emit = std::chrono::steady_clock::now();
-    const float e2e_ms = std::chrono::duration<float, std::milli>(t_emit - t_frame_in).count();
+    // MQTT telemetry, published by the App's MQTT sink.
+    if (app.mqtt() != nullptr) {
+        g_mqtt_payload = buildResultJson(ctx, active_subjects, qa, g_state_machine);
+        r.json = g_mqtt_payload;
+    }
+
+    // T_emit: results are complete and handed to the sinks right after return.
+    const float e2e_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t_frame_in).count();
     g_perf_tracker.addSample(inference_ms, e2e_ms, t_frame_in);
 
     if (g_frame_id % 150 == 0) {
-        MA_LOGI(TAG, "Stats [frame %u]: target=%s, fps=%.1f, inf_p95=%.1fms, e2e_p95=%.1fms, qa=%s (%s), state=%s",
-                g_frame_id, ctx.robot_detected ? "Locked" : "Searching",
+        MA_LOGI(TAG, "Stats [frame %u]: target=%s, fps=%.1f, inf_p95=%.1fms, e2e_p95=%.1fms, qa=%s (%s), state=%s (action=%s)",
+                g_frame_id, ctx.robot_detected ? "Locked" : (is_collecting ? "Searching" : "Idle"),
                 g_perf_tracker.getFps(), g_perf_tracker.getP95Infer(), g_perf_tracker.getP95E2E(),
                 qa.qa_status.c_str(), qa.qa_passed ? "PASS" : "WARN",
-                g_state_machine.getStateString().c_str());
+                g_state_machine.getStateString().c_str(), cur_action.c_str());
     } else if (g_config.verbose && ctx.robot_detected && (g_frame_id % 30 == 0)) {
         MA_LOGI(TAG, "Frame %u: locked, score=%.2f, joints=%d, diff=%.4f, qa=%s (%s), inf=%.1fms, e2e=%.1fms",
                 g_frame_id, primary ? primary->score : 0.0f, qa.visible_joints,
@@ -504,13 +429,17 @@ static void process_frame() {
 int main(int argc, char** argv) {
     if (!parse_args(argc, argv)) return 1;
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
     g_watcher = new ConfigWatcher(APP_CONFIG_PATH);
     const AppConfig& cfg = g_watcher->loadInitial();
 
-    MA_LOGI(TAG, "Starting Microduck Pose QA Service (v1.0.6)");
+    MA_LOGI(TAG, "Starting Microduck Pose QA Service (v1.0.7)");
+
+    auto release = [] {
+        delete g_detector;
+        g_detector = nullptr;
+        delete g_watcher;
+        g_watcher = nullptr;
+    };
 
     if (g_config.model_path.empty()) {
         g_config.model_path = findPoseModel();
@@ -519,7 +448,7 @@ int main(int argc, char** argv) {
             for (const char* p : MODEL_CANDIDATES) {
                 MA_LOGE(TAG, "  %s", p);
             }
-            cleanup();
+            release();
             return 1;
         }
     }
@@ -528,7 +457,7 @@ int main(int argc, char** argv) {
     g_detector = new PoseDetector();
     if (!g_detector->init(g_config.model_path)) {
         MA_LOGE(TAG, "Failed to initialize pose detector with %s", g_config.model_path.c_str());
-        cleanup();
+        release();
         return 1;
     }
 
@@ -540,121 +469,46 @@ int main(int argc, char** argv) {
     g_config.inference_width = g_detector->inputWidth();
     g_config.inference_height = g_detector->inputHeight();
 
-    if (!init_camera()) { cleanup(); return 1; }
-    if (!init_video_streaming()) { cleanup(); return 1; }
-    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
-    }
-    if (!init_mqtt()) { cleanup(); return 1; }
-
-    // Start independent HTTP control service on port 8082
+    // Independent HTTP control service (8082). Fatal on failure, as before.
     if (!g_http_control.start(g_config.control_port, &g_state_machine, g_watcher)) {
         MA_LOGE(TAG, "Failed to start HTTP control service on port %d", g_config.control_port);
-        cleanup();
+        release();
         return 1;
     }
 
-    // Start camera stream in kRefreshOnReturn mode
-    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
+    af::CameraOptions cam;
+    cam.width = static_cast<uint16_t>(g_config.inference_width);
+    cam.height = static_cast<uint16_t>(g_config.inference_height);
+    cam.fps = static_cast<uint8_t>(g_config.inference_fps);
+    cam.warmup_frames = 5;  // drain the ISP pipeline after configure_isp()
 
-    // Apply strict ISP Exposure and AWB hardware gate checks AFTER startStream()
-    const AppConfig& initial_cfg = g_watcher->config();
-    ISP_EXPOSURE_ATTR_S exp_attr;
-    std::memset(&exp_attr, 0, sizeof(exp_attr));
-    CVI_S32 exp_get_ret = CVI_ISP_GetExposureAttr(0, &exp_attr);
-    if (exp_get_ret != CVI_SUCCESS) {
-        MA_LOGE(TAG, "FATAL: CVI_ISP_GetExposureAttr failed with error 0x%x", exp_get_ret);
-        cleanup();
-        return 1;
-    }
-    exp_attr.bByPass = CVI_FALSE;
-    exp_attr.enOpType = OP_TYPE_MANUAL;
-    exp_attr.stManual.enExpTimeOpType = OP_TYPE_MANUAL;
-    exp_attr.stManual.u32ExpTime = initial_cfg.exposure_us;
-    CVI_S32 exp_set_ret = CVI_ISP_SetExposureAttr(0, &exp_attr);
-    if (exp_set_ret != CVI_SUCCESS) {
-        MA_LOGE(TAG, "FATAL: CVI_ISP_SetExposureAttr failed with error 0x%x", exp_set_ret);
-        cleanup();
-        return 1;
-    }
+    af::RtspOptions stream;
+    stream.width = static_cast<uint16_t>(g_config.stream_width);
+    stream.height = static_cast<uint16_t>(g_config.stream_height);
+    stream.fps = static_cast<uint8_t>(g_config.stream_fps);
+    stream.gop = 30;
+    stream.bitrate_kbps = 1200;
+    stream.max_bitrate_kbps = 1500;
 
-    ISP_EXPOSURE_ATTR_S verify_exp;
-    std::memset(&verify_exp, 0, sizeof(verify_exp));
-    if (CVI_ISP_GetExposureAttr(0, &verify_exp) != CVI_SUCCESS) {
-        MA_LOGE(TAG, "FATAL: CVI_ISP_GetExposureAttr readback failed");
-        cleanup();
-        return 1;
-    }
-    const int64_t exp_diff = std::abs(static_cast<int64_t>(verify_exp.stManual.u32ExpTime) - static_cast<int64_t>(initial_cfg.exposure_us));
-    if (verify_exp.enOpType != OP_TYPE_MANUAL || exp_diff > 1000) {
-        MA_LOGE(TAG, "FATAL: ISP exposure gate readback mismatch: target=%u us, actual=%u us (diff=%ld us > 1000 us line tolerance), opType=%d",
-                initial_cfg.exposure_us, verify_exp.stManual.u32ExpTime, static_cast<long>(exp_diff), verify_exp.enOpType);
-        cleanup();
-        return 1;
-    }
-    MA_LOGI(TAG, "ISP exposure hardware gate verified: %u us (OP_TYPE_MANUAL, diff=%ld us)",
-            verify_exp.stManual.u32ExpTime, static_cast<long>(exp_diff));
+    af::App app("microduck-pose-qa");
+    app.with_camera(cam).with_stream(stream);
+    if (g_config.enable_rtsp) app.with_rtsp(stream);
+    if (g_config.enable_debug) app.with_debug_ws(g_config.debug_port);
+    if (g_config.enable_mqtt) app.with_mqtt(mqtt_options());
 
-    ISP_WB_ATTR_S wb_attr;
-    std::memset(&wb_attr, 0, sizeof(wb_attr));
-    CVI_S32 wb_get_ret = CVI_ISP_GetWBAttr(0, &wb_attr);
-    if (wb_get_ret != CVI_SUCCESS) {
-        MA_LOGE(TAG, "FATAL: CVI_ISP_GetWBAttr failed with error 0x%x", wb_get_ret);
-        cleanup();
-        return 1;
-    }
-    wb_attr.bByPass = CVI_FALSE;
-    wb_attr.enOpType = OP_TYPE_MANUAL;  // Strict AWB lock per spec: fixed unity gains (1024 = 1.0x) disable auto color drift
-    wb_attr.stManual.u16Rgain = 1024;
-    wb_attr.stManual.u16Grgain = 1024;
-    wb_attr.stManual.u16Gbgain = 1024;
-    wb_attr.stManual.u16Bgain = 1024;
-    CVI_S32 wb_set_ret = CVI_ISP_SetWBAttr(0, &wb_attr);
-    if (wb_set_ret != CVI_SUCCESS) {
-        MA_LOGE(TAG, "FATAL: CVI_ISP_SetWBAttr failed with error 0x%x", wb_set_ret);
-        cleanup();
-        return 1;
-    }
-
-    ISP_WB_ATTR_S verify_wb;
-    std::memset(&verify_wb, 0, sizeof(verify_wb));
-    if (CVI_ISP_GetWBAttr(0, &verify_wb) != CVI_SUCCESS ||
-        verify_wb.enOpType != OP_TYPE_MANUAL ||
-        verify_wb.stManual.u16Rgain != 1024 ||
-        verify_wb.stManual.u16Grgain != 1024 ||
-        verify_wb.stManual.u16Gbgain != 1024 ||
-        verify_wb.stManual.u16Bgain != 1024) {
-        MA_LOGE(TAG, "FATAL: ISP AWB lock readback mismatch: opType=%d, gains=(%u,%u,%u,%u, expected 1024)",
-                verify_wb.enOpType,
-                verify_wb.stManual.u16Rgain, verify_wb.stManual.u16Grgain,
-                verify_wb.stManual.u16Gbgain, verify_wb.stManual.u16Bgain);
-        cleanup();
-        return 1;
-    }
-    MA_LOGI(TAG, "ISP AWB hardware gate verified: OP_TYPE_MANUAL (locked gains 1024/1024/1024/1024)");
-
-    // Flush initial 5 frames to drain ISP pipeline buffer and ensure optical parameters are settled
-    for (int i = 0; i < 5; ++i) {
-        ma_img_t warmup_frame;
-        if (g_camera->retrieveFrame(warmup_frame, MA_PIXEL_FORMAT_RGB888) == MA_OK) {
-            g_camera->returnFrame(warmup_frame);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-
-    MA_LOGI(TAG, "Microduck Pose QA daemon running");
-    if (g_config.enable_rtsp) {
-        MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
-    }
-    MA_LOGI(TAG, "Debug WS: ws://<device_ip>:%d/ and /results", g_config.debug_port);
+    MA_LOGI(TAG, "Camera %dx%d @ %dfps, ISP anti-flicker target exposure=%u us",
+            g_config.inference_width, g_config.inference_height, g_config.inference_fps, cfg.exposure_us);
     MA_LOGI(TAG, "HTTP Control: http://<device_ip>:%d/api/control", g_config.control_port);
     MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
 
-    while (g_running.load()) {
-        process_frame();
-    }
+    app.on_started(configure_isp)
+       .on_before_grab([] { g_pre_gen = g_state_machine.getActionGeneration(); })
+       .on_idle([] { g_state_machine.checkTimeout(); })  // starved: still finalize timed-out actions
+       .on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
+    const int rc = app.run();
 
-    cleanup();
+    g_http_control.stop();
+    release();
     MA_LOGI(TAG, "Microduck Pose QA daemon terminated");
-    return 0;
+    return rc;
 }

@@ -14,8 +14,13 @@ struct AppConfig {
     float gear_tooth_tolerance_deg = 10.0f;
     float bilateral_height_tolerance_norm = 0.040f;
     float spine_tilt_tolerance_deg = 12.0f;
+    float nominal_stand_theta_l_deg = -20.40f;
+    float nominal_stand_theta_r_deg = -55.59f;
+    float nominal_stand_disparity_deg = 35.19f;
+    float nominal_stand_spine_tilt_deg = 14.82f;
     uint32_t exposure_us = 16666;
     std::vector<float> screen_roi = {0.0f, 0.0f, 1280.0f, 720.0f};
+    std::vector<float> face_led_roi = {0.0f, 0.0f, 0.0f, 0.0f};
     std::string config_version = "20261105_v1";
 
     AppConfig createSnapshot() const {

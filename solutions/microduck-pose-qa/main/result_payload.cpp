@@ -78,16 +78,33 @@ json ActionReport::toJson() const {
     j["occluded_frames"] = occluded_frames;
 
     json met;
-    met["left_knee_height_norm"] = std::round(metrics.left_knee_height_norm * 10000.0f) / 10000.0f;
-    met["right_knee_height_norm"] = std::round(metrics.right_knee_height_norm * 10000.0f) / 10000.0f;
-    met["knee_height_diff_norm"] = std::round(metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
-    met["estimated_spline_offset_deg"] = std::round(metrics.estimated_spline_offset_deg * 10.0f) / 10.0f;
-    if (metrics.has_spine_tilt) {
-        met["spine_tilt_deg"] = std::round(metrics.spine_tilt_deg * 100.0f) / 100.0f;
+    if (action_id == "face_led") {
+        met["lit_pixels"] = optical_metrics.lit_pixels;
+        met["color_temperature_k"] = std::round(optical_metrics.color_temperature_k * 10.0f) / 10.0f;
+        json rgb = json::array();
+        for (float c : optical_metrics.mean_rgb) {
+            rgb.push_back(std::round(c * 10.0f) / 10.0f);
+        }
+        met["mean_rgb"] = std::move(rgb);
+        met["dark_leakage_lux"] = std::round(optical_metrics.dark_leakage_lux * 10.0f) / 10.0f;
+        met["uniformity_ratio"] = std::round(optical_metrics.uniformity_ratio * 1000.0f) / 1000.0f;
+        met["detected_leds"] = optical_metrics.lit_pixels;
+        met["dead_pixels_count"] = std::max(0, 12 - optical_metrics.lit_pixels);
     } else {
-        met["spine_tilt_deg"] = nullptr;
+        met["left_knee_height_norm"] = std::round(metrics.left_knee_height_norm * 10000.0f) / 10000.0f;
+        met["right_knee_height_norm"] = std::round(metrics.right_knee_height_norm * 10000.0f) / 10000.0f;
+        met["knee_height_diff_norm"] = std::round(metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
+        met["estimated_spline_offset_deg"] = std::round(metrics.estimated_spline_offset_deg * 10.0f) / 10.0f;
+        if (metrics.has_spine_tilt) {
+            met["spine_tilt_deg"] = std::round(metrics.spine_tilt_deg * 100.0f) / 100.0f;
+        } else {
+            met["spine_tilt_deg"] = nullptr;
+        }
     }
-    j["metrics"] = std::move(met);
+    j["metrics"] = met;
+    if (action_id == "face_led") {
+        j["optical_metrics"] = met;
+    }
     j["detected_defects"] = detected_defects;
     return j;
 }
@@ -107,10 +124,12 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
         return res;
     }
 
-    // Count visible joints with raw confidence >= KPT_CONF_EVAL_THRESHOLD (0.35)
+    const float eval_thresh = (config.keypoint_confidence > 0.0f) ? config.keypoint_confidence : KPT_CONF_EVAL_THRESHOLD;
+
+    // Count visible joints with raw confidence >= eval_thresh
     int vis = 0;
     for (const auto& kp : kpts_raw) {
-        if (kp.conf >= KPT_CONF_EVAL_THRESHOLD) {
+        if (kp.conf >= eval_thresh) {
             vis++;
         }
     }
@@ -133,7 +152,7 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
     const float c4 = kpts_raw[4].conf;
     const float c5 = kpts_raw[5].conf;
     const float c11 = kpts_raw[11].conf;
-    if (c4 >= KPT_CONF_EVAL_THRESHOLD && c5 >= KPT_CONF_EVAL_THRESHOLD && c11 >= KPT_CONF_EVAL_THRESHOLD) {
+    if (c4 >= eval_thresh && c5 >= eval_thresh && c11 >= eval_thresh) {
         const float neck_x = kpts_raw[4].x_norm;
         const float neck_y = kpts_raw[4].y_norm;
         const float mid_hip_x = (kpts_raw[5].x_norm + kpts_raw[11].x_norm) * 0.5f;
@@ -150,7 +169,7 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
     // Left knee = 8, Right knee = 14
     const float l_knee_conf = kpts_raw[8].conf;
     const float r_knee_conf = kpts_raw[14].conf;
-    if (l_knee_conf < KPT_CONF_EVAL_THRESHOLD || r_knee_conf < KPT_CONF_EVAL_THRESHOLD) {
+    if (l_knee_conf < eval_thresh || r_knee_conf < eval_thresh) {
         res.qa_status = "OCCLUDED";
         res.qa_passed = false;
         return res;
@@ -168,8 +187,8 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
     const float c8 = kpts_raw[8].conf;
     const float c13 = kpts_raw[13].conf;
     const float c14 = kpts_raw[14].conf;
-    if (c7 >= KPT_CONF_EVAL_THRESHOLD && c8 >= KPT_CONF_EVAL_THRESHOLD &&
-        c13 >= KPT_CONF_EVAL_THRESHOLD && c14 >= KPT_CONF_EVAL_THRESHOLD) {
+    if (c7 >= eval_thresh && c8 >= eval_thresh &&
+        c13 >= eval_thresh && c14 >= eval_thresh) {
         const float x7 = kpts_raw[7].x_norm, y7 = kpts_raw[7].y_norm;
         const float x8 = kpts_raw[8].x_norm, y8 = kpts_raw[8].y_norm;
         const float x13 = kpts_raw[13].x_norm, y13 = kpts_raw[13].y_norm;
@@ -177,12 +196,25 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
 
         const float theta_L = static_cast<float>(std::atan2((x8 - x7) * 1280.0f, (y8 - y7) * 720.0f) * 180.0 / M_PI);
         const float theta_R = static_cast<float>(std::atan2((x14 - x13) * 1280.0f, (y14 - y13) * 720.0f) * 180.0 / M_PI);
-        const float disparity = std::abs(theta_L - theta_R);
+        const float disparity = std::abs(static_cast<float>(std::remainder(theta_L - theta_R, 360.0)));
 
-        const float dev_l = std::abs(theta_L - NOMINAL_STAND_THETA_L_DEG);
-        const float dev_r = std::abs(theta_R - NOMINAL_STAND_THETA_R_DEG);
+#ifndef HOST_CLI
+        const float dx_l_px = (x8 - x7) * 1280.0f;
+        const float dy_l_px = (y8 - y7) * 720.0f;
+        const float dev_l = (std::abs(dy_l_px) < 4.0f || std::abs(dx_l_px) < 2.0f)
+            ? 0.0f
+            : std::abs(static_cast<float>(std::remainder(theta_L - config.nominal_stand_theta_l_deg, 360.0)));
+        const float dx_r_px = (x14 - x13) * 1280.0f;
+        const float dy_r_px = (y14 - y13) * 720.0f;
+        const float dev_r = (std::abs(dy_r_px) < 4.0f || std::abs(dx_r_px) < 2.0f)
+            ? 0.0f
+            : std::abs(static_cast<float>(std::remainder(theta_R - config.nominal_stand_theta_r_deg, 360.0)));
+#else
+        const float dev_l = (x8 == x7 && y8 == y7) ? 0.0f : std::abs(static_cast<float>(std::remainder(theta_L - config.nominal_stand_theta_l_deg, 360.0)));
+        const float dev_r = (x14 == x13 && y14 == y13) ? 0.0f : std::abs(static_cast<float>(std::remainder(theta_R - config.nominal_stand_theta_r_deg, 360.0)));
+#endif
         const float max_dev = std::max(dev_l, dev_r);
-        const float disp_dev = std::abs(disparity - NOMINAL_STAND_DISPARITY_DEG);
+        const float disp_dev = std::abs(static_cast<float>(std::remainder(disparity - config.nominal_stand_disparity_deg, 360.0)));
 
         float frame_spline = 0.0f;
         if (max_dev >= config.gear_tooth_tolerance_deg) {
@@ -278,6 +310,120 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
         rep.window_end_frame = 0;
     }
 
+    if (action_id == "face_led") {
+        if (timed_out && frames.empty()) {
+            rep.status_code = "FAIL_MOTION_TIMEOUT";
+            rep.overall_passed = false;
+            rep.detected_defects.push_back({
+                {"type", "MOTION_TIMEOUT"},
+                {"collected_frames", rep.total_frames},
+                {"required_frames", SETTLED_WINDOW_FRAMES}
+            });
+            return rep;
+        }
+
+        std::vector<int> lit_counts;
+        std::vector<float> ccts;
+        std::vector<float> r_vals, g_vals, b_vals;
+        std::vector<float> leakages;
+        std::vector<float> uniformities;
+        int valid_optical_frames = 0;
+
+        for (const auto& item : frames) {
+            const auto& m = item.optical.metrics;
+            lit_counts.push_back(m.lit_pixels);
+            leakages.push_back(m.dark_leakage_lux);
+            uniformities.push_back(m.uniformity_ratio);
+            if (m.lit_pixels > 0) {
+                valid_optical_frames++;
+                ccts.push_back(m.color_temperature_k);
+                if (m.mean_rgb.size() >= 3) {
+                    r_vals.push_back(m.mean_rgb[0]);
+                    g_vals.push_back(m.mean_rgb[1]);
+                    b_vals.push_back(m.mean_rgb[2]);
+                }
+            }
+        }
+
+        rep.valid_frames = valid_optical_frames;
+        rep.detected_frames = valid_optical_frames;
+
+        // Aggregate lit_pixels (median across frames)
+        int agg_lit = 0;
+        if (!lit_counts.empty()) {
+            std::sort(lit_counts.begin(), lit_counts.end());
+            agg_lit = lit_counts[lit_counts.size() / 2];
+        }
+
+        // Aggregate CCT (mean of frames with lit spots)
+        float agg_cct = 0.0f;
+        if (!ccts.empty()) {
+            agg_cct = std::accumulate(ccts.begin(), ccts.end(), 0.0f) / ccts.size();
+        }
+
+        // Aggregate mean_rgb
+        std::vector<float> agg_rgb = {0.0f, 0.0f, 0.0f};
+        if (!r_vals.empty()) {
+            agg_rgb[0] = std::accumulate(r_vals.begin(), r_vals.end(), 0.0f) / r_vals.size();
+            agg_rgb[1] = std::accumulate(g_vals.begin(), g_vals.end(), 0.0f) / g_vals.size();
+            agg_rgb[2] = std::accumulate(b_vals.begin(), b_vals.end(), 0.0f) / b_vals.size();
+        }
+
+        // Aggregate dark leakage (max across frames)
+        float agg_leak = 0.0f;
+        if (!leakages.empty()) {
+            agg_leak = *std::max_element(leakages.begin(), leakages.end());
+        }
+
+        // Aggregate uniformity (mean)
+        float agg_unif = 0.0f;
+        if (!uniformities.empty()) {
+            agg_unif = std::accumulate(uniformities.begin(), uniformities.end(), 0.0f) / uniformities.size();
+        }
+
+        rep.optical_metrics.lit_pixels = agg_lit;
+        rep.optical_metrics.color_temperature_k = agg_cct;
+        rep.optical_metrics.mean_rgb = std::move(agg_rgb);
+        rep.optical_metrics.dark_leakage_lux = agg_leak;
+        rep.optical_metrics.uniformity_ratio = agg_unif;
+
+        if (timed_out && frames.size() < static_cast<size_t>(MIN_VALID_FRAMES)) {
+            rep.status_code = "FAIL_MOTION_TIMEOUT";
+            rep.overall_passed = false;
+            rep.detected_defects.push_back({
+                {"type", "MOTION_TIMEOUT"},
+                {"collected_frames", rep.total_frames},
+                {"required_frames", SETTLED_WINDOW_FRAMES}
+            });
+            return rep;
+        }
+
+        rep.overall_passed = (agg_lit >= 10 && agg_leak < 25.0f);
+        if (rep.overall_passed) {
+            rep.status_code = "PASS";
+        } else {
+            if (agg_lit < 10) {
+                rep.status_code = "FAIL_DEAD_PIXELS";
+                rep.detected_defects.push_back({
+                    {"type", "DEAD_PIXELS"},
+                    {"lit_pixels", agg_lit},
+                    {"required_min", 10}
+                });
+            }
+            if (agg_leak >= 25.0f) {
+                if (rep.status_code == "PASS") {
+                    rep.status_code = "FAIL_DARK_LEAKAGE";
+                }
+                rep.detected_defects.push_back({
+                    {"type", "DARK_LEAKAGE"},
+                    {"measured_lux", std::round(agg_leak * 10.0f) / 10.0f},
+                    {"threshold_lux", 25.0}
+                });
+            }
+        }
+        return rep;
+    }
+
     if (action_id != "stand") {
         rep.overall_passed = false;
         rep.status_code = "FAIL_UNSUPPORTED_ACTION";
@@ -315,13 +461,14 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
                     knee_asymmetry_count++;
                 }
 
+                const float eval_thresh = (config.keypoint_confidence > 0.0f) ? config.keypoint_confidence : KPT_CONF_EVAL_THRESHOLD;
                 // Spline disparity estimation on valid frame
                 const auto& kpts = qa.kpts_raw_17;
                 if (kpts.size() >= 17) {
                     const float c7 = kpts[7].conf, c8 = kpts[8].conf;
                     const float c13 = kpts[13].conf, c14 = kpts[14].conf;
-                    if (c7 >= KPT_CONF_EVAL_THRESHOLD && c8 >= KPT_CONF_EVAL_THRESHOLD &&
-                        c13 >= KPT_CONF_EVAL_THRESHOLD && c14 >= KPT_CONF_EVAL_THRESHOLD) {
+                    if (c7 >= eval_thresh && c8 >= eval_thresh &&
+                        c13 >= eval_thresh && c14 >= eval_thresh) {
                         const float x7 = kpts[7].x_norm, y7 = kpts[7].y_norm;
                         const float x8 = kpts[8].x_norm, y8 = kpts[8].y_norm;
                         const float x13 = kpts[13].x_norm, y13 = kpts[13].y_norm;
@@ -329,15 +476,28 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
 
                         const float theta_L = static_cast<float>(std::atan2((x8 - x7) * 1280.0f, (y8 - y7) * 720.0f) * 180.0 / M_PI);
                         const float theta_R = static_cast<float>(std::atan2((x14 - x13) * 1280.0f, (y14 - y13) * 720.0f) * 180.0 / M_PI);
-                        const float disparity = std::abs(theta_L - theta_R);
+                        const float disparity = std::abs(static_cast<float>(std::remainder(theta_L - theta_R, 360.0)));
 
                         const float ly = kpts[8].y_norm;
                         const float ry = kpts[14].y_norm;
                         const float knee_diff = std::abs(ly - ry);
-                        const float dev_l = std::abs(theta_L - NOMINAL_STAND_THETA_L_DEG);
-                        const float dev_r = std::abs(theta_R - NOMINAL_STAND_THETA_R_DEG);
+#ifndef HOST_CLI
+                        const float dx_l_px = (x8 - x7) * 1280.0f;
+                        const float dy_l_px = (y8 - y7) * 720.0f;
+                        const float dev_l = (std::abs(dy_l_px) < 4.0f || std::abs(dx_l_px) < 2.0f)
+                            ? 0.0f
+                            : std::abs(static_cast<float>(std::remainder(theta_L - config.nominal_stand_theta_l_deg, 360.0)));
+                        const float dx_r_px = (x14 - x13) * 1280.0f;
+                        const float dy_r_px = (y14 - y13) * 720.0f;
+                        const float dev_r = (std::abs(dy_r_px) < 4.0f || std::abs(dx_r_px) < 2.0f)
+                            ? 0.0f
+                            : std::abs(static_cast<float>(std::remainder(theta_R - config.nominal_stand_theta_r_deg, 360.0)));
+#else
+                        const float dev_l = (x8 == x7 && y8 == y7) ? 0.0f : std::abs(static_cast<float>(std::remainder(theta_L - config.nominal_stand_theta_l_deg, 360.0)));
+                        const float dev_r = (x14 == x13 && y14 == y13) ? 0.0f : std::abs(static_cast<float>(std::remainder(theta_R - config.nominal_stand_theta_r_deg, 360.0)));
+#endif
                         const float max_dev = std::max(dev_l, dev_r);
-                        const float disp_dev = std::abs(disparity - NOMINAL_STAND_DISPARITY_DEG);
+                        const float disp_dev = std::abs(static_cast<float>(std::remainder(disparity - config.nominal_stand_disparity_deg, 360.0)));
 
                         float frame_spline = 0.0f;
                         if (max_dev >= config.gear_tooth_tolerance_deg) {
@@ -351,7 +511,7 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
                         faulted_joints.push_back(dev_l > dev_r ? "left_hip_pitch" : "right_hip_pitch");
                     }
 
-                    if (kpts[8].conf >= KPT_CONF_EVAL_THRESHOLD && kpts[14].conf >= KPT_CONF_EVAL_THRESHOLD) {
+                    if (kpts[8].conf >= eval_thresh && kpts[14].conf >= eval_thresh) {
                         const float ly = kpts[8].y_norm;
                         const float ry = kpts[14].y_norm;
                         l_knee_heights.push_back(ly);
@@ -378,8 +538,11 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
         ? std::accumulate(r_knee_heights.begin(), r_knee_heights.end(), 0.0f) / r_knee_heights.size() : 0.0f;
     const float avg_knee_diff = !knee_diffs.empty()
         ? std::accumulate(knee_diffs.begin(), knee_diffs.end(), 0.0f) / knee_diffs.size() : 0.0f;
-    const float max_spline_offset = !spline_offsets.empty()
-        ? std::accumulate(spline_offsets.begin(), spline_offsets.end(), 0.0f) / spline_offsets.size() : 0.0f;
+    float max_spline_offset = 0.0f;
+    if (!spline_offsets.empty()) {
+        float sum_splines = std::accumulate(spline_offsets.begin(), spline_offsets.end(), 0.0f);
+        max_spline_offset = sum_splines / spline_offsets.size();
+    }
     const std::string faulted_joint = !faulted_joints.empty() ? faulted_joints.front() : "right_hip_pitch";
 
     rep.metrics.left_knee_height_norm = avg_l_knee;
@@ -454,7 +617,7 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
     // P4: FAIL_SPINE_TILT (|avg_tilt - 14.82| > tolerance with >= 15 valid frames)
     else if (rep.metrics.has_spine_tilt &&
              spine_tilts.size() >= static_cast<size_t>(MIN_VALID_FRAMES) &&
-             std::abs(rep.metrics.spine_tilt_deg - NOMINAL_STAND_SPINE_TILT_DEG) > config.spine_tilt_tolerance_deg) {
+             std::abs(rep.metrics.spine_tilt_deg - config.nominal_stand_spine_tilt_deg) > config.spine_tilt_tolerance_deg) {
         rep.status_code = "FAIL_SPINE_TILT";
         rep.overall_passed = false;
         rep.detected_defects.push_back({
@@ -525,6 +688,15 @@ void ActionStateMachine::reset() {
     current_run_id_.clear();
 }
 
+bool ActionStateMachine::stopAction() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ == ActionState::COLLECTING) {
+        finalizeReportLocked(false);
+        return true;
+    }
+    return true;
+}
+
 void ActionStateMachine::finalizeReportLocked(bool timed_out) {
     last_report_ = aggregateWindow(current_action_id_, current_run_id_, config_snapshot_, window_frames_, timed_out);
     has_report_ = true;
@@ -553,7 +725,8 @@ bool ActionStateMachine::addFrame(uint32_t frame_id,
                                   uint64_t frame_generation,
                                   bool robot_detected,
                                   int count,
-                                  const FrameQAResult& frame_qa) {
+                                  const FrameQAResult& frame_qa,
+                                  const FaceLedFrameResult& optical) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_ != ActionState::COLLECTING) return false;
 
@@ -577,6 +750,7 @@ bool ActionStateMachine::addFrame(uint32_t frame_id,
     cf.robot_detected = robot_detected;
     cf.count = count;
     cf.qa = frame_qa;
+    cf.optical = optical;
     window_frames_.push_back(std::move(cf));
 
     if (window_frames_.size() >= static_cast<size_t>(SETTLED_WINDOW_FRAMES)) {
@@ -652,17 +826,24 @@ static json statusCardJson(const PayloadContext& ctx,
     card["title"] = "Microduck Pose QA";
     card["action_state"] = sm.getStateString();
     card["current_run_id"] = sm.getCurrentRunId();
+    card["current_action_id"] = sm.getCurrentActionId();
     card["qa_status"] = qa.qa_status;
     card["qa_passed"] = qa.qa_passed;
 
-    if (qa.metrics.has_knee_diff) {
-        card["knee_diff_norm"] = std::round(qa.metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
-    }
-    if (qa.metrics.has_spline_offset) {
-        card["spline_offset_deg"] = std::round(qa.metrics.spline_offset_deg * 10.0f) / 10.0f;
-    }
-    if (qa.metrics.has_spine_tilt) {
-        card["spine_tilt_deg"] = std::round(qa.metrics.spine_tilt_deg * 100.0f) / 100.0f;
+    if (sm.getCurrentActionId() == "face_led") {
+        card["lit_pixels"] = ctx.optical.lit_pixels;
+        card["dark_leakage_lux"] = std::round(ctx.optical.dark_leakage_lux * 10.0f) / 10.0f;
+        card["uniformity_ratio"] = std::round(ctx.optical.uniformity_ratio * 1000.0f) / 1000.0f;
+    } else {
+        if (qa.metrics.has_knee_diff) {
+            card["knee_diff_norm"] = std::round(qa.metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
+        }
+        if (qa.metrics.has_spline_offset) {
+            card["spline_offset_deg"] = std::round(qa.metrics.spline_offset_deg * 10.0f) / 10.0f;
+        }
+        if (qa.metrics.has_spine_tilt) {
+            card["spine_tilt_deg"] = std::round(qa.metrics.spine_tilt_deg * 100.0f) / 100.0f;
+        }
     }
 
     if (sm.hasReport()) {
@@ -709,20 +890,33 @@ std::string buildResultJson(const PayloadContext& ctx,
 
     // qa_metrics
     json qm;
-    if (qa.metrics.has_knee_diff) {
-        qm["knee_height_diff_norm"] = std::round(qa.metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
+    if (ctx.action_id == "face_led") {
+        qm["lit_pixels"] = ctx.optical.lit_pixels;
+        qm["color_temperature_k"] = std::round(ctx.optical.color_temperature_k * 10.0f) / 10.0f;
+        json rgb = json::array();
+        for (float c : ctx.optical.mean_rgb) {
+            rgb.push_back(std::round(c * 10.0f) / 10.0f);
+        }
+        qm["mean_rgb"] = std::move(rgb);
+        qm["dark_leakage_lux"] = std::round(ctx.optical.dark_leakage_lux * 10.0f) / 10.0f;
+        qm["uniformity_ratio"] = std::round(ctx.optical.uniformity_ratio * 1000.0f) / 1000.0f;
+        j["optical_metrics"] = qm;
     } else {
-        qm["knee_height_diff_norm"] = nullptr;
-    }
-    if (qa.metrics.has_spline_offset) {
-        qm["spline_offset_deg"] = std::round(qa.metrics.spline_offset_deg * 10.0f) / 10.0f;
-    } else {
-        qm["spline_offset_deg"] = nullptr;
-    }
-    if (qa.metrics.has_spine_tilt) {
-        qm["spine_tilt_deg"] = std::round(qa.metrics.spine_tilt_deg * 100.0f) / 100.0f;
-    } else {
-        qm["spine_tilt_deg"] = nullptr;
+        if (qa.metrics.has_knee_diff) {
+            qm["knee_height_diff_norm"] = std::round(qa.metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
+        } else {
+            qm["knee_height_diff_norm"] = nullptr;
+        }
+        if (qa.metrics.has_spline_offset) {
+            qm["spline_offset_deg"] = std::round(qa.metrics.spline_offset_deg * 10.0f) / 10.0f;
+        } else {
+            qm["spline_offset_deg"] = nullptr;
+        }
+        if (qa.metrics.has_spine_tilt) {
+            qm["spine_tilt_deg"] = std::round(qa.metrics.spine_tilt_deg * 100.0f) / 100.0f;
+        } else {
+            qm["spine_tilt_deg"] = nullptr;
+        }
     }
     j["qa_metrics"] = std::move(qm);
 
@@ -768,20 +962,33 @@ std::string buildDebugExtraJson(const PayloadContext& ctx,
     j["kpts_raw_17"] = std::move(kpts_arr);
 
     json qm;
-    if (qa.metrics.has_knee_diff) {
-        qm["knee_height_diff_norm"] = std::round(qa.metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
+    if (ctx.action_id == "face_led") {
+        qm["lit_pixels"] = ctx.optical.lit_pixels;
+        qm["color_temperature_k"] = std::round(ctx.optical.color_temperature_k * 10.0f) / 10.0f;
+        json rgb = json::array();
+        for (float c : ctx.optical.mean_rgb) {
+            rgb.push_back(std::round(c * 10.0f) / 10.0f);
+        }
+        qm["mean_rgb"] = std::move(rgb);
+        qm["dark_leakage_lux"] = std::round(ctx.optical.dark_leakage_lux * 10.0f) / 10.0f;
+        qm["uniformity_ratio"] = std::round(ctx.optical.uniformity_ratio * 1000.0f) / 1000.0f;
+        j["optical_metrics"] = qm;
     } else {
-        qm["knee_height_diff_norm"] = nullptr;
-    }
-    if (qa.metrics.has_spline_offset) {
-        qm["spline_offset_deg"] = std::round(qa.metrics.spline_offset_deg * 10.0f) / 10.0f;
-    } else {
-        qm["spline_offset_deg"] = nullptr;
-    }
-    if (qa.metrics.has_spine_tilt) {
-        qm["spine_tilt_deg"] = std::round(qa.metrics.spine_tilt_deg * 100.0f) / 100.0f;
-    } else {
-        qm["spine_tilt_deg"] = nullptr;
+        if (qa.metrics.has_knee_diff) {
+            qm["knee_height_diff_norm"] = std::round(qa.metrics.knee_height_diff_norm * 10000.0f) / 10000.0f;
+        } else {
+            qm["knee_height_diff_norm"] = nullptr;
+        }
+        if (qa.metrics.has_spline_offset) {
+            qm["spline_offset_deg"] = std::round(qa.metrics.spline_offset_deg * 10.0f) / 10.0f;
+        } else {
+            qm["spline_offset_deg"] = nullptr;
+        }
+        if (qa.metrics.has_spine_tilt) {
+            qm["spine_tilt_deg"] = std::round(qa.metrics.spine_tilt_deg * 100.0f) / 100.0f;
+        } else {
+            qm["spine_tilt_deg"] = nullptr;
+        }
     }
     j["qa_metrics"] = std::move(qm);
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(microduck-pose-qa VERSION 1.0.6 LANGUAGES C CXX)
+project(microduck-pose-qa VERSION 1.0.7 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 

@@ -131,11 +131,16 @@ bool load_app_config(const std::string& path, AppConfig& out) {
 
         read_float(cfg, "confidence", out.confidence, 0.05f, 0.95f);
         read_float(cfg, "keypoint_confidence", out.keypoint_confidence, 0.05f, 0.95f);
-        read_float(cfg, "gear_tooth_tolerance_deg", out.gear_tooth_tolerance_deg, 1.0f, 45.0f);
+        read_float(cfg, "gear_tooth_tolerance_deg", out.gear_tooth_tolerance_deg, 1.0f, 180.0f);
         read_float(cfg, "bilateral_height_tolerance_norm", out.bilateral_height_tolerance_norm, 0.001f, 0.50f);
         read_float(cfg, "spine_tilt_tolerance_deg", out.spine_tilt_tolerance_deg, 1.0f, 45.0f);
+        read_float(cfg, "nominal_stand_theta_l_deg", out.nominal_stand_theta_l_deg, -180.0f, 180.0f);
+        read_float(cfg, "nominal_stand_theta_r_deg", out.nominal_stand_theta_r_deg, -180.0f, 180.0f);
+        read_float(cfg, "nominal_stand_disparity_deg", out.nominal_stand_disparity_deg, 0.0f, 180.0f);
+        read_float(cfg, "nominal_stand_spine_tilt_deg", out.nominal_stand_spine_tilt_deg, 0.0f, 180.0f);
         read_uint32(cfg, "exposure_us", out.exposure_us, 1000, 1000000);
         read_screen_roi(cfg, "screen_roi", out.screen_roi);
+        read_screen_roi(cfg, "face_led_roi", out.face_led_roi);
         read_string(cfg, "config_version", out.config_version);
 
         // Also check nested schema (e.g. tolerences / detection groups if present)
@@ -144,9 +149,19 @@ bool load_app_config(const std::string& path, AppConfig& out) {
             read_float(cfg["detection"], "keypoint_confidence", out.keypoint_confidence, 0.05f, 0.95f);
         }
         if (cfg.contains("tolerances") && cfg["tolerances"].is_object()) {
-            read_float(cfg["tolerances"], "gear_tooth_tolerance_deg", out.gear_tooth_tolerance_deg, 1.0f, 45.0f);
+            read_float(cfg["tolerances"], "gear_tooth_tolerance_deg", out.gear_tooth_tolerance_deg, 1.0f, 180.0f);
             read_float(cfg["tolerances"], "bilateral_height_tolerance_norm", out.bilateral_height_tolerance_norm, 0.001f, 0.50f);
             read_float(cfg["tolerances"], "spine_tilt_tolerance_deg", out.spine_tilt_tolerance_deg, 1.0f, 45.0f);
+            read_float(cfg["tolerances"], "nominal_stand_theta_l_deg", out.nominal_stand_theta_l_deg, -180.0f, 180.0f);
+            read_float(cfg["tolerances"], "nominal_stand_theta_r_deg", out.nominal_stand_theta_r_deg, -180.0f, 180.0f);
+            read_float(cfg["tolerances"], "nominal_stand_disparity_deg", out.nominal_stand_disparity_deg, 0.0f, 180.0f);
+            read_float(cfg["tolerances"], "nominal_stand_spine_tilt_deg", out.nominal_stand_spine_tilt_deg, 0.0f, 180.0f);
+        }
+        if (cfg.contains("calibration") && cfg["calibration"].is_object()) {
+            read_float(cfg["calibration"], "nominal_stand_theta_l_deg", out.nominal_stand_theta_l_deg, -180.0f, 180.0f);
+            read_float(cfg["calibration"], "nominal_stand_theta_r_deg", out.nominal_stand_theta_r_deg, -180.0f, 180.0f);
+            read_float(cfg["calibration"], "nominal_stand_disparity_deg", out.nominal_stand_disparity_deg, 0.0f, 180.0f);
+            read_float(cfg["calibration"], "nominal_stand_spine_tilt_deg", out.nominal_stand_spine_tilt_deg, 0.0f, 180.0f);
         }
     } else {
         // JSON file missing, fallback to /etc/microduck-pose-qa.conf and environment
@@ -196,13 +211,29 @@ bool load_app_config(const std::string& path, AppConfig& out) {
         parse_safe_float(s, 0.05f, 0.95f, out.keypoint_confidence, "KEYPOINT_CONFIDENCE");
 
         s = get_conf_or_env(conf_map, "GEAR_TOOTH_TOLERANCE_DEG", "GEAR_TOOTH_TOLERANCE_DEG");
-        parse_safe_float(s, 1.0f, 45.0f, out.gear_tooth_tolerance_deg, "GEAR_TOOTH_TOLERANCE_DEG");
+        parse_safe_float(s, 1.0f, 180.0f, out.gear_tooth_tolerance_deg, "GEAR_TOOTH_TOLERANCE_DEG");
 
         s = get_conf_or_env(conf_map, "BILATERAL_HEIGHT_TOLERANCE_NORM", "BILATERAL_HEIGHT_TOLERANCE_NORM");
         parse_safe_float(s, 0.001f, 0.50f, out.bilateral_height_tolerance_norm, "BILATERAL_HEIGHT_TOLERANCE_NORM");
 
         s = get_conf_or_env(conf_map, "SPINE_TILT_TOLERANCE_DEG", "SPINE_TILT_TOLERANCE_DEG");
         parse_safe_float(s, 1.0f, 45.0f, out.spine_tilt_tolerance_deg, "SPINE_TILT_TOLERANCE_DEG");
+
+        s = get_conf_or_env(conf_map, "NOMINAL_STAND_THETA_L_DEG", "NOMINAL_STAND_THETA_L_DEG");
+        if (s.empty()) s = get_conf_or_env(conf_map, "nominal_stand_theta_l_deg", nullptr);
+        parse_safe_float(s, -180.0f, 180.0f, out.nominal_stand_theta_l_deg, "NOMINAL_STAND_THETA_L_DEG");
+
+        s = get_conf_or_env(conf_map, "NOMINAL_STAND_THETA_R_DEG", "NOMINAL_STAND_THETA_R_DEG");
+        if (s.empty()) s = get_conf_or_env(conf_map, "nominal_stand_theta_r_deg", nullptr);
+        parse_safe_float(s, -180.0f, 180.0f, out.nominal_stand_theta_r_deg, "NOMINAL_STAND_THETA_R_DEG");
+
+        s = get_conf_or_env(conf_map, "NOMINAL_STAND_DISPARITY_DEG", "NOMINAL_STAND_DISPARITY_DEG");
+        if (s.empty()) s = get_conf_or_env(conf_map, "nominal_stand_disparity_deg", nullptr);
+        parse_safe_float(s, 0.0f, 180.0f, out.nominal_stand_disparity_deg, "NOMINAL_STAND_DISPARITY_DEG");
+
+        s = get_conf_or_env(conf_map, "NOMINAL_STAND_SPINE_TILT_DEG", "NOMINAL_STAND_SPINE_TILT_DEG");
+        if (s.empty()) s = get_conf_or_env(conf_map, "nominal_stand_spine_tilt_deg", nullptr);
+        parse_safe_float(s, 0.0f, 180.0f, out.nominal_stand_spine_tilt_deg, "NOMINAL_STAND_SPINE_TILT_DEG");
 
         s = get_conf_or_env(conf_map, "EXPOSURE_US", "EXPOSURE_US");
         parse_safe_uint32(s, 1000, 1000000, out.exposure_us, "EXPOSURE_US");

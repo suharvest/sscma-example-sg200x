@@ -255,19 +255,25 @@ void HttpControlServer::handleClient(int client_fd) {
         json params = req_json.value("params", json::object());
 
         if (method == "start_action") {
-            if (!params.contains("action_id") || !params["action_id"].is_string()) {
+            std::string action_id = "";
+            if (params.contains("action_id") && params["action_id"].is_string()) {
+                action_id = params["action_id"].get<std::string>();
+            } else if (req_json.contains("action_id") && req_json["action_id"].is_string()) {
+                action_id = req_json["action_id"].get<std::string>();
+            }
+
+            if (action_id.empty()) {
                 json err = {{"error", "INVALID_PARAMS"}, {"message", "action_id must be a string"}};
                 send_http_response(client_fd, 400, "Bad Request", err.dump());
                 ::close(client_fd);
                 return;
             }
 
-            const std::string action_id = params["action_id"].get<std::string>();
-            if (action_id != "stand") {
+            if (action_id != "stand" && action_id != "face_led") {
                 json err = {
                     {"error", "UNSUPPORTED_ACTION"},
                     {"action_id", action_id},
-                    {"supported_actions", json::array({"stand"})}
+                    {"supported_actions", json::array({"stand", "face_led"})}
                 };
                 send_http_response(client_fd, 400, "Bad Request", err.dump());
                 ::close(client_fd);
@@ -275,42 +281,27 @@ void HttpControlServer::handleClient(int client_fd) {
             }
 
             std::string run_id = "";
-            if (params.contains("run_id")) {
-                if (!params["run_id"].is_string()) {
-                    json err = {{"error", "INVALID_PARAMS"}, {"message", "run_id must be a string"}};
-                    send_http_response(client_fd, 400, "Bad Request", err.dump());
-                    ::close(client_fd);
-                    return;
-                }
+            if (params.contains("run_id") && params["run_id"].is_string()) {
                 run_id = params["run_id"].get<std::string>();
+            } else if (req_json.contains("run_id") && req_json["run_id"].is_string()) {
+                run_id = req_json["run_id"].get<std::string>();
             }
 
             float timeout_s = 3.0f;
-            if (params.contains("timeout_s")) {
-                if (!params["timeout_s"].is_number()) {
-                    json err = {{"error", "INVALID_PARAMS"}, {"message", "timeout_s must be a numeric value"}};
-                    send_http_response(client_fd, 400, "Bad Request", err.dump());
-                    ::close(client_fd);
-                    return;
-                }
+            if (params.contains("timeout_s") && params["timeout_s"].is_number()) {
                 timeout_s = params["timeout_s"].get<float>();
-                if (timeout_s < 1.0f || timeout_s > 10.0f) {
-                    json err = {{"error", "INVALID_PARAMS"}, {"message", "timeout_s must be within [1.0, 10.0]"}};
-                    send_http_response(client_fd, 400, "Bad Request", err.dump());
-                    ::close(client_fd);
-                    return;
-                }
+            } else if (req_json.contains("timeout_s") && req_json["timeout_s"].is_number()) {
+                timeout_s = req_json["timeout_s"].get<float>();
+            }
+            if (timeout_s < 1.0f || timeout_s > 10.0f) {
+                timeout_s = 3.0f;
             }
 
             bool force = false;
-            if (params.contains("force")) {
-                if (!params["force"].is_boolean()) {
-                    json err = {{"error", "INVALID_PARAMS"}, {"message", "force must be a boolean"}};
-                    send_http_response(client_fd, 400, "Bad Request", err.dump());
-                    ::close(client_fd);
-                    return;
-                }
+            if (params.contains("force") && params["force"].is_boolean()) {
                 force = params["force"].get<bool>();
+            } else if (req_json.contains("force") && req_json["force"].is_boolean()) {
+                force = req_json["force"].get<bool>();
             }
 
             if (sm_) {
@@ -349,6 +340,35 @@ void HttpControlServer::handleClient(int client_fd) {
                 json err = {{"error", "STATE_MACHINE_UNAVAILABLE"}};
                 send_http_response(client_fd, 503, "Service Unavailable", err.dump());
             }
+        } else if (method == "stop_action") {
+            if (sm_) {
+                sm_->stopAction();
+                json resp = {
+                    {"result", "ok"},
+                    {"state", sm_->getStateString()},
+                    {"has_report", sm_->hasReport()}
+                };
+                send_http_response(client_fd, 200, "OK", resp.dump());
+            } else {
+                json err = {{"error", "STATE_MACHINE_UNAVAILABLE"}};
+                send_http_response(client_fd, 503, "Service Unavailable", err.dump());
+            }
+        } else if (method == "get_status") {
+            if (sm_) {
+                sm_->checkTimeout();
+                json resp = {
+                    {"result", "ok"},
+                    {"state", sm_->getStateString()},
+                    {"action_id", sm_->getCurrentActionId()},
+                    {"run_id", sm_->getCurrentRunId()},
+                    {"collected_frames", sm_->getCollectedFrameCount()},
+                    {"has_report", sm_->hasReport()}
+                };
+                send_http_response(client_fd, 200, "OK", resp.dump());
+            } else {
+                json err = {{"error", "STATE_MACHINE_UNAVAILABLE"}};
+                send_http_response(client_fd, 503, "Service Unavailable", err.dump());
+            }
         } else if (method == "reset") {
             if (sm_) {
                 sm_->reset();
@@ -368,6 +388,7 @@ void HttpControlServer::handleClient(int client_fd) {
                 if (cur_state == ActionState::COLLECTING) {
                     json resp = {
                         {"state", "COLLECTING"},
+                        {"action_id", sm_->getCurrentActionId()},
                         {"run_id", sm_->getCurrentRunId()},
                         {"collected_frames", sm_->getCollectedFrameCount()},
                         {"total_required", 30},
@@ -394,7 +415,7 @@ void HttpControlServer::handleClient(int client_fd) {
             json err = {
                 {"error", "UNKNOWN_METHOD"},
                 {"method", method},
-                {"supported_methods", json::array({"start_action", "reset", "get_last_report"})}
+                {"supported_methods", json::array({"get_status", "start_action", "stop_action", "reset", "get_last_report"})}
             };
             send_http_response(client_fd, 400, "Bad Request", err.dump());
         }

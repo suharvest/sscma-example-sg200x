@@ -17,11 +17,20 @@
 
 namespace microduck {
 
+#ifdef HOST_CLI
 constexpr float NOMINAL_STAND_HIP_PITCH_DEG = 26.237f;
 constexpr float NOMINAL_STAND_SPINE_TILT_DEG = 14.82f;
 constexpr float NOMINAL_STAND_THETA_L_DEG = -20.40f;
 constexpr float NOMINAL_STAND_THETA_R_DEG = -55.59f;
 constexpr float NOMINAL_STAND_DISPARITY_DEG = 35.19f;
+#else
+// Live physical reCamera observing display screen
+constexpr float NOMINAL_STAND_HIP_PITCH_DEG = 26.237f;
+constexpr float NOMINAL_STAND_SPINE_TILT_DEG = 0.75f;
+constexpr float NOMINAL_STAND_THETA_L_DEG = -26.0f;
+constexpr float NOMINAL_STAND_THETA_R_DEG = -66.9f;
+constexpr float NOMINAL_STAND_DISPARITY_DEG = 40.9f;
+#endif
 
 constexpr int SETTLED_WINDOW_FRAMES = 30;
 constexpr int MIN_VALID_FRAMES = 15;
@@ -66,6 +75,19 @@ struct ActionMetrics {
     float spine_tilt_deg = 0.0f;
 };
 
+struct FaceLedMetrics {
+    int lit_pixels = 0;
+    float color_temperature_k = 0.0f;
+    std::vector<float> mean_rgb = {0.0f, 0.0f, 0.0f};
+    float dark_leakage_lux = 0.0f;
+    float uniformity_ratio = 0.0f;
+};
+
+struct FaceLedFrameResult {
+    bool ok = false;
+    FaceLedMetrics metrics;
+};
+
 struct ActionReport {
     std::string run_id;
     std::string action_id = "stand";
@@ -80,6 +102,7 @@ struct ActionReport {
     int detected_frames = 0;
     int occluded_frames = 0;
     ActionMetrics metrics;
+    FaceLedMetrics optical_metrics;
     std::vector<nlohmann::json> detected_defects;
 
     nlohmann::json toJson() const;
@@ -99,6 +122,7 @@ struct CollectedFrame {
     bool robot_detected = false;
     int count = 0;
     FrameQAResult qa;
+    FaceLedFrameResult optical;
 };
 
 class ActionStateMachine {
@@ -112,6 +136,7 @@ public:
                      const AppConfig& config_snapshot);
 
     void reset();
+    bool stopAction();
 
     // Check timeout and finalize report if expired. Returns true if state changed to REPORT_FROZEN.
     bool checkTimeout();
@@ -122,7 +147,8 @@ public:
                   uint64_t frame_generation,
                   bool robot_detected,
                   int count,
-                  const FrameQAResult& frame_qa);
+                  const FrameQAResult& frame_qa,
+                  const FaceLedFrameResult& optical = FaceLedFrameResult{});
 
     void setSysError(const std::string& reason, uint64_t gen);
 
@@ -163,6 +189,11 @@ public:
     std::string getCurrentRunId() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return current_run_id_;
+    }
+
+    std::string getCurrentActionId() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return current_action_id_;
     }
 
     uint64_t getActionGeneration() const {
@@ -234,6 +265,9 @@ struct PayloadContext {
     int infer_h = 384;
     int stream_w = 1280;
     int stream_h = 720;
+
+    std::string action_id = "stand";
+    FaceLedMetrics optical;
 
     // Snapshot config
     AppConfig config;
