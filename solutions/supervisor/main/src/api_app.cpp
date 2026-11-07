@@ -98,29 +98,9 @@ bool wait_vpss_grp0_released(int max_ms)
     return !vpss_grp0_present();
 }
 
-// True if a TCP socket is in LISTEN state on `port` (any local address).
-// Scans /proc/net/tcp and /proc/net/tcp6: each row is
-// "sl: LOCAL_ADDR:PORT REM_ADDR:PORT ST ..." in hex, LISTEN = 0x0A.
-bool tcp_port_listening(unsigned port)
-{
-    for (const char* path : { "/proc/net/tcp", "/proc/net/tcp6" }) {
-        std::ifstream f(path);
-        std::string line;
-        std::getline(f, line); // header
-        while (std::getline(f, line)) {
-            unsigned lport = 0, st = 0;
-            if (sscanf(line.c_str(), " %*d: %*[0-9A-Fa-f]:%x %*[0-9A-Fa-f]:%*x %x", &lport, &st) == 2 && lport == port &&
-                st == 0x0A) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-// Stream endpoints actually served right now, probed from listening sockets:
-// debug WebSocket (manifest debug_ws.port, default 8001) and RTSP (port in
-// rtsp_url, default 8554).
+// Stream endpoints actually served right now, probed in a single pass over
+// listening TCP sockets (/proc/net/tcp and tcp6): debug WebSocket (manifest
+// debug_ws.port, default 8001) and RTSP (port in rtsp_url, default 8554).
 json probe_runtime_stream(const json& app)
 {
     unsigned ws_port = 8001, rtsp_port = 8554;
@@ -141,8 +121,23 @@ json probe_runtime_stream(const json& app)
             }
         }
     }
-    bool ws = tcp_port_listening(ws_port);
-    bool rtsp = tcp_port_listening(rtsp_port);
+
+    bool ws = false, rtsp = false;
+    for (const char* path : { "/proc/net/tcp", "/proc/net/tcp6" }) {
+        std::ifstream f(path);
+        std::string line;
+        std::getline(f, line); // header
+        while (std::getline(f, line)) {
+            unsigned lport = 0, st = 0;
+            if (sscanf(line.c_str(), " %*d: %*[0-9A-Fa-f]:%x %*[0-9A-Fa-f]:%*x %x", &lport, &st) == 2 && st == 0x0A) {
+                if (lport == ws_port) ws = true;
+                if (lport == rtsp_port) rtsp = true;
+                if (ws && rtsp) break;
+            }
+        }
+        if (ws && rtsp) break;
+    }
+
     return { { "ws", ws }, { "rtsp", rtsp }, { "mode", ws && rtsp ? "both" : ws ? "ws" : rtsp ? "rtsp" : "none" } };
 }
 

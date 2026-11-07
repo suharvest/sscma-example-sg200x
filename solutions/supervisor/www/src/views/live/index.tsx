@@ -454,14 +454,10 @@ const Live = () => {
     () => resolveStreamMode(app, onvifService),
     [app, onvifService]
   );
-  // RTSP is not started by default. The address is still offered: it can be
-  // enabled per device (e.g. STREAM_MODE=both / --rtsp) where the console
-  // cannot see it.
-  const rtspActive = runtimeStream ? runtimeStream.rtsp : streamModeHasRtsp(streamMode);
-  const rtspOff = !!rtspUrl && !rtspActive;
-  // The probe saw no RTSP listener: its address would not play, so the
-  // endpoints panel omits it.
-  const hideRtspEndpoint = !!runtimeStream && !runtimeStream.rtsp;
+  // RTSP endpoint visibility: if the backend probes runtimeStream, trust its
+  // listening state; otherwise fall back to manifest rtspUrl presence.
+  const showRtsp = runtimeStream ? runtimeStream.rtsp : !!rtspUrl;
+  const rtspOffHint = !runtimeStream && !!rtspUrl && !streamModeHasRtsp(streamMode);
 
   const { status, messages, overlay, lastFrameDelay } = useDebugStream({
     enabled: debugOn && hasDebugWs,
@@ -1173,12 +1169,12 @@ const Live = () => {
                               </div>
                             </div>
                           )}
-                          {!hideRtspEndpoint && (
+                          {showRtsp && (
                             <div className="mb-12">
                               <div className="text-12 text-muted mb-4">
                                 {t("live.rtspStream")}
                               </div>
-                              {rtspOff && (
+                              {rtspOffHint && (
                                 <div className="text-12 text-muted mb-4">
                                   {t("live.rtspOffHint")}
                                 </div>
