@@ -200,6 +200,7 @@
     "model": "Model",
     "switchRestarts": "Switching restarts the application.",
     "endpoints": "Endpoints",
+    "wsStream": "WebSocket video stream",
     "rtspStream": "RTSP stream",
     "mqttTopic": "MQTT topic",
     "pipelineFixed": "Pipeline (fixed)",

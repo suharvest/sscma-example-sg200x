@@ -199,6 +199,7 @@
     "model": "模型",
     "switchRestarts": "切换将重启应用。",
     "endpoints": "接入端点",
+    "wsStream": "WebSocket 视频流",
     "rtspStream": "RTSP 流",
     "mqttTopic": "MQTT 主题",
     "pipelineFixed": "流水线（固定）",

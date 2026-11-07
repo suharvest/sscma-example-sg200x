@@ -9,6 +9,7 @@
 
 #include <arpa/inet.h>
 #include <cctype>
+#include <cstdio>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -95,6 +96,54 @@ bool wait_vpss_grp0_released(int max_ms)
         waited += step_ms;
     }
     return !vpss_grp0_present();
+}
+
+// True if a TCP socket is in LISTEN state on `port` (any local address).
+// Scans /proc/net/tcp and /proc/net/tcp6: each row is
+// "sl: LOCAL_ADDR:PORT REM_ADDR:PORT ST ..." in hex, LISTEN = 0x0A.
+bool tcp_port_listening(unsigned port)
+{
+    for (const char* path : { "/proc/net/tcp", "/proc/net/tcp6" }) {
+        std::ifstream f(path);
+        std::string line;
+        std::getline(f, line); // header
+        while (std::getline(f, line)) {
+            unsigned lport = 0, st = 0;
+            if (sscanf(line.c_str(), " %*d: %*[0-9A-Fa-f]:%x %*[0-9A-Fa-f]:%*x %x", &lport, &st) == 2 && lport == port &&
+                st == 0x0A) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Stream endpoints actually served right now, probed from listening sockets:
+// debug WebSocket (manifest debug_ws.port, default 8001) and RTSP (port in
+// rtsp_url, default 8554).
+json probe_runtime_stream(const json& app)
+{
+    unsigned ws_port = 8001, rtsp_port = 8554;
+    if (app.is_object()) {
+        if (app.contains("debug_ws") && app["debug_ws"].is_object()) {
+            int p = app["debug_ws"].value("port", 0);
+            if (p > 0 && p < 65536) {
+                ws_port = p;
+            }
+        }
+        std::string url = app.value("rtsp_url", "");
+        size_t scheme = url.find("://");
+        size_t colon = scheme == std::string::npos ? std::string::npos : url.find(':', scheme + 3);
+        if (colon != std::string::npos) {
+            int p = std::atoi(url.c_str() + colon + 1);
+            if (p > 0 && p < 65536) {
+                rtsp_port = p;
+            }
+        }
+    }
+    bool ws = tcp_port_listening(ws_port);
+    bool rtsp = tcp_port_listening(rtsp_port);
+    return { { "ws", ws }, { "rtsp", rtsp }, { "mode", ws && rtsp ? "both" : ws ? "ws" : rtsp ? "rtsp" : "none" } };
 }
 
 } // namespace
@@ -727,6 +776,7 @@ api_status_t api_app::current(request_t req, response_t res)
 
     if (active.empty()) {
         data["app"] = nullptr;
+        data["runtime_stream"] = probe_runtime_stream(nullptr);
         response(res, 0, STR_OK, data);
         return API_STATUS_OK;
     }
@@ -735,6 +785,7 @@ api_status_t api_app::current(request_t req, response_t res)
     if (!manifests.contains(active)) {
         data["app"] = nullptr;
         data["orphan"] = active; // state points at a manifest that no longer exists
+        data["runtime_stream"] = probe_runtime_stream(nullptr);
         response(res, 0, STR_OK, data);
         return API_STATUS_OK;
     }
@@ -760,12 +811,17 @@ api_status_t api_app::current(request_t req, response_t res)
     // blocking part; run it on a worker. `data` and `app` are owning copies.
     std::string init_script = jstr(app, "init_script");
     auto probe = std::make_shared<json>();
+    auto stream = std::make_shared<json>();
     return submit_async(
-        [probe, init_script]() { *probe = parse_result(script("app_status", init_script)); },
-        [data, app, probe](json& res) -> api_status_t {
+        [probe, stream, init_script, app]() {
+            *probe = parse_result(script("app_status", init_script));
+            *stream = probe_runtime_stream(app);
+        },
+        [data, app, probe, stream](json& res) -> api_status_t {
             json d = data;
             d["probe"] = probe->value("status", "unknown");
             d["app"] = app;
+            d["runtime_stream"] = *stream;
             response(res, 0, STR_OK, d);
             return API_STATUS_OK;
         },

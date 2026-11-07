@@ -222,8 +222,20 @@ export interface IInstallAppResult {
   apps_count: number;
 }
 
+/**
+ * Stream endpoints the device is serving right now, probed by the backend
+ * from listening TCP sockets (debug WebSocket port, RTSP port).
+ */
+export interface IRuntimeStreamInfo {
+  ws: boolean;
+  rtsp: boolean;
+  mode: "ws" | "rtsp" | "both" | "none";
+}
+
 export interface IAppCurrentResult {
   app?: IAppInfo | null;
+  /** Absent on older backends — fall back to the manifest stream_mode. */
+  runtime_stream?: IRuntimeStreamInfo;
   /** State machine string (lowercase). */
   state?: AppRunState;
   /** Live init-script probe: "running" | "stopped" | "unknown". */
@@ -231,3 +243,6 @@ export interface IAppCurrentResult {
   lastError?: string;
   current_model?: string;
 }
+
+/** Response body of GET /api/appMgr/current. */
+export type ICurrentAppResponse = IAppCurrentResult;

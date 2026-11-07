@@ -24,7 +24,7 @@ import {
   ICameraConfig,
   IGetFocusValueResult,
 } from "@/api/camera/camera";
-import { IAppInfo, IConfigItem } from "@/api/app/app";
+import { IAppInfo, IConfigItem, IRuntimeStreamInfo } from "@/api/app/app";
 import { SchemaForm, SpatialEditor, useAppConfig } from "@/components/app-config";
 import useDebugStream, { IOverlayFrame } from "@/hooks/useDebugStream";
 import { isOk, isBusy } from "@/utils/api";
@@ -242,6 +242,12 @@ const Live = () => {
   const [appStatus, setAppStatus] = useState<string>("");
   const [currentModel, setCurrentModel] = useState<string | undefined>();
   const [debugOn, setDebugOn] = useState(false);
+  // Endpoints the device is actually serving (backend port probe); null on
+  // backends that do not report it.
+  const [runtimeStream, setRuntimeStream] = useState<IRuntimeStreamInfo | null>(null);
+  // App id the debug stream was auto-enabled for: auto-start once per app so
+  // a user who turns the stream off is not overridden by a later refresh.
+  const autoDebugAppRef = useRef<string | null>(null);
   const [overlayOn, setOverlayOn] = useState(true);
   /* undefined until read: an unread switch must not render as "off", which
      would tell the operator masking is disabled when it may well be on. */
@@ -451,7 +457,11 @@ const Live = () => {
   // RTSP is not started by default. The address is still offered: it can be
   // enabled per device (e.g. STREAM_MODE=both / --rtsp) where the console
   // cannot see it.
-  const rtspOff = !!rtspUrl && !streamModeHasRtsp(streamMode);
+  const rtspActive = runtimeStream ? runtimeStream.rtsp : streamModeHasRtsp(streamMode);
+  const rtspOff = !!rtspUrl && !rtspActive;
+  // The probe saw no RTSP listener: its address would not play, so the
+  // endpoints panel omits it.
+  const hideRtspEndpoint = !!runtimeStream && !runtimeStream.rtsp;
 
   const { status, messages, overlay, lastFrameDelay } = useDebugStream({
     enabled: debugOn && hasDebugWs,
@@ -530,6 +540,7 @@ const Live = () => {
         // Backend /current returns `probe` (live init-script status) and
         // `state` (state machine); prefer the live probe.
         setAppStatus(String(res.data.probe || res.data.state || ""));
+        setRuntimeStream(res.data.runtime_stream ?? null);
         setCurrentModel(
           res.data.current_model ||
             current.current_model ||
@@ -537,9 +548,11 @@ const Live = () => {
         );
       } else {
         setApp(null);
+        setRuntimeStream(null);
       }
     } catch (e) {
       setApp(null);
+      setRuntimeStream(null);
     } finally {
       setLoading(false);
     }
@@ -639,6 +652,15 @@ const Live = () => {
   const running = ["RUNNING", "STARTING"].includes(
     (appStatus || "").toUpperCase()
   );
+
+  // Debug WebSocket already listening on a running app: start playback
+  // without the manual Debug stream toggle.
+  useEffect(() => {
+    if (!app?.id || !running || !hasDebugWs || !runtimeStream?.ws) return;
+    if (autoDebugAppRef.current === app.id) return;
+    autoDebugAppRef.current = app.id;
+    setDebugOn(true);
+  }, [app?.id, running, hasDebugWs, runtimeStream?.ws]);
 
   const rtspFallbackCard = (
     <div className="rc-card-surface p-24 max-w-[440px] text-left">
@@ -1136,33 +1158,50 @@ const Live = () => {
                       ),
                       children: (
                         <>
-                          <div className="mb-12">
-                            <div className="text-12 text-muted mb-4">
-                              {t("live.rtspStream")}
-                            </div>
-                            {rtspOff && (
+                          {videoUrl && (
+                            <div className="mb-12">
                               <div className="text-12 text-muted mb-4">
-                                {t("live.rtspOffHint")}
+                                {t("live.wsStream")}
                               </div>
-                            )}
-                            {rtspUrl ? (
                               <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
                                 <span className="rc-mono text-12 break-all">
-                                  {rtspUrl}
+                                  {videoUrl}
                                 </span>
-                                <Button
-                                  size="small"
-                                  onClick={() => copy(rtspUrl)}
-                                >
+                                <Button size="small" onClick={() => copy(videoUrl)}>
                                   {t("common.copy")}
                                 </Button>
                               </div>
-                            ) : (
-                              <div className="text-12 text-muted">
-                                {t("common.notDeclared")}
+                            </div>
+                          )}
+                          {!hideRtspEndpoint && (
+                            <div className="mb-12">
+                              <div className="text-12 text-muted mb-4">
+                                {t("live.rtspStream")}
                               </div>
-                            )}
-                          </div>
+                              {rtspOff && (
+                                <div className="text-12 text-muted mb-4">
+                                  {t("live.rtspOffHint")}
+                                </div>
+                              )}
+                              {rtspUrl ? (
+                                <div className="rc-card-surface px-12 py-8 flex items-center justify-between gap-8">
+                                  <span className="rc-mono text-12 break-all">
+                                    {rtspUrl}
+                                  </span>
+                                  <Button
+                                    size="small"
+                                    onClick={() => copy(rtspUrl)}
+                                  >
+                                    {t("common.copy")}
+                                  </Button>
+                                </div>
+                              ) : (
+                                <div className="text-12 text-muted">
+                                  {t("common.notDeclared")}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <div>
                             <div className="text-12 text-muted mb-4">
                               {t("live.mqttTopic")}
