@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Pre-removal script for face-recognition
+
+echo "Removing Face Recognition Application..."
+
+# Use the init script rather than a pattern kill: `pkill -f face-recognition`
+# matches anything with that string on its command line, and the init script
+# already waits for the process to release VPSS/camera before returning.
+if [ -x /etc/init.d/K92face-recognition ]; then
+    /etc/init.d/K92face-recognition stop 2>/dev/null || true
+fi
+
+echo "Face Recognition removed."
+
+exit 0
