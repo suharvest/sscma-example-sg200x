@@ -5,20 +5,11 @@
 
 namespace yolo {
 
-std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
-                            const std::vector<Detection>& detections,
-                            float inference_time_ms,
-                            const std::map<int, int>* det_track_ids,
-                            const TrackingSummary* tracking) {
+std::string buildDetectionsJson(const std::vector<Detection>& detections,
+                                const std::map<int, int>* det_track_ids) {
     std::ostringstream json;
     json << std::fixed;
-
-    json << "{";
-    json << "\"timestamp\":" << timestamp_ms << ",";
-    json << "\"frame_id\":" << frame_id << ",";
-    json << "\"inference_time_ms\":" << std::setprecision(1) << inference_time_ms << ",";
-    json << "\"detection_count\":" << detections.size() << ",";
-    json << "\"detections\":[";
+    json << "[";
 
     for (size_t i = 0; i < detections.size(); ++i) {
         const auto& det = detections[i];
@@ -48,6 +39,23 @@ std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
     }
 
     json << "]";
+    return json.str();
+}
+
+std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
+                            const std::vector<Detection>& detections,
+                            float inference_time_ms,
+                            const std::map<int, int>* det_track_ids,
+                            const TrackingSummary* tracking) {
+    std::ostringstream json;
+    json << std::fixed;
+
+    json << "{";
+    json << "\"timestamp\":" << timestamp_ms << ",";
+    json << "\"frame_id\":" << frame_id << ",";
+    json << "\"inference_time_ms\":" << std::setprecision(1) << inference_time_ms << ",";
+    json << "\"detection_count\":" << detections.size() << ",";
+    json << "\"detections\":" << buildDetectionsJson(detections, det_track_ids);
 
     // Optional tracker summary (tracking enabled)
     if (tracking != nullptr) {

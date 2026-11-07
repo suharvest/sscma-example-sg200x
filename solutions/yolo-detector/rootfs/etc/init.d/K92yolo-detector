@@ -42,6 +42,8 @@ DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
 [ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
 # Stream endpoints: ws (default, H.264 over WebSocket, no RTSP) | rtsp | both | none
 [ -n "$STREAM_MODE" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-mode $STREAM_MODE"
+# Inference at startup: on | off (default off; switched at runtime via HTTP /api/inference)
+[ -n "$INFERENCE" ] && DAEMON_OPTS="$DAEMON_OPTS --inference $INFERENCE"
 
 # Model selection. Default matches the supervisor app manifest's
 # default_model (yolo11n); the binary's built-in default filename

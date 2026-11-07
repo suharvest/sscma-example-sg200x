@@ -153,6 +153,20 @@ sscma-node 兼容格式，每帧一条：
 - `boxes` 元素为 `[cx, cy, w, h, score, target]`，其中 `cx, cy` 是推理分辨率（`resolution`）下的**像素中心点**，`w, h` 为像素宽高，`score` 为 0–1（或 0–100），`target` 是类别名称字符串（如 `"person"`）；同时提供 `labels` 数组供按索引消费的客户端使用。
 - 与 MQTT 的区别：`/results` 使用**像素**坐标；MQTT `bbox` 使用**归一化**坐标。二者均为中心点表示。
 
+## HTTP 控制
+
+推理按需运行，**启动时默认关闭**（`--inference on`，或在 `/etc/yolo-detector.conf` 写 `INFERENCE=on`，可在启动时打开）。关闭时视频流和 `/snapshot.jpg` 照常；检测、追踪、MQTT 结果和调试 `/results` 消息停止，推理通道降到 1 fps。端口 `8090`（`--control-port`），请求和响应均为 JSON。
+
+| 方法 + 路径 | 请求体 / 参数 | 响应 |
+|---|---|---|
+| `GET /api/inference` | — | `{"enabled":false,"fps":1,"active_fps":8,"idle_fps":1}` |
+| `POST /api/inference` | `{"enabled":true}` 或 `{"enabled":false}` | 同 GET；请求体不合法 → `400 {"error":"..."}` |
+| `GET /api/results/latest` | 可选 `after=<frame_id>&wait_ms=<0..5000>` | `{"enabled":true,"frame_id":42,"ts_ms":...,"age_ms":...,"inference_time_ms":...,"detections":[...]}` |
+
+- `detections` 中的对象与 MQTT 载荷的 `detections` 数组相同。`ts_ms` 是该帧采集时间（设备 Unix 毫秒），`age_ms` 是距今时长。
+- 带 `after` 时，请求最多等待 `wait_ms`（默认 0，上限 5000）直到出现 `frame_id > after` 的结果；超时则返回最新结果并带 `"timeout": true`。推理关闭时立即返回，`"enabled": false`。
+- 尚无任何结果时：`{"enabled":...,"frame_id":0,"detections":[],"timeout":true}`。
+
 ## 模型（可切换）
 
 可在控制台（Live 页 → Model）切换当前模型。切换会重启应用，流会短暂中断。

@@ -182,6 +182,20 @@ sscma-node compatible format, one message per inference frame:
 - `boxes` entries are `[cx, cy, w, h, score, target]` where `cx, cy` is the **box center in pixels** of the inference resolution (`resolution`), `w, h` are pixel width/height, `score` is 0–1 (or 0–100), `target` is the class name string (e.g. `"person"`); a parallel `labels` array is also included for indexed consumers.
 - Note the difference vs MQTT: `/results` uses **pixel** coordinates; MQTT `bbox` uses **normalized** coordinates. Both are center-based.
 
+## HTTP control
+
+Inference runs on demand and is **off at startup** (`--inference on` or `INFERENCE=on` in `/etc/yolo-detector.conf` turns it on at start). While off, the video stream and `/snapshot.jpg` keep running; detection, tracking, MQTT results and the debug `/results` messages stop, and the inference channel drops to 1 fps. Port: `8090` (`--control-port`). All bodies are JSON.
+
+| Method + path | Body / query | Response |
+|---|---|---|
+| `GET /api/inference` | — | `{"enabled":false,"fps":1,"active_fps":8,"idle_fps":1}` |
+| `POST /api/inference` | `{"enabled":true}` or `{"enabled":false}` | same as GET; bad body → `400 {"error":"..."}` |
+| `GET /api/results/latest` | optional `after=<frame_id>&wait_ms=<0..5000>` | `{"enabled":true,"frame_id":42,"ts_ms":...,"age_ms":...,"inference_time_ms":...,"detections":[...]}` |
+
+- `detections` holds the same objects as the MQTT payload's `detections` array. `ts_ms` is the frame capture time (device Unix ms); `age_ms` is the time since then.
+- With `after`, the request waits up to `wait_ms` (default 0, max 5000) for a result with `frame_id > after`. If none arrives, it returns the latest result with `"timeout": true`. While inference is off it answers immediately with `"enabled": false`.
+- Before the first result: `{"enabled":...,"frame_id":0,"detections":[],"timeout":true}`.
+
 ## Models (switchable)
 
 The active model can be switched from the console (Live page → Model). Switching restarts the application; streams are briefly interrupted.

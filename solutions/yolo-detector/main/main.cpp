@@ -16,6 +16,8 @@
 
 #include "app_config.h"
 #include "detector.h"
+#include "http_control.h"
+#include "inference_control.h"
 #include "mqtt_payload.h"
 #include "person_tracker.h"
 
@@ -69,6 +71,12 @@ static struct {
     int debug_port = 8001;
     int rtsp_port = 8554;
 
+    // On-demand inference, switched over HTTP (GET/POST /api/inference).
+    // Off: detection, tracking and result publishing stop and the inference
+    // channel drops to 1 fps; the video stream and /snapshot.jpg keep running.
+    bool inference_enabled = false;
+    int control_port = 8090;
+
     // Runtime flags
     bool enable_rtsp = true;
     bool enable_mqtt = true;
@@ -83,7 +91,8 @@ static AppConfig g_app_config;
 // Global state
 static Detector* g_detector = nullptr;
 static PersonTracker* g_tracker = nullptr;
-static uint32_t g_frame_id = 0;
+static uint32_t g_frame_id = 1;  // 0 means "no result yet" on /api/results/latest
+static InferenceControl* g_inference = nullptr;
 static std::chrono::steady_clock::time_point g_start_time;
 
 // ONVIF analytics metadata, off unless switched on in the console. The gate
@@ -131,9 +140,15 @@ static void print_usage(const char* prog) {
     printf("  --no-debug                Remove the WebSocket stream from the stream mode\n");
     printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  --stream-bitrate KBPS     Stream H.264 CBR target in kbps (default: %d)\n", g_config.stream_bitrate_kbps);
+    printf("  --inference on|off        Run inference at startup (default: off; toggle via HTTP)\n");
+    printf("  --control-port PORT       HTTP inference control port (default: %d)\n", g_config.control_port);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nWebSocket: ws://<device_ip>:%d/   RTSP (rtsp/both): rtsp://<device_ip>:%d/live0\n", g_config.debug_port, g_config.rtsp_port);
+    printf("HTTP control: http://<device_ip>:%d/\n", g_config.control_port);
+    printf("  GET  /api/inference                                  state\n");
+    printf("  POST /api/inference {\"enabled\":true|false}         switch inference on/off\n");
+    printf("  GET  /api/results/latest[?after=ID&wait_ms=0..5000]  latest result (long-poll with after)\n");
 }
 
 static bool parse_args(int argc, char** argv) {
@@ -156,6 +171,8 @@ static bool parse_args(int argc, char** argv) {
         {"debug-port", required_argument, 0, 14},
         {"stream-mode", required_argument, 0, 15},
         {"stream-bitrate", required_argument, 0, 16},
+        {"inference", required_argument, 0, 17},
+        {"control-port", required_argument, 0, 18},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -187,6 +204,17 @@ static bool parse_args(int argc, char** argv) {
                 }
                 break;
             case 16: g_config.stream_bitrate_kbps = std::stoi(optarg); break;
+            case 17:
+                if (std::strcmp(optarg, "on") == 0) {
+                    g_config.inference_enabled = true;
+                } else if (std::strcmp(optarg, "off") == 0) {
+                    g_config.inference_enabled = false;
+                } else {
+                    fprintf(stderr, "Invalid --inference '%s' (on|off)\n", optarg);
+                    return false;
+                }
+                break;
+            case 18: g_config.control_port = std::stoi(optarg); break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
@@ -316,6 +344,10 @@ static struct {
 } g_scratch;
 
 static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
+    if (!g_inference->enabled()) {
+        r.publish = false;  // no MQTT / debug /results; the snapshot is still offered
+        return;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     ma_img_t img = af::to_ma_img(frame);
     std::vector<Detection> detections = g_detector->detect(&img);
@@ -344,6 +376,7 @@ static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
 
     // MQTT results (single schema; tracking adds optional fields). Tracking
     // only feeds this payload, so like before it runs only with MQTT on.
+    const std::map<int, int>* track_ids = nullptr;
     ha_mqtt::MqttPublisher* mqtt = app.mqtt();
     if (mqtt != nullptr) {
         g_scratch.det_track_ids.clear();
@@ -353,6 +386,7 @@ static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
             for (const auto& person : g_tracker->update(detections, now_sec)) {
                 g_scratch.det_track_ids[person.detection.id] = person.track_id;
             }
+            track_ids = &g_scratch.det_track_ids;
             tracking.active_tracks = g_tracker->getTrackCount();
             if (g_tracker->hasEntryLine()) {
                 auto line_crossing = g_tracker->getLineCrossing();
@@ -390,6 +424,13 @@ static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
             }
         }
     }
+
+    InferenceResult latest;
+    latest.frame_id = g_frame_id;
+    latest.ts_ms = r.wall_ms;
+    latest.inference_ms = inference_ms;
+    latest.detections_json = buildDetectionsJson(detections, track_ids);
+    g_inference->publish(latest);
     g_frame_id++;
 }
 
@@ -447,6 +488,23 @@ int main(int argc, char** argv) {
         app.with_onvif(onvif);
     }
 
+    InferenceControl inference(g_config.inference_fps, g_config.inference_enabled,
+                               [&app](bool on, int fps) {
+                                   app.set_camera_fps(static_cast<uint8_t>(fps));
+                                   MA_LOGI(TAG, "Inference %s (inference channel %d fps)", on ? "ON" : "OFF", fps);
+                               });
+    g_inference = &inference;
+    if (!g_config.inference_enabled) {
+        app.set_camera_fps(InferenceControl::kIdleFps);  // applied before the first frame
+    }
+    MA_LOGI(TAG, "Inference at startup: %s (%d fps)", g_config.inference_enabled ? "ON" : "OFF",
+            inference.current_fps());
+    HttpControlServer control(inference);
+    if (!control.start(g_config.control_port)) {
+        MA_LOGE(TAG, "HTTP control unavailable on port %d; inference stays %s", g_config.control_port,
+                g_config.inference_enabled ? "ON" : "OFF");
+    }
+
     MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
     MA_LOGI(TAG, "Tracking: %s | Blur: %s",
             g_config.enable_tracking ? "ON" : "OFF",
@@ -455,6 +513,8 @@ int main(int argc, char** argv) {
     app.on_started(set_ae_fixed_frame_rate)
        .on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
     const int rc = app.run();
+    control.stop();
+    g_inference = nullptr;
 
     delete g_tracker;
     delete g_detector;

@@ -28,6 +28,11 @@ struct TrackingSummary {
 // Coordinates are normalized [0-1] center x/y plus w/h.
 // det_track_ids: optional map of Detection.id -> track id; matched detections
 //                get a "track_id" field. tracking: optional summary object.
+// The "detections" array of the payload above on its own, e.g. for the HTTP
+// /api/results/latest response.
+std::string buildDetectionsJson(const std::vector<Detection>& detections,
+                                const std::map<int, int>* det_track_ids = nullptr);
+
 std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
                             const std::vector<Detection>& detections,
                             float inference_time_ms,
