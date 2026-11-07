@@ -40,6 +40,8 @@ DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
 # Debug stream settings
 [ "$DEBUG_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-debug"
 [ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+# Stream endpoints: ws (default, H.264 over WebSocket, no RTSP) | rtsp | both | none
+[ -n "$STREAM_MODE" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-mode $STREAM_MODE"
 
 # Model selection. Default matches the supervisor app manifest's
 # default_model (yolo11n); the binary's built-in default filename
@@ -71,7 +73,7 @@ stop_conflicting_services() {
         [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
     done
     # Stop other camera-using solutions
-    for svc in face-analysis detection-blur ppocr-reader retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector; do
+    for svc in face-analysis detection-blur ppocr-reader retail-vision yolo8-detector yolo11-detector yolo11s-detector yolo26-detector face-recognition fall-detection; do
         for script in /etc/init.d/[SK]*${svc}; do
             [ -x "$script" ] && "$script" stop 2>/dev/null || true
         done

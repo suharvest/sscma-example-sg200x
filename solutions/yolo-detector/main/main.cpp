@@ -1,25 +1,23 @@
-#include <iostream>
 #include <chrono>
-#include <thread>
-#include <signal.h>
-#include <unistd.h>
+#include <cstring>
 #include <getopt.h>
-#include <atomic>
 #include <map>
+#include <string>
+#include <vector>
 
-#include <sscma.h>
-#include <video.h>
-#include <debug_stream.h>
+#include <af/app.h>
+#include <af/ma_image.h>
+#include <cvi_ae.h>
+#include <cvi_isp.h>
 #include <ha_mqtt.h>
+#include <sscma.h>
 #include "onvif_meta.h"
 #include "onvif_meta_gate.h"
-#include "onvif_service_bringup.h"
-#include "rtsp_server.h"
 
-#include "detector.h"
-#include "person_tracker.h"
-#include "mqtt_payload.h"
 #include "app_config.h"
+#include "detector.h"
+#include "mqtt_payload.h"
+#include "person_tracker.h"
 
 using namespace ma;
 using namespace yolo;
@@ -42,10 +40,10 @@ static struct {
     // Video configuration
     int inference_width = 640;
     int inference_height = 640;
-    int inference_fps = 15;
+    int inference_fps = 8;   // capture->inference channel rate; the SG2002 sustains ~4-5 inferences/s, and every channel frame costs a CPU copy (Thread_Venc0) on the single core
     int stream_width = 1280;
     int stream_height = 720;
-    int stream_fps = 15;
+    int stream_fps = 30;    // teleop video: 30 fps halves per-stage pipeline delay vs 15 and is visibly smoother
 
     // Tracking configuration
     bool enable_tracking = true;
@@ -53,14 +51,19 @@ static struct {
     float dwell_min_duration = 1.5f;
     float dwell_assistance_threshold = 20.0f;
 
-    // Hardware blur (RGN COVEREX)
+    // Hardware blur (RGN COVEREX). NOTE: parsed and logged only -- no RGN
+    // region is configured anywhere in this application yet.
     bool enable_blur = false;
     int max_blur_regions = 4;
     std::string blur_classes = "";  // comma-separated class IDs to blur, empty = all
 
-    // Debug stream (H.264-over-WS + results JSON for the supervisor console)
+    // Stream endpoints. Default: H.264 over WebSocket only (lowest latency,
+    // RTSP server not started). --no-rtsp / --no-debug remove an endpoint from
+    // whatever --stream-mode selected (kept for existing init scripts).
+    af::StreamMode stream_mode = af::StreamMode::WsOnly;
     bool enable_debug = true;
     int debug_port = 8001;
+    int rtsp_port = 8554;
 
     // Runtime flags
     bool enable_rtsp = true;
@@ -74,11 +77,8 @@ static const char* APP_CONFIG_PATH = "/userdata/local/apps/yolo-detector.config.
 static AppConfig g_app_config;
 
 // Global state
-static std::atomic<bool> g_running(true);
 static Detector* g_detector = nullptr;
 static PersonTracker* g_tracker = nullptr;
-static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
-static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 static std::chrono::steady_clock::time_point g_start_time;
 
@@ -104,11 +104,6 @@ static std::string onvif_class_of(const std::string& label) {
     return label;
 }
 
-static void signal_handler(int sig) {
-    MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
-    g_running.store(false);
-}
-
 static void print_usage(const char* prog) {
     printf("YOLO Object Detector for ReCamera\n");
     printf("Supports YOLO11, YOLO26, YOLOv8, YOLOv5 via ModelFactory auto-detection\n\n");
@@ -126,13 +121,14 @@ static void print_usage(const char* prog) {
     printf("  --blur                    Enable hardware privacy blur (RGN COVEREX)\n");
     printf("  --blur-classes IDS        Comma-separated class IDs to blur (default: all)\n");
     printf("  --max-blur-regions N      Max blur regions (default: %d, max: 4)\n", g_config.max_blur_regions);
-    printf("  --no-rtsp                 Disable RTSP streaming\n");
+    printf("  --stream-mode MODE        ws | rtsp | both | none (default: ws -- H.264 over WebSocket, no RTSP)\n");
+    printf("  --no-rtsp                 Remove RTSP from the stream mode\n");
     printf("  --no-mqtt                 Disable MQTT publishing\n");
-    printf("  --no-debug                Disable debug WebSocket stream\n");
+    printf("  --no-debug                Remove the WebSocket stream from the stream mode\n");
     printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
-    printf("\nRTSP Stream: rtsp://<device_ip>:8554/live0\n");
+    printf("\nWebSocket: ws://<device_ip>:%d/   RTSP (rtsp/both): rtsp://<device_ip>:%d/live0\n", g_config.debug_port, g_config.rtsp_port);
 }
 
 static bool parse_args(int argc, char** argv) {
@@ -153,6 +149,7 @@ static bool parse_args(int argc, char** argv) {
         {"max-blur-regions", required_argument, 0, 12},
         {"no-debug", no_argument, 0, 13},
         {"debug-port", required_argument, 0, 14},
+        {"stream-mode", required_argument, 0, 15},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -177,12 +174,29 @@ static bool parse_args(int argc, char** argv) {
             case 12: g_config.max_blur_regions = std::min(4, std::stoi(optarg)); break;
             case 13: g_config.enable_debug = false; break;
             case 14: g_config.debug_port = std::stoi(optarg); break;
+            case 15:
+                if (!af::parse_stream_mode(optarg, g_config.stream_mode)) {
+                    fprintf(stderr, "Invalid --stream-mode '%s' (ws|rtsp|both|none)\n", optarg);
+                    return false;
+                }
+                break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
         }
     }
     return true;
+}
+
+/** --stream-mode minus the endpoints removed by --no-rtsp / --no-debug. */
+static af::StreamMode resolve_stream_mode() {
+    const af::StreamMode m = g_config.stream_mode;
+    const bool ws = (m == af::StreamMode::WsOnly || m == af::StreamMode::Both) && g_config.enable_debug;
+    const bool rtsp = (m == af::StreamMode::RtspOnly || m == af::StreamMode::Both) && g_config.enable_rtsp;
+    if (ws && rtsp) return af::StreamMode::Both;
+    if (rtsp) return af::StreamMode::RtspOnly;
+    if (ws) return af::StreamMode::WsOnly;
+    return af::StreamMode::None;
 }
 
 static bool init_detector() {
@@ -245,93 +259,10 @@ static bool init_tracker() {
     return true;
 }
 
-static bool init_camera() {
-    Device* device = Device::getInstance();
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() == ma::Sensor::Type::kCamera) {
-            g_camera = static_cast<Camera*>(sensor);
-            g_camera->init(0);
-
-            Camera::CtrlValue value;
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-            // Apply the inference frame rate (else the channel defaults to 30fps
-            // and the capture->inference FIFO fills faster than inference drains).
-            value.i32 = g_config.inference_fps;
-            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-            value.u16s[0] = g_config.inference_width;
-            value.u16s[1] = g_config.inference_height;
-            g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-            MA_LOGI(TAG, "Camera initialized (%dx%d)", g_config.inference_width, g_config.inference_height);
-            return true;
-        }
-    }
-    MA_LOGE(TAG, "No camera found");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (!g_config.enable_rtsp) {
-        MA_LOGI(TAG, "RTSP streaming disabled");
-        return true;
-    }
-
-    if (initVideo() != 0) {
-        MA_LOGE(TAG, "Failed to initialize video subsystem");
-        return false;
-    }
-
-    video_ch_param_t stream_param;
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width = g_config.stream_width;
-    stream_param.height = g_config.stream_height;
-    stream_param.fps = g_config.stream_fps;
-    setupVideo(VIDEO_CH2, &stream_param);
-    // Debug stream registers its own consumer (idx 1); RTSP owns idx 0.
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    initRtsp((0x01 << VIDEO_CH2));
-
-    MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps)",
-            g_config.stream_width, g_config.stream_height, g_config.stream_fps);
-    return true;
-}
-
-// Assemble the debug /results envelope (shared debug_stream builder).
-// Detection x/y are normalized center coordinates; box[5] is the
-// human-readable class name the console overlay renders verbatim.
-static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
-                                            const std::vector<Detection>& detections,
-                                            float inference_time_ms) {
-    std::vector<debug_stream_box_t> boxes;
-    boxes.reserve(detections.size());
-    for (const auto& det : detections) {
-        boxes.push_back({det.x * g_config.inference_width,
-                         det.y * g_config.inference_height,
-                         det.w * g_config.inference_width,
-                         det.h * g_config.inference_height,
-                         det.confidence, Detector::getClassName(det.class_id)});
-    }
-    // The inference channel is letterboxed vs the 16:9 debug video (stream);
-    // remap boxes into the stream frame so the overlay aligns with the video.
-    debug_stream_letterbox_to_display(boxes, g_config.inference_width, g_config.inference_height,
-                                      g_config.stream_width, g_config.stream_height);
-    return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
-                                      g_config.stream_width, g_config.stream_height,
-                                      boxes);
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        MA_LOGI(TAG, "MQTT publishing disabled");
-        return true;
-    }
-
+// MQTT client options + Home Assistant MQTT Discovery entity table (field
+// names must match the results JSON built by mqtt_payload.cpp -- a single
+// schema with detection_count/detections regardless of the tracking setting).
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "yolo-detector";
     opts.client_id     = "recamera-yolo-detector";
@@ -339,9 +270,6 @@ static bool init_mqtt() {
     opts.legacy_host   = g_config.mqtt_host;
     opts.legacy_port   = static_cast<uint16_t>(g_config.mqtt_port);
 
-    // Home Assistant MQTT Discovery entity table (field names must match the
-    // results JSON built by mqtt_payload.cpp — a single schema with
-    // detection_count/detections regardless of the tracking setting).
     using ha_mqtt::EntityConfig;
     using ha_mqtt::EntityType;
     opts.entities = {
@@ -352,85 +280,71 @@ static bool init_mqtt() {
                      "{{ 'ON' if value_json.detections | selectattr('class_name', 'equalto', 'person') | list | length > 0 else 'OFF' }}",
                      "occupancy", "", ""},
     };
-
-    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt_publisher->init(opts)) {
-        MA_LOGE(TAG, "Failed to initialize MQTT publisher");
-        return false;
-    }
-
-    // Rides the connection above rather than opening a second one; the switch
-    // lives in /userdata/local/onvif.conf, written by the console.
-    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
-    if (g_onvif_meta.enabled()) {
-        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
-                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
-    }
-
-    return true;
+    return opts;
 }
 
-static void cleanup() {
-    if (g_camera) g_camera->stopStream();
-    if (g_config.enable_debug) debug_stream_destroy();
-    onvif_service_stop();
-    if (g_config.enable_rtsp) { deinitRtsp(); deinitVideo(); }
-    if (g_mqtt_publisher) { g_mqtt_publisher->deinit(); delete g_mqtt_publisher; g_mqtt_publisher = nullptr; }
-    if (g_tracker) { delete g_tracker; g_tracker = nullptr; }
-    if (g_detector) { delete g_detector; g_detector = nullptr; }
-    MA_LOGI(TAG, "Cleanup completed");
+// AE defaults to slow-shutter, which drops the sensor to ~10 fps indoors
+// (measured VIFPS 10 with the ISP configured for 30). Teleop needs a steady
+// frame rate, so keep it fixed and let AE raise gain instead. Needs a running
+// ISP, hence App::on_started().
+static void set_ae_fixed_frame_rate() {
+    ISP_EXPOSURE_ATTR_S exp_attr;
+    std::memset(&exp_attr, 0, sizeof(exp_attr));
+    if (CVI_ISP_GetExposureAttr(0, &exp_attr) == CVI_SUCCESS) {
+        exp_attr.stAuto.enAEMode = AE_MODE_FIX_FRAME_RATE;
+        if (CVI_ISP_SetExposureAttr(0, &exp_attr) == CVI_SUCCESS) {
+            MA_LOGI(TAG, "AE mode set to fixed frame rate");
+        } else {
+            MA_LOGW(TAG, "Failed to set AE fixed frame rate");
+        }
+    }
 }
 
-static void process_frame() {
-    ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        return;
+// Buffers reused across frames so steady state does not reallocate.
+static struct {
+    std::vector<af::Box> boxes;
+    std::vector<onvif_box_t> onvif_boxes;
+    std::map<int, int> det_track_ids;
+    std::string payload;
+} g_scratch;
+
+static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
+    const auto t0 = std::chrono::steady_clock::now();
+    ma_img_t img = af::to_ma_img(frame);
+    std::vector<Detection> detections = g_detector->detect(&img);
+    const float inference_ms =
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const float now_sec =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - g_start_time).count();
+    const float W = static_cast<float>(g_config.inference_width);
+    const float H = static_cast<float>(g_config.inference_height);
+
+    // Overlay boxes for the debug /results channel (centre pixels, inference frame).
+    g_scratch.boxes.clear();
+    for (const auto& det : detections) {
+        af::Box b;
+        b.x = det.x * W;
+        b.y = det.y * H;
+        b.w = det.w * W;
+        b.h = det.h * H;
+        b.score = det.confidence;
+        b.cls = det.class_id;
+        b.label = Detector::getClassName(det.class_id);
+        g_scratch.boxes.push_back(b);
     }
+    r.inference_ms = inference_ms;
+    r.set_boxes(g_scratch.boxes.data(), g_scratch.boxes.size());
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()
-    ).count();
-
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - g_start_time
-    ).count();
-    float current_time_sec = elapsed / 1000.0f;
-
-    // Run detection (ModelFactory auto-selects YOLO variant)
-    std::vector<Detection> detections = g_detector->detect(&frame);
-
-    // Offer the raw frame for /snapshot.jpg. Returns after one atomic load
-    // unless a snapshot client asked recently; must precede returnFrame(),
-    // after which frame.data is invalid. Raw, not annotated: the video path
-    // is unannotated too and overlays are drawn client-side.
-    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
-    g_camera->returnFrame(frame);
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto inference_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time
-    ).count();
-
-    // Push the same inference result to debug WS clients (sscma-node format).
-    // debug_stream is lazy: skip building JSON when nobody is connected.
-    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
-        std::string debug_json = build_debug_results_json(timestamp_ms, g_frame_id, detections,
-                                                          static_cast<float>(inference_time));
-        debug_stream_publish_result(debug_json.c_str(), debug_json.size());
-    }
-
-    // Publish results via MQTT (single schema; tracking adds optional fields)
-    if (g_config.enable_mqtt && g_mqtt_publisher) {
-        std::map<int, int> det_track_ids;
+    // MQTT results (single schema; tracking adds optional fields). Tracking
+    // only feeds this payload, so like before it runs only with MQTT on.
+    ha_mqtt::MqttPublisher* mqtt = app.mqtt();
+    if (mqtt != nullptr) {
+        g_scratch.det_track_ids.clear();
         TrackingSummary tracking;
-        bool has_tracking = false;
-
-        if (g_config.enable_tracking && g_tracker) {
-            auto tracked_persons = g_tracker->update(detections, current_time_sec);
-            for (const auto& person : tracked_persons) {
-                det_track_ids[person.detection.id] = person.track_id;
+        const bool has_tracking = g_tracker != nullptr;
+        if (has_tracking) {
+            for (const auto& person : g_tracker->update(detections, now_sec)) {
+                g_scratch.det_track_ids[person.detection.id] = person.track_id;
             }
             tracking.active_tracks = g_tracker->getTrackCount();
             if (g_tracker->hasEntryLine()) {
@@ -439,48 +353,36 @@ static void process_frame() {
                 tracking.line_in = line_crossing.in_count;
                 tracking.line_out = line_crossing.out_count;
             }
-            has_tracking = true;
         }
+        g_scratch.payload = buildResultJson(r.wall_ms, g_frame_id, detections, inference_ms,
+                                            has_tracking ? &g_scratch.det_track_ids : nullptr,
+                                            has_tracking ? &tracking : nullptr);
+        r.json = g_scratch.payload;  // published by the App's MQTT sink
 
-        std::string payload = buildResultJson(timestamp_ms, g_frame_id, detections,
-                                              static_cast<float>(inference_time),
-                                              has_tracking ? &det_track_ids : nullptr,
-                                              has_tracking ? &tracking : nullptr);
-        g_mqtt_publisher->publishResultsJson(payload);
-
-        // Additionally publish the same detections in ONVIF's analytics
-        // representation, on its own topic and its own rate limit. The
-        // recamera/<app>/detections contract above is consumed by SenseCraft
-        // and does not change.
-        if (g_onvif_meta.take(timestamp_ms)) {
-            std::vector<onvif_box_t> ob;
-            ob.reserve(detections.size());
-            for (const auto& det : detections) {
-                ob.push_back({det.x * g_config.inference_width,
-                              det.y * g_config.inference_height,
-                              det.w * g_config.inference_width,
-                              det.h * g_config.inference_height,
-                              det.confidence, Detector::getClassName(det.class_id)});
+        // The same detections in ONVIF's analytics representation, on its own
+        // topic and rate limit. The recamera/<app>/detections contract above
+        // is consumed by SenseCraft and does not change.
+        if (g_onvif_meta.take(r.wall_ms)) {
+            g_scratch.onvif_boxes.clear();
+            for (const auto& b : g_scratch.boxes) {
+                g_scratch.onvif_boxes.push_back({b.x, b.y, b.w, b.h, b.score, b.label});
             }
-            g_mqtt_publisher->publishText(
-                g_onvif_meta.topic(),
-                onvif_meta_to_json(onvif_meta_from_boxes(
-                    timestamp_ms, "YoloDetector",
-                    g_config.inference_width, g_config.inference_height,
-                    ob, onvif_class_of)));
+            mqtt->publishText(g_onvif_meta.topic(),
+                              onvif_meta_to_json(onvif_meta_from_boxes(
+                                  r.wall_ms, "YoloDetector", g_config.inference_width,
+                                  g_config.inference_height, g_scratch.onvif_boxes, onvif_class_of)));
         }
 
         if (g_config.verbose || !detections.empty()) {
             if (has_tracking) {
-                MA_LOGI(TAG, "Frame %u: %zu detections, %d active tracks, inference=%lldms",
-                        g_frame_id, detections.size(), tracking.active_tracks, inference_time);
+                MA_LOGI(TAG, "Frame %u: %zu detections, %d active tracks, inference=%.0fms",
+                        g_frame_id, detections.size(), tracking.active_tracks, inference_ms);
             } else {
-                MA_LOGI(TAG, "Frame %u: %zu detections, inference=%lldms",
-                        g_frame_id, detections.size(), inference_time);
+                MA_LOGI(TAG, "Frame %u: %zu detections, inference=%.0fms",
+                        g_frame_id, detections.size(), inference_ms);
             }
         }
     }
-
     g_frame_id++;
 }
 
@@ -492,45 +394,62 @@ int main(int argc, char** argv) {
     MA_LOGI(TAG, "Starting YOLO Detector (universal)");
     MA_LOGI(TAG, "Model: %s", g_config.model_path.c_str());
     MA_LOGI(TAG, "Confidence threshold: %.2f", g_config.conf_threshold);
-
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
     g_start_time = std::chrono::steady_clock::now();
 
-    if (!init_detector()) { cleanup(); return 1; }
-    if (!init_tracker()) { cleanup(); return 1; }
-    if (!init_camera()) { cleanup(); return 1; }
-    if (!init_video_streaming()) { cleanup(); return 1; }
-    // Debug stream (non-fatal: on failure run without it)
-    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
-    }
-    if (!init_mqtt()) { cleanup(); return 1; }
-
-    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
-
-    // ONVIF discovery + Device/Media2 services. After init_video_streaming() on
-    // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
-    // server's session list, so bringing this up earlier advertises zero
-    // profiles and a VMS shows a camera with no video.
-    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
-            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
-        onvif_service_soap_running()) {
-        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    if (!init_detector() || !init_tracker()) {
+        delete g_tracker;
+        delete g_detector;
+        return 1;
     }
 
-    MA_LOGI(TAG, "YOLO detector running...");
-    MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
+    af::App app("yolo-detector");
+    app.with_camera({static_cast<uint16_t>(g_config.inference_width),
+                     static_cast<uint16_t>(g_config.inference_height),
+                     static_cast<uint8_t>(g_config.inference_fps), false});
+    af::StreamOptions stream;
+    stream.width = static_cast<uint16_t>(g_config.stream_width);
+    stream.height = static_cast<uint16_t>(g_config.stream_height);
+    stream.fps = static_cast<uint8_t>(g_config.stream_fps);
+    app.with_stream_mode(resolve_stream_mode(), stream, g_config.debug_port, g_config.rtsp_port);
+    if (g_config.enable_mqtt) {
+        const ha_mqtt::ClientOptions opts = mqtt_options();
+        app.with_mqtt(opts);
+        // The ONVIF switch lives in /userdata/local/onvif.conf, written by the
+        // console; metadata rides the MQTT connection above.
+        g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+        if (g_onvif_meta.enabled()) {
+            MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                    g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+        }
+    }
+    const OnvifMetaConfig& oc = g_onvif_meta.config();
+    if (oc.service_enabled && g_config.enable_rtsp && app.stream_mode() == af::StreamMode::WsOnly) {
+        // ONVIF switched on in the console: it needs RTSP, so publish both.
+        MA_LOGI(TAG, "ONVIF enabled: adding RTSP to the WebSocket stream");
+        app.with_stream_mode(af::StreamMode::Both, stream, g_config.debug_port, g_config.rtsp_port);
+    }
+    if (oc.service_enabled) {
+        af::OnvifOptions onvif;
+        onvif.port = oc.service_port;
+        onvif.serial = ha_mqtt::readDeviceIdentifier();
+        onvif.device_name = "reCamera";
+        onvif.username = oc.username;
+        onvif.password = oc.password;
+        onvif.location = oc.location;
+        app.with_onvif(onvif);
+    }
+
     MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
     MA_LOGI(TAG, "Tracking: %s | Blur: %s",
             g_config.enable_tracking ? "ON" : "OFF",
             g_config.enable_blur ? "ON" : "OFF");
 
-    while (g_running.load()) {
-        process_frame();
-    }
+    app.on_started(set_ae_fixed_frame_rate)
+       .on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
+    const int rc = app.run();
 
-    cleanup();
+    delete g_tracker;
+    delete g_detector;
     MA_LOGI(TAG, "YOLO Detector terminated");
-    return 0;
+    return rc;
 }
