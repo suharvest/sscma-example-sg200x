@@ -1,0 +1,8 @@
+#!/bin/sh
+
+for script in /etc/init.d/[SK]92trigger-inspection-demo; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/trigger-inspection-demo 2>/dev/null || true
+
+exit 0

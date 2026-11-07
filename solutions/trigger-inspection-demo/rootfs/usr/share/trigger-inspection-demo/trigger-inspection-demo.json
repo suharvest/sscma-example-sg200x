@@ -1,0 +1,22 @@
+{
+  "id": "trigger-inspection-demo",
+  "name": "Trigger Inspection Demo",
+  "name_zh": "触发式工位质检示例",
+  "scene": "Industrial Inspection",
+  "scene_zh": "工业质检",
+  "description": "Station inspection on demand: waits at a reduced camera rate, captures one frame per HTTP or GPIO trigger, and returns an OK/NG verdict over HTTP and MQTT. The sample check measures brightness and contrast in a region of interest.",
+  "description_zh": "按需工位质检：待机时降低相机采样率，收到 HTTP 或 GPIO 触发后抓拍一帧，通过 HTTP 响应和 MQTT 返回 OK/NG 判定。示例判定规则为感兴趣区域的亮度与对比度。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92trigger-inspection-demo",
+  "mqtt_topic": "recamera/trigger-inspection-demo/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "pipeline": [
+    { "name": "ROI brightness / contrast", "path": "", "task": "inspection" }
+  ],
+  "version": "0.1.0",
+  "author": "Seeed Studio"
+}

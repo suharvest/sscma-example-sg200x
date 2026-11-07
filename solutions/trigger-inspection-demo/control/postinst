@@ -1,0 +1,31 @@
+#!/bin/sh
+
+echo "Installing Trigger Inspection Demo..."
+
+mkdir -p /userdata/local/apps
+
+chmod +x /usr/local/bin/trigger-inspection-demo
+chmod +x /etc/init.d/K92trigger-inspection-demo 2>/dev/null || true
+
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/trigger-inspection-demo
+for f in trigger-inspection-demo.json trigger-inspection-demo.md trigger-inspection-demo.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    else
+        echo "WARNING: $SHARE_DIR/$f missing, not registered"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/trigger-inspection-demo.json"
+
+echo "Trigger Inspection Demo installed successfully!"
+echo ""
+echo "Configuration file: /etc/trigger-inspection-demo.conf"
+echo ""
+echo "HTTP trigger:    curl -X POST 'http://<device_ip>:8090/trigger?tag=part-001'"
+echo "MQTT topic:      recamera/trigger-inspection-demo/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+rm -f /etc/init.d/S92trigger-inspection-demo
+
+exit 0
