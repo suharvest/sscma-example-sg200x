@@ -34,8 +34,8 @@ typedef struct {
     const char* results_path;  /* WS path for result JSON (default "/results") */
     const char* snapshot_path; /* HTTP path for JPEG snapshot (default "/snapshot.jpg") */
     int video_ch;              /* VENC channel for IDR requests (default VIDEO_CH2 = 2) */
-    int max_video_clients;     /* default 2 */
-    int max_results_clients;   /* default 2 */
+    int max_video_clients;     /* default 2; 0 disables the video path */
+    int max_results_clients;   /* default 2; 0 disables the results path */
 } debug_stream_config_t;
 
 /* Fill cfg with the defaults documented above. */

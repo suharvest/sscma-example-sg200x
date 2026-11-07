@@ -363,6 +363,18 @@ void MqttPublisher::onConnect(int rc) {
             MA_LOGW(TAG, "Failed to subscribe %s: %d", ha_status.c_str(), rc2);
         }
     }
+
+    // Application command topics. Re-subscribed on every connect because a
+    // reconnect starts a fresh session (clean_session is the mosquitto default).
+    for (const auto& topic : options_.subscribe_topics) {
+        if (topic.empty()) continue;
+        int rc3 = mosquitto_subscribe(client_, nullptr, topic.c_str(), 1);
+        if (rc3 != MOSQ_ERR_SUCCESS) {
+            MA_LOGW(TAG, "Failed to subscribe %s: %d", topic.c_str(), rc3);
+        } else {
+            MA_LOGI(TAG, "Subscribed: %s", topic.c_str());
+        }
+    }
 }
 
 void MqttPublisher::onDisconnect(int rc) {
@@ -384,11 +396,16 @@ void MqttPublisher::onPublish(int mid) {
 }
 
 void MqttPublisher::onMessage(const std::string& topic, const std::string& payload) {
-    if (!ha_.enabled) return;
-    if (topic == ha_.discovery_prefix + "/status" && payload == "online") {
-        MA_LOGI(TAG, "Home Assistant is online, re-publishing discovery");
-        publishAvailability();
-        publishDiscoveryConfigs();
+    if (ha_.enabled && topic == ha_.discovery_prefix + "/status") {
+        if (payload == "online") {
+            MA_LOGI(TAG, "Home Assistant is online, re-publishing discovery");
+            publishAvailability();
+            publishDiscoveryConfigs();
+        }
+        return;
+    }
+    if (options_.message_handler) {
+        options_.message_handler(topic, payload);
     }
 }
 

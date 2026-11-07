@@ -26,6 +26,7 @@
 
 #include <pthread.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -98,6 +99,8 @@ struct RtspServerState {
     int frame_rate[RTSP_SERVER_MAX_SESSIONS] = { 0 };
     int encoder_bitrate[RTSP_SERVER_MAX_SESSIONS] = { 0 };
     bool started[RTSP_SERVER_MAX_SESSIONS] = { false };
+    /* Clients currently PLAYing each session (from cvi_rtsp play/teardown). */
+    std::atomic<int> playing[RTSP_SERVER_MAX_SESSIONS] = {};
     int session_cnt = 0;
 
     int port = 8554;
@@ -357,6 +360,38 @@ void on_connect(const char* ip, CVI_VOID* arg)
 
     for (int i = 0; i < cnt; ++i) {
         requestVideoIDR(static_cast<video_ch_index_t>(chn[i]));
+    }
+}
+
+/* cvi_rtsp keeps frames written while nobody is playing and replays them to
+ * the next client: with go2rtc reconnecting after its last viewer left, that
+ * arrived as a burst of ~7 s of stale video (measured 2026-11-06) and the
+ * browser kept playing that far behind live. Track playing clients so the
+ * video handler writes only while someone is watching, and ask for an IDR
+ * when playback starts so the new client decodes at once. */
+static void on_video_play(int references, void* arg)
+{
+    int idx = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+    if (idx < 0 || idx >= RTSP_SERVER_MAX_SESSIONS) {
+        return;
+    }
+    g_rs.playing[idx].store(references);
+    VENC_CHN chn = 0;
+    if (g_rs.mutex_ready) {
+        pthread_mutex_lock(&g_rs.mutex);
+    }
+    chn = g_rs.venc_chn[idx];
+    if (g_rs.mutex_ready) {
+        pthread_mutex_unlock(&g_rs.mutex);
+    }
+    requestVideoIDR(static_cast<video_ch_index_t>(chn));
+}
+
+static void on_video_teardown(int references, void* arg)
+{
+    int idx = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+    if (idx >= 0 && idx < RTSP_SERVER_MAX_SESSIONS) {
+        g_rs.playing[idx].store(references);
     }
 }
 
@@ -674,6 +709,11 @@ int rtsp_server_start(const rtsp_server_config_t* cfg)
     for (int i = 0; i < g_rs.session_cnt; i++) {
         memset(&g_rs.attr[i], 0, sizeof(g_rs.attr[i]));
         g_rs.attr[i].video.bitrate = g_rs.bitrate;
+        g_rs.attr[i].video.play = on_video_play;
+        g_rs.attr[i].video.playArg = reinterpret_cast<void*>(static_cast<intptr_t>(i));
+        g_rs.attr[i].video.teardown = on_video_teardown;
+        g_rs.attr[i].video.teardownArg = reinterpret_cast<void*>(static_cast<intptr_t>(i));
+        g_rs.playing[i].store(0);
 
         APP_VENC_CHN_CFG_S* chn_cfg = &venc->astVencChnCfg[g_rs.venc_chn[i]];
         g_rs.width[i] = static_cast<int>(chn_cfg->u32Width);
@@ -841,6 +881,9 @@ int rtsp_server_video_handler(void* pData, void* pArgs, void* pUserData)
     }
     if (!g_rs.started[idx]) {
         return CVI_SUCCESS;
+    }
+    if (g_rs.playing[idx].load() <= 0) {
+        return CVI_SUCCESS;  // nobody watching: do not let cvi_rtsp queue stale frames
     }
 
     VENC_STREAM_S* stream = (VENC_STREAM_S*)pData;

@@ -324,8 +324,9 @@ int debug_stream_create(const debug_stream_config_t* cfg) {
     g_ds.results_path = (cfg->results_path && cfg->results_path[0]) ? cfg->results_path : def.results_path;
     g_ds.snapshot_path = (cfg->snapshot_path && cfg->snapshot_path[0]) ? cfg->snapshot_path : def.snapshot_path;
     g_ds.video_ch = cfg->video_ch >= 0 ? cfg->video_ch : def.video_ch;
-    g_ds.max_video_clients = cfg->max_video_clients > 0 ? cfg->max_video_clients : def.max_video_clients;
-    g_ds.max_results_clients = cfg->max_results_clients > 0 ? cfg->max_results_clients : def.max_results_clients;
+    // 0 disables the path (every upgrade is rejected); negative selects the default.
+    g_ds.max_video_clients = cfg->max_video_clients >= 0 ? cfg->max_video_clients : def.max_video_clients;
+    g_ds.max_results_clients = cfg->max_results_clients >= 0 ? cfg->max_results_clients : def.max_results_clients;
 
     g_ds.video_clients.store(0);
     g_ds.results_clients.store(0);

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <set>
 #include <string>
@@ -60,6 +61,15 @@ struct ClientOptions {
     std::string device_identifier;        // empty -> readDeviceIdentifier()
     std::string device_name = "reCamera";
     std::vector<EntityConfig> entities;
+
+    // Inbound command channel (optional; default empty = publish-only, which is
+    // how every existing caller behaves). Every topic listed here is subscribed
+    // on each successful connect, and `message_handler` is invoked for every
+    // message that is not the Home Assistant birth announcement.
+    //
+    // The handler runs on the Mosquitto network thread: parse and enqueue only.
+    std::vector<std::string> subscribe_topics;
+    std::function<void(const std::string& topic, const std::string& payload)> message_handler;
 };
 
 // Parse /userdata/local/ha.conf (KEY=VALUE lines, shell-style single-quoted
