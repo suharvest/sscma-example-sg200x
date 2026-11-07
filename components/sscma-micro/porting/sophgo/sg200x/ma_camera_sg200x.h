@@ -24,6 +24,7 @@ class CameraSG200X final : public Camera {
         bool configured;
         bool enabled;
         MessageBox* queue;
+        ma_tick_t last_raw_tick;  // raw-frame rate gate (vpssCallback)
     } channel;
 
 public:

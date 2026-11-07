@@ -101,6 +101,23 @@ int CameraSG200X::vpssCallback(void* pData, void* pArgs) {
     if (!m_streaming) {
         return CVI_SUCCESS;
     }
+
+    // Honour the channel fps before copying: VPSS delivers every sensor frame,
+    // and each raw copy here (640x640 RGB ~1.2 MB) costs CPU on the single core
+    // even though retrieveFrame() keeps only the newest one. Accept a frame once
+    // ~90 % of the channel period has passed (sensor frames quantise the rest).
+    {
+        channel& ch = m_channels[pstVencChnCfg->VencChn];
+        if (ch.fps > 0) {
+            const ma_tick_t now    = Tick::current();
+            const uint32_t period  = 1000 / ch.fps;
+            if (ch.last_raw_tick != 0 && Tick::toMilliseconds(now - ch.last_raw_tick) < period * 9 / 10) {
+                return CVI_SUCCESS;
+            }
+            ch.last_raw_tick = now;
+        }
+    }
+
     ma_img_t* frame  = new ma_img_t;
     frame->size      = f->u32Length[0] + f->u32Length[1] + f->u32Length[2];
     frame->width     = m_channels[pstVencChnCfg->VencChn].width;
@@ -158,6 +175,7 @@ CameraSG200X::CameraSG200X(size_t id) : Camera(id) {
         m_channels[i].configured = false;
         m_channels[i].enabled    = false;
         m_channels[i].fps        = 30;
+        m_channels[i].last_raw_tick = 0;
     }
     m_channels[CHN_RAW].format  = MA_PIXEL_FORMAT_RGB888;
     m_channels[CHN_JPEG].format = MA_PIXEL_FORMAT_JPEG;
