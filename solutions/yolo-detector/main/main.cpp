@@ -44,6 +44,10 @@ static struct {
     int stream_width = 1280;
     int stream_height = 720;
     int stream_fps = 30;    // teleop video: 30 fps halves per-stage pipeline delay vs 15 and is visibly smoother
+    // VENC CBR target. 1000 kbps is the ipcam default this app ran with before
+    // app_framework (whose StreamOptions default is 2500); with MaxQp 35 the
+    // encoder already overshoots it during motion, and the stream goes over WiFi.
+    int stream_bitrate_kbps = 1000;
 
     // Tracking configuration
     bool enable_tracking = true;
@@ -126,6 +130,7 @@ static void print_usage(const char* prog) {
     printf("  --no-mqtt                 Disable MQTT publishing\n");
     printf("  --no-debug                Remove the WebSocket stream from the stream mode\n");
     printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
+    printf("  --stream-bitrate KBPS     Stream H.264 CBR target in kbps (default: %d)\n", g_config.stream_bitrate_kbps);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nWebSocket: ws://<device_ip>:%d/   RTSP (rtsp/both): rtsp://<device_ip>:%d/live0\n", g_config.debug_port, g_config.rtsp_port);
@@ -150,6 +155,7 @@ static bool parse_args(int argc, char** argv) {
         {"no-debug", no_argument, 0, 13},
         {"debug-port", required_argument, 0, 14},
         {"stream-mode", required_argument, 0, 15},
+        {"stream-bitrate", required_argument, 0, 16},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -180,6 +186,7 @@ static bool parse_args(int argc, char** argv) {
                     return false;
                 }
                 break;
+            case 16: g_config.stream_bitrate_kbps = std::stoi(optarg); break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
@@ -410,6 +417,7 @@ int main(int argc, char** argv) {
     stream.width = static_cast<uint16_t>(g_config.stream_width);
     stream.height = static_cast<uint16_t>(g_config.stream_height);
     stream.fps = static_cast<uint8_t>(g_config.stream_fps);
+    stream.bitrate_kbps = static_cast<uint32_t>(g_config.stream_bitrate_kbps);
     app.with_stream_mode(resolve_stream_mode(), stream, g_config.debug_port, g_config.rtsp_port);
     if (g_config.enable_mqtt) {
         const ha_mqtt::ClientOptions opts = mqtt_options();
