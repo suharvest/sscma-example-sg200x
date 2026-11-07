@@ -110,6 +110,11 @@ const DEFAULT_RESOLUTION = 640;
 const RESULTS_FLUSH_MS = 150;
 /** frame delay/timestamp flush cadence */
 const DELAY_FLUSH_MS = 1000;
+/** JMuxer frame duration bounds (ms), derived from the device timestamps. */
+const FRAME_MS_DEFAULT = 33;
+const FRAME_MS_MIN = 10;
+const FRAME_MS_MAX = 200;
+
 /** Live-edge keeper: JMuxer/MediaSource accumulates a decode buffer so the
  *  video playhead drifts behind real time; the (now fresh) overlay then leads
  *  the video. Periodically snap the video back to the live edge when it lags. */
@@ -582,6 +587,7 @@ export default function useDebugStream({
       }
       ws.binaryType = "arraybuffer";
       videoWsRef.current = ws;
+      let prevTs: number | null = null;
 
       // No infinite loading: fail hard if nothing arrives in time.
       timeoutRef.current = setTimeout(() => {
@@ -608,7 +614,16 @@ export default function useDebugStream({
           ts > 0 && Math.abs(delay) < 3600_000 ? delay : null;
         // Strip the timestamp tail before feeding JMuxer (zero-copy view).
         const video = buffer.subarray(0, buffer.length - 8);
-        jmuxerRef.current?.feed({ video });
+        // Frame duration from consecutive device timestamps: the sensor can run
+        // below the nominal 30 fps (the SG2002 ISP delivers 10), and JMuxer's
+        // fixed 1/fps would then play at a third of real time between
+        // live-edge snaps. Clamp to tolerate jitter and clock steps.
+        const duration =
+          prevTs !== null && ts > 0
+            ? Math.min(FRAME_MS_MAX, Math.max(FRAME_MS_MIN, ts - prevTs))
+            : FRAME_MS_DEFAULT;
+        prevTs = ts > 0 ? ts : null;
+        jmuxerRef.current?.feed({ video, duration });
         if (timeoutRef.current) {
           clearTimeout(timeoutRef.current);
           timeoutRef.current = null;
