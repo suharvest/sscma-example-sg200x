@@ -19,14 +19,13 @@
 #include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <sscma.h>
-#include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
-#include "rtsp_server.h"
+#include "af/app.h"
+#include "af/ma_image.h"
 
 #include "app_config.h"
 #include "fall_detector.h"
@@ -105,16 +104,13 @@ static int trackerMissLimit(float timeout_sec) {
     return std::max(45, static_cast<int>(std::ceil(std::max(0.0f, timeout_sec) * 15.0f)));
 }
 
+// Offline evaluator only: the live path is stopped by af::App's own handlers.
 static std::atomic<bool> g_running(true);
 static PoseDetector* g_pose_detector = nullptr;
 static std::unique_ptr<MultiPersonTracker> g_tracker;
-static ha_mqtt::MqttPublisher* g_mqtt = nullptr;
-static Camera* g_camera = nullptr;
 static ConfigWatcher* g_watcher = nullptr;
 static uint32_t g_frame_id = 0;
 static std::chrono::steady_clock::time_point g_start_time;
-static bool g_video_started = false;
-static bool g_debug_started = false;
 
 static void signal_handler(int sig) {
     MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
@@ -192,67 +188,7 @@ static bool parse_args(int argc, char** argv) {
     return true;
 }
 
-static bool init_camera() {
-    Device* device = Device::getInstance();
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() != ma::Sensor::Type::kCamera) continue;
-
-        g_camera = static_cast<Camera*>(sensor);
-        g_camera->init(0);
-
-        Camera::CtrlValue value;
-        value.i32 = 0;
-        g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-        value.i32 = g_config.inference_fps;
-        g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-        value.u16s[0] = g_config.inference_width;
-        value.u16s[1] = g_config.inference_height;
-        g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-        value.i32 = 0;
-        g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-        MA_LOGI(TAG, "Camera initialized (%dx%d @ %dfps)",
-                g_config.inference_width, g_config.inference_height, g_config.inference_fps);
-        return true;
-    }
-    MA_LOGE(TAG, "No camera found");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (!g_config.enable_rtsp) {
-        MA_LOGI(TAG, "RTSP streaming disabled");
-        return true;
-    }
-    if (initVideo() != 0) {
-        MA_LOGE(TAG, "Failed to initialize video subsystem");
-        return false;
-    }
-
-    video_ch_param_t stream_param;
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width = g_config.stream_width;
-    stream_param.height = g_config.stream_height;
-    stream_param.fps = g_config.stream_fps;
-    setupVideo(VIDEO_CH2, &stream_param);
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    initRtsp((0x01 << VIDEO_CH2));
-    g_video_started = true;
-
-    MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps)",
-            g_config.stream_width, g_config.stream_height, g_config.stream_fps);
-    return true;
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        MA_LOGI(TAG, "MQTT publishing disabled");
-        return true;
-    }
-
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "fall-detection";
     opts.client_id     = "recamera-fall-detection";
@@ -278,32 +214,22 @@ static bool init_mqtt() {
                      "{{ 'ON' if value_json.person_detected else 'OFF' }}",
                      "occupancy", "", ""},
     };
-
-    g_mqtt = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt->init(opts)) {
-        MA_LOGE(TAG, "Failed to initialize MQTT publisher");
-        return false;
-    }
-    return true;
+    return opts;
 }
 
 static void cleanup() {
-    if (g_camera) g_camera->stopStream();
-    if (g_debug_started) { debug_stream_destroy(); g_debug_started = false; }
-    if (g_video_started) { deinitRtsp(); deinitVideo(); g_video_started = false; }
-    if (g_mqtt) { g_mqtt->deinit(); delete g_mqtt; g_mqtt = nullptr; }
     g_tracker.reset();
     if (g_pose_detector) { delete g_pose_detector; g_pose_detector = nullptr; }
     if (g_watcher) { delete g_watcher; g_watcher = nullptr; }
     MA_LOGI(TAG, "Cleanup completed");
 }
 
-static void process_frame() {
-    ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        return;
-    }
+static void on_frame(af::App& app, const af::VideoFrame& f, af::Result& r) {
+    // Storage for Result::json / debug_extra: must outlive this call.
+    static std::string s_payload;
+    static std::string s_debug_extra;
+
+    ma_img_t frame = af::to_ma_img(f);
 
     const auto t0 = std::chrono::high_resolution_clock::now();
     const auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -312,11 +238,6 @@ static void process_frame() {
         std::chrono::steady_clock::now() - g_start_time).count() / 1000.0;
 
     const auto& detections = g_pose_detector->detectAll(&frame);
-
-    // Offer the raw frame for /snapshot.jpg before returnFrame() invalidates
-    // frame.data. Cheap (one atomic load) unless a client asked recently.
-    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
-    g_camera->returnFrame(frame);
 
     const auto inference_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now() - t0).count();
@@ -342,20 +263,24 @@ static void process_frame() {
     ctx.persons.clear();
     for (const auto* track : tracks) ctx.persons.push_back(track);
 
+    // Debug /results envelope via the framework sink: same timestamp, frame id,
+    // inference time and stream resolution as before; no boxes (the skeleton
+    // groups carry the multi-person overlay and a corner-pinned card goes out
+    // in the extra members).
+    r.wall_ms = ctx.timestamp_ms;
+    r.seq = ctx.frame_id;
+    r.inference_ms = ctx.inference_time_ms;
+    r.set_boxes(nullptr, 0);
     if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
-        // No boxes: the skeleton groups carry the useful multi-person overlay
-        // and a corner-pinned card goes out in the extra members.
-        const std::vector<debug_stream_box_t> no_boxes;
-        const std::string json = debug_stream_build_results(
-            ctx.timestamp_ms, ctx.frame_id, ctx.inference_time_ms,
-            g_config.stream_width, g_config.stream_height, no_boxes, nullptr,
-            buildDebugExtraJson(ctx));
-        debug_stream_publish_result(json.c_str(), json.size());
+        s_debug_extra = buildDebugExtraJson(ctx);
+        r.debug_extra = s_debug_extra;
     }
 
-    if (g_config.enable_mqtt && g_mqtt) {
-        const std::string payload = buildResultJson(ctx);
-        g_mqtt->publishResultsJson(payload);
+    // MQTT results every frame, as before; the sink publishes only while connected.
+    ha_mqtt::MqttPublisher* mqtt = app.mqtt();
+    if (g_config.enable_mqtt && mqtt != nullptr && mqtt->isConnected()) {
+        s_payload = buildResultJson(ctx);
+        r.json = s_payload;
     }
 
     for (const auto* track : tracks) {
@@ -513,8 +438,6 @@ static int run_offline_rgb() {
 int main(int argc, char** argv) {
     if (!parse_args(argc, argv)) return 1;
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
     g_start_time = std::chrono::steady_clock::now();
 
     g_watcher = new ConfigWatcher(APP_CONFIG_PATH);
@@ -555,31 +478,46 @@ int main(int argc, char** argv) {
     g_pose_detector->setKeypointThreshold(cfg.keypoint_confidence);
 
     if (!g_config.offline_rgb_path.empty()) {
+        signal(SIGINT, signal_handler);
+        signal(SIGTERM, signal_handler);
         const int result = run_offline_rgb();
         cleanup();
         return result;
     }
 
-    if (!init_camera()) { cleanup(); return 1; }
-    if (!init_video_streaming()) { cleanup(); return 1; }
-    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
-    } else if (g_config.enable_debug) {
-        g_debug_started = true;
+    af::CameraOptions cam;
+    cam.width = static_cast<uint16_t>(g_config.inference_width);
+    cam.height = static_cast<uint16_t>(g_config.inference_height);
+    cam.fps = static_cast<uint8_t>(g_config.inference_fps);
+
+    af::RtspOptions stream;
+    stream.width = static_cast<uint16_t>(g_config.stream_width);
+    stream.height = static_cast<uint16_t>(g_config.stream_height);
+    stream.fps = static_cast<uint8_t>(g_config.stream_fps);
+
+    af::App app("fall-detection");
+    app.with_camera(cam).with_stream(stream);
+    if (g_config.enable_rtsp) {
+        app.with_rtsp(stream);
+    } else {
+        MA_LOGI(TAG, "RTSP streaming disabled");
     }
-    if (!init_mqtt()) { cleanup(); return 1; }
-
-    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
-
-    MA_LOGI(TAG, "Fall detection running (multi-person IoU/center tracking + per-person temporal classifiers)");
-    MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
-    MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
-
-    while (g_running.load()) {
-        process_frame();
+    if (g_config.enable_debug) app.with_debug_ws(g_config.debug_port);
+    if (g_config.enable_mqtt) {
+        app.with_mqtt(mqtt_options());
+    } else {
+        MA_LOGI(TAG, "MQTT publishing disabled");
     }
+
+    app.on_started([] {
+        MA_LOGI(TAG, "Fall detection running (multi-person IoU/center tracking + per-person temporal classifiers)");
+        MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
+        MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
+    });
+    app.on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
+    const int rc = app.run();
 
     cleanup();
     MA_LOGI(TAG, "Fall Detection terminated");
-    return 0;
+    return rc;
 }

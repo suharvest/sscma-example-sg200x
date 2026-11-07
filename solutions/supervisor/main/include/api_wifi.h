@@ -3,6 +3,7 @@
 
 #include "json.hpp"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <map>
 #include <mutex>
@@ -56,11 +57,27 @@ private:
     static inline std::atomic<bool> _running { true };
     static inline std::condition_variable _cv;
     static inline std::mutex _wifi_mutex;
-    static inline bool _need_scan;
+    static inline std::atomic<bool> _need_scan { false };
+    static inline std::atomic<int64_t> _last_scan_ms { 0 };
     static void trigger_scan()
     {
         _need_scan = true;
         _cv.notify_one();
+    }
+    // The Wi-Fi tab polls getWiFiInfoList every 5 s and each call requests a refresh.
+    // Link state is always refreshed; the radio scan (`iw scan`, which takes the
+    // hotspot's shared radio off channel) runs at most every 20 s, callers get the
+    // cached list in between.
+    static bool scan_due()
+    {
+        const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const int64_t last = _last_scan_ms.load();
+        if (last != 0 && now - last < 20000) {
+            return false;
+        }
+        _last_scan_ms.store(now);
+        return true;
     }
 
     json get_eth();

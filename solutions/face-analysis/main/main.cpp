@@ -1,23 +1,18 @@
-#include <iostream>
 #include <chrono>
-#include <thread>
-#include <signal.h>
-#include <unistd.h>
 #include <getopt.h>
-#include <atomic>
+#include <string>
+#include <vector>
 
-#include <sscma.h>
-#include <video.h>
-#include <debug_stream.h>
+#include <af/app.h>
+#include <af/ma_image.h>
 #include <ha_mqtt.h>
+#include <sscma.h>
 #include "onvif_meta.h"
 #include "onvif_meta_gate.h"
-#include "onvif_service_bringup.h"
-#include "rtsp_server.h"
 
+#include "attribute_analyzer.h"
 #include "face_detector.h"
 #include "face_tracker.h"
-#include "attribute_analyzer.h"
 #include "mqtt_payload.h"
 #include "privacy_blur.h"
 
@@ -78,23 +73,15 @@ static struct {
 } g_config;
 
 // Global state
-static std::atomic<bool> g_running(true);
 static FaceDetector* g_face_detector = nullptr;
 static FaceTracker* g_face_tracker = nullptr;
 static AttributeAnalyzer* g_attribute_analyzer = nullptr;
-static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
 static PrivacyBlur* g_face_blur = nullptr;
 /* Temporary placement diagnostics, off unless BLUR_TRACE is set in the
  * environment. Behind a switch rather than always-on because it prints once per
  * face per frame, which would bury the log it is meant to be read in. */
 static const bool g_blur_trace = (getenv("BLUR_TRACE") != nullptr);
-static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
-
-static void signal_handler(int sig) {
-    MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
-    g_running.store(false);
-}
 
 static void print_usage(const char* prog) {
     printf("Face Analysis for ReCamera\n");
@@ -257,131 +244,11 @@ static bool init_models() {
     return true;
 }
 
-static bool init_camera() {
-    Device* device = Device::getInstance();
-
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() == ma::Sensor::Type::kCamera) {
-            g_camera = static_cast<Camera*>(sensor);
-            g_camera->init(0);
-
-            Camera::CtrlValue value;
-
-            // Set channel 0 for inference
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-            // Apply the configured inference frame rate to the channel. Without
-            // this the channel keeps its 30fps default, so the capture->inference
-            // FIFO is sized/filled at 30fps while inference consumes far slower —
-            // wasting CPU copying frames that get dropped.
-            value.i32 = g_config.inference_fps;
-            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-            // Set inference resolution
-            value.u16s[0] = g_config.inference_width;
-            value.u16s[1] = g_config.inference_height;
-            g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-            // Disable physical address mode - attribute analysis needs CPU access to frame data
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-            MA_LOGI(TAG, "Camera initialized (%dx%d @ %dfps for inference)",
-                    g_config.inference_width, g_config.inference_height, g_config.inference_fps);
-            return true;
-        }
-    }
-
-    MA_LOGE(TAG, "No camera found");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (!g_config.enable_rtsp) {
-        MA_LOGI(TAG, "RTSP streaming disabled");
-        return true;
-    }
-
-    if (initVideo() != 0) {
-        MA_LOGE(TAG, "Failed to initialize video subsystem");
-        return false;
-    }
-
-    // Setup H.264 streaming channel (CH2)
-    video_ch_param_t stream_param;
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width = g_config.stream_width;
-    stream_param.height = g_config.stream_height;
-    stream_param.fps = g_config.stream_fps;
-    setupVideo(VIDEO_CH2, &stream_param);
-
-    // Register RTSP handler (debug_stream registers its own consumer, idx 1)
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-
-    // Initialize RTSP server
-    initRtsp((0x01 << VIDEO_CH2));
-
-    MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps)",
-            g_config.stream_width, g_config.stream_height, g_config.stream_fps);
-
-    return true;
-}
-
-// Assemble the debug /results envelope (shared debug_stream builder).
-// FaceInfo x/y are normalized top-left; convert to center-based pixels.
-// box[5] is "face" (aligned with the other apps' class-name labels); the
-// parallel labels[] carries the per-face attributes.
 // ONVIF analytics metadata, off unless switched on in the console. The gate
 // owns the switch and the rate limit; when disabled it costs one bool test.
 static OnvifMetaGate g_onvif_meta;
 
-static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
-                                            const std::vector<AnalyzedFace>& faces,
-                                            float inference_time_ms) {
-    std::vector<debug_stream_box_t> boxes;
-    std::vector<std::string> labels;
-    boxes.reserve(faces.size());
-    labels.reserve(faces.size());
-    for (const auto& af : faces) {
-        const auto& f = af.face;
-        boxes.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
-                         (f.y + f.h * 0.5f) * g_config.inference_height,
-                         f.w * g_config.inference_width,
-                         f.h * g_config.inference_height,
-                         f.score, "face"});
-        const auto& attr = af.attributes;
-        // A gated face ran no attribute stage at all, so every attribute field
-        // is still its default -- and the default emotion is NEUTRAL, which is
-        // how a too-small face used to render as a bare "neutral" label. Label
-        // it as a plain detection instead: the box and the track are real, the
-        // attributes are not.
-        if (attr.gated) {
-            labels.push_back("face");
-            continue;
-        }
-        // gender · age · race · emotion. race_label is empty for InsightFace
-        // (no race head) — skip it there so that path's label is unchanged.
-        std::string label = attr.gender + " " + attr.age_label;
-        if (!attr.race_label.empty()) label += " " + attr.race_label;
-        if (attr.has_emotion) label += std::string(" ") + getEmotionName(attr.emotion);
-        labels.push_back(label);
-    }
-    // The inference channel is letterboxed vs the 16:9 debug video (stream);
-    // remap boxes into the stream frame so the overlay aligns with the video.
-    debug_stream_letterbox_to_display(boxes, g_config.inference_width, g_config.inference_height,
-                                      g_config.stream_width, g_config.stream_height);
-    return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
-                                      g_config.stream_width, g_config.stream_height,
-                                      boxes, &labels);
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        MA_LOGI(TAG, "MQTT publishing disabled");
-        return true;
-    }
-
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "face-analysis";
     opts.client_id     = "recamera-face-analysis";
@@ -401,33 +268,18 @@ static bool init_mqtt() {
                      "{{ 'ON' if value_json.face_count > 0 else 'OFF' }}",
                      "occupancy", "", ""},
     };
-
-    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt_publisher->init(opts)) {
-        MA_LOGE(TAG, "Failed to initialize MQTT publisher");
-        return false;
-    }
-
-    // Rides the connection above rather than opening a second one; the switch
-    // lives in /userdata/local/onvif.conf, written by the console.
-    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
-    if (g_onvif_meta.enabled()) {
-        MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
-                g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
-    }
-
-    return true;
+    return opts;
 }
 
-static bool init_blur() {
+// Runs from App::on_started(): RGN needs the VPSS channel running.
+static void init_blur() {
     if (!g_config.enable_blur) {
-        return true;
+        return;
     }
-
     if (!g_config.enable_rtsp) {
         MA_LOGW(TAG, "Face blur requires RTSP streaming, ignoring --blur");
         g_config.enable_blur = false;
-        return true;
+        return;
     }
 
     PrivacyBlurConfig cfg;
@@ -444,80 +296,67 @@ static bool init_blur() {
 
     g_face_blur = new PrivacyBlur();
     if (!g_face_blur->init(cfg, g_config.stream_width, g_config.stream_height)) {
-        MA_LOGE(TAG, "Failed to initialize face blur");
+        MA_LOGW(TAG, "Face blur initialization failed, continuing without blur");
         delete g_face_blur;
         g_face_blur = nullptr;
-        return false;
+        g_config.enable_blur = false;
+        return;
     }
-
     MA_LOGI(TAG, "Face blur ready (backend=%s, max_regions=%d, enabled=%d)",
             cfg.backend.c_str(), cfg.max_regions, (int)cfg.enabled);
-    return true;
 }
 
-static void cleanup() {
+// Runs from App::on_stopping(): detach the RGN masks while VPSS still exists.
+static void deinit_blur() {
     if (g_face_blur) {
         g_face_blur->deinit();
         delete g_face_blur;
         g_face_blur = nullptr;
     }
-
-    if (g_camera) {
-        g_camera->stopStream();
-    }
-
-    if (g_config.enable_debug) {
-        debug_stream_destroy();
-    }
-
-    onvif_service_stop();
-
-    if (g_config.enable_rtsp) {
-        deinitRtsp();
-        deinitVideo();
-    }
-
-    if (g_mqtt_publisher) {
-        g_mqtt_publisher->deinit();
-        delete g_mqtt_publisher;
-        g_mqtt_publisher = nullptr;
-    }
-
-    if (g_attribute_analyzer) {
-        delete g_attribute_analyzer;
-        g_attribute_analyzer = nullptr;
-    }
-
-    if (g_face_tracker) {
-        delete g_face_tracker;
-        g_face_tracker = nullptr;
-    }
-
-    if (g_face_detector) {
-        delete g_face_detector;
-        g_face_detector = nullptr;
-    }
-
-    MA_LOGI(TAG, "Cleanup completed");
 }
 
-static void process_frame() {
-    ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        return;
-    }
+// Per-frame state that outlives the handler: the App's sinks read the boxes
+// and JSON after on_frame returns, and the snapshot hook reads the detections.
+static struct {
+    std::vector<FaceInfo> faces;          // this frame's detections (top-left normalised)
+    std::vector<af::Box> boxes;           // debug overlay boxes
+    std::vector<std::string> labels;      // debug labels[] (attributes)
+    std::string payload;                  // MQTT results JSON
+} g_out;
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()
-    ).count();
+static const char* attribute_label(const AnalyzedFace& af, std::string& out) {
+    const auto& attr = af.attributes;
+    // A gated face ran no attribute stage at all, so every attribute field
+    // is still its default -- and the default emotion is NEUTRAL, which is
+    // how a too-small face used to render as a bare "neutral" label. Label
+    // it as a plain detection instead: the box and the track are real, the
+    // attributes are not.
+    if (attr.gated) {
+        out = "face";
+        return out.c_str();
+    }
+    // gender · age · race · emotion. race_label is empty for InsightFace
+    // (no race head) — skip it there so that path's label is unchanged.
+    out = attr.gender + " " + attr.age_label;
+    if (!attr.race_label.empty()) out += " " + attr.race_label;
+    if (attr.has_emotion) out += std::string(" ") + getEmotionName(attr.emotion);
+    return out.c_str();
+}
+
+static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
+    using clock = std::chrono::steady_clock;
+    const auto ms_since = [](clock::time_point t) {
+        return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t).count());
+    };
+    const auto start_time = clock::now();
+    const uint64_t timestamp_ms = r.wall_ms;
+    ma_img_t img = af::to_ma_img(frame);
 
     // Step 1: Face detection
-    auto detect_start = std::chrono::high_resolution_clock::now();
-    std::vector<FaceInfo> faces = g_face_detector->detect(&frame);
-    auto detect_end = std::chrono::high_resolution_clock::now();
-    auto detect_time = std::chrono::duration_cast<std::chrono::milliseconds>(detect_end - detect_start).count();
+    const auto detect_start = clock::now();
+    g_out.faces = g_face_detector->detect(&img);
+    std::vector<FaceInfo>& faces = g_out.faces;
+    const long long detect_time = ms_since(detect_start);
 
     // Step 1.5: Resolve identities. FaceDetector hands out a fresh number per
     // detection per frame, so face.id carries no identity until this runs; from
@@ -530,34 +369,15 @@ static void process_frame() {
         }
     }
 
-    // Step 2: Feed face detections to the privacy mask. Before returnFrame()
-    // below, because the pixelating backend averages the pixels it hides and
-    // frame.data is invalid once the frame goes back to the camera.
+    // Step 2: Feed face detections to the privacy mask while the frame is held
+    // (the pixelating backend averages the pixels it hides).
     if (g_config.enable_blur && g_face_blur) {
-        /*
-         * The mask has to travel the same road as the overlay boxes, and for
-         * the same reason.
-         *
-         * FaceInfo is normalised against the *inference* frame (640x480 here),
-         * the mask is applied on the *stream* frame (1280x720), and the two
-         * have different aspect ratios. The camera fits the sensor content into
-         * each channel preserving aspect, so the inference frame carries
-         * letterbox bars the stream does not: a normalised coordinate means a
-         * different place in each. Handing the inference-normalised value
-         * straight to a component initialised with the stream dimensions treats
-         * one as the other and puts the mask somewhere the face is not.
-         *
-         * debug_stream_letterbox_to_display() already does this conversion for
-         * the console overlay a few lines up. Reusing it -- rather than
-         * repeating the arithmetic -- is what keeps the drawn box and the mask
-         * from drifting apart later: they now derive from one implementation.
-         */
-        /* fromCorner: face-analysis's FaceDetector normalises every model to
-         * the TOP-LEFT corner because the attribute analyzer crops from it --
-         * unlike facemesh-reader and yolo-detector, whose detectors pass the
-         * model's centre through. Naming the convention here is the whole
-         * point: this is the one line that knows, and it sits next to the
-         * detector that decided it. */
+        /* FaceInfo is normalised against the inference frame, the mask is
+         * applied on the stream frame, and the two have different aspect
+         * ratios (letterbox). geometry::toStream() is the one conversion both
+         * the mask and the overlay derive from. fromCorner: this app's
+         * FaceDetector normalises to the TOP-LEFT corner (the attribute
+         * analyzer crops from it), unlike the centre-based detectors elsewhere. */
         std::vector<geometry::InferBox> boxes;
         boxes.reserve(faces.size());
         for (const auto& f : faces) {
@@ -568,8 +388,7 @@ static void process_frame() {
                                g_config.stream_width, g_config.stream_height);
 
         /* Temporary: prints the raw detection next to what the mask is actually
-         * asked to cover, so a misplaced mask can be read off the log instead of
-         * inferred from a screenshot. Remove once the placement is settled. */
+         * asked to cover. Remove once the placement is settled. */
         if (g_blur_trace && !faces.empty()) {
             for (size_t i = 0; i < faces.size(); ++i) {
                 MA_LOGI(TAG,
@@ -580,94 +399,62 @@ static void process_frame() {
                         stream_boxes[i].w, stream_boxes[i].h);
             }
         }
-
-        g_face_blur->onDetection(stream_boxes, &frame);
+        g_face_blur->onDetection(stream_boxes, &img);
     }
 
     // Step 3: Attribute analysis for each face
-    auto analyze_start = std::chrono::high_resolution_clock::now();
-    std::vector<AnalyzedFace> analyzed_faces = g_attribute_analyzer->analyzeAll(&frame, faces);
+    const auto analyze_start = clock::now();
+    std::vector<AnalyzedFace> analyzed_faces = g_attribute_analyzer->analyzeAll(&img, faces);
     if (g_face_tracker) {
         g_attribute_analyzer->sweepEvidence(g_face_tracker->removedIds());
     }
-    auto analyze_end = std::chrono::high_resolution_clock::now();
-    auto analyze_time = std::chrono::duration_cast<std::chrono::milliseconds>(analyze_end - analyze_start).count();
+    const long long analyze_time = ms_since(analyze_start);
+    const long long total_time = ms_since(start_time);
 
-    // Offer the frame for /snapshot.jpg. Returns after one atomic load unless a
-    // snapshot client asked recently; must precede returnFrame(), after which
-    // frame.data is invalid. Unannotated: the video path is unannotated too and
-    // overlays are drawn client-side.
-    //
-    // The privacy mask, though, has to be applied here in software. The RGN
-    // mask lives in the VPSS->VENC path and so covers RTSP and the console's
-    // debug video only; this buffer is the inference frame and goes to the JPEG
-    // encoder untouched by it. Left as it was, the device would serve a masked
-    // video stream and an unmasked still of the same scene -- from the very URL
-    // ONVIF advertises as GetSnapshotUri, so a client honouring the mask on the
-    // stream could pull the faces it hides from the same device.
-    //
-    // The detections are used directly, without the letterbox conversion the
-    // mask path needs: FaceInfo is normalised against this exact frame, so
-    // converting to stream coordinates and back would only add a way to be
-    // wrong.
-    if (debug_stream_snapshot_armed()) {
-        if (g_config.enable_blur && g_face_blur != nullptr && g_face_blur->enabled() &&
-            !faces.empty()) {
-            /* InferBox, unconverted: the snapshot IS the inference frame,
-             * so these are already normalised against the buffer. Corner form
-             * again -- same detector, same convention. */
-            std::vector<geometry::InferBox> snap_boxes;
-            snap_boxes.reserve(faces.size());
-            for (const auto& f : faces) {
-                snap_boxes.push_back(geometry::InferBox::fromCorner(f.x, f.y, f.w, f.h, f.score));
-            }
-            privacy_blur::pixelateRgb888(frame.data, frame.width, frame.height, snap_boxes,
-                                         g_face_blur->blockPx());
-        }
-        debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
+    // Step 4: debug overlay (published by the App's debug sink when a /results
+    // client listens). FaceInfo x/y are top-left normalised -> centre pixels;
+    // box label "face", labels[] carries the per-face attributes.
+    const float W = static_cast<float>(g_config.inference_width);
+    const float H = static_cast<float>(g_config.inference_height);
+    g_out.boxes.resize(analyzed_faces.size());
+    g_out.labels.resize(analyzed_faces.size());
+    for (size_t i = 0; i < analyzed_faces.size(); ++i) {
+        const auto& f = analyzed_faces[i].face;
+        af::Box& b = g_out.boxes[i];
+        b.x = (f.x + f.w * 0.5f) * W;
+        b.y = (f.y + f.h * 0.5f) * H;
+        b.w = f.w * W;
+        b.h = f.h * H;
+        b.score = f.score;
+        b.label = "face";
+        b.detail = attribute_label(analyzed_faces[i], g_out.labels[i]);
     }
+    r.seq = g_frame_id;
+    r.inference_ms = static_cast<float>(total_time);
+    r.set_boxes(g_out.boxes.data(), g_out.boxes.size());
 
-    // Return frame to camera
-    g_camera->returnFrame(frame);
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-
-    // Step 4: Publish results via MQTT
-    if (g_config.enable_mqtt && g_mqtt_publisher) {
-        std::string payload = buildResultJson(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
-        g_mqtt_publisher->publishResultsJson(payload);
+    // Step 5: MQTT results (published by the App's MQTT sink).
+    ha_mqtt::MqttPublisher* mqtt = app.mqtt();
+    if (mqtt != nullptr) {
+        g_out.payload = buildResultJson(timestamp_ms, g_frame_id, analyzed_faces, static_cast<float>(total_time));
+        r.json = g_out.payload;
 
         // Additionally publish the same detections in ONVIF's analytics
         // representation, on its own topic and its own rate limit. The
         // recamera/<app>/results contract above is consumed by SenseCraft and
-        // does not change. Only boxes and a class for now; face attributes map
-        // onto tt:HumanFace and can follow once this path has proven itself.
+        // does not change. Only boxes and a class for now.
         if (g_onvif_meta.take(timestamp_ms)) {
             std::vector<onvif_box_t> ob;
-            ob.reserve(analyzed_faces.size());
-            for (const auto& af : analyzed_faces) {
-                const auto& f = af.face;
-                ob.push_back({(f.x + f.w * 0.5f) * g_config.inference_width,
-                              (f.y + f.h * 0.5f) * g_config.inference_height,
-                              f.w * g_config.inference_width,
-                              f.h * g_config.inference_height,
-                              f.score, "HumanFace"});
+            ob.reserve(g_out.boxes.size());
+            for (const auto& b : g_out.boxes) {
+                ob.push_back({b.x, b.y, b.w, b.h, b.score, "HumanFace"});
             }
-            g_mqtt_publisher->publishText(
+            mqtt->publishText(
                 g_onvif_meta.topic(),
                 onvif_meta_to_json(onvif_meta_from_boxes(
                     timestamp_ms, "FaceAnalysis",
                     g_config.inference_width, g_config.inference_height, ob)));
         }
-    }
-
-    // Step 4.5: Push the same inference result to debug WS clients (sscma-node
-    // format). debug_stream is lazy: skip building JSON when nobody listens.
-    if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
-        std::string debug_json = build_debug_results_json(timestamp_ms, g_frame_id, analyzed_faces,
-                                                          static_cast<float>(total_time));
-        debug_stream_publish_result(debug_json.c_str(), debug_json.size());
     }
 
     // Log results
@@ -701,8 +488,25 @@ static void process_frame() {
     g_frame_id++;
 }
 
+// App::on_snapshot(): /snapshot.jpg is encoded from this inference frame,
+// which the RGN mask (VPSS->VENC path) never touches. Without this the device
+// would serve a masked stream and an unmasked still of the same scene -- from
+// the URL ONVIF advertises as GetSnapshotUri. Detections are already
+// normalised against this buffer, so no letterbox conversion.
+static void mask_snapshot(const af::VideoFrame& frame) {
+    if (!g_config.enable_blur || g_face_blur == nullptr || !g_face_blur->enabled() || g_out.faces.empty()) {
+        return;
+    }
+    std::vector<geometry::InferBox> snap_boxes;
+    snap_boxes.reserve(g_out.faces.size());
+    for (const auto& f : g_out.faces) {
+        snap_boxes.push_back(geometry::InferBox::fromCorner(f.x, f.y, f.w, f.h, f.score));
+    }
+    privacy_blur::pixelateRgb888(frame.planes[0].vir, frame.width, frame.height, snap_boxes,
+                                 g_face_blur->blockPx());
+}
+
 int main(int argc, char** argv) {
-    // Parse command line arguments
     if (!parse_args(argc, argv)) {
         return 1;
     }
@@ -712,76 +516,65 @@ int main(int argc, char** argv) {
     MA_LOGI(TAG, "GenderAge model: %s", g_config.genderage_model.c_str());
     MA_LOGI(TAG, "Emotion model: %s", g_config.emotion_model.c_str());
 
-    // Install signal handlers
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
-    // Initialize components
+    auto release_models = [] {
+        delete g_attribute_analyzer;
+        g_attribute_analyzer = nullptr;
+        delete g_face_tracker;
+        g_face_tracker = nullptr;
+        delete g_face_detector;
+        g_face_detector = nullptr;
+    };
     if (!init_models()) {
         MA_LOGE(TAG, "Model initialization failed");
-        cleanup();
+        release_models();
         return 1;
     }
 
-    if (!init_camera()) {
-        MA_LOGE(TAG, "Camera initialization failed");
-        cleanup();
-        return 1;
+    af::RtspOptions stream;
+    stream.width = static_cast<uint16_t>(g_config.stream_width);
+    stream.height = static_cast<uint16_t>(g_config.stream_height);
+    stream.fps = static_cast<uint8_t>(g_config.stream_fps);
+
+    af::CameraOptions cam;
+    cam.width = static_cast<uint16_t>(g_config.inference_width);
+    cam.height = static_cast<uint16_t>(g_config.inference_height);
+    cam.fps = static_cast<uint8_t>(g_config.inference_fps);
+
+    af::App app("face-analysis");
+    app.with_camera(cam).with_stream(stream);
+    if (g_config.enable_rtsp) app.with_rtsp(stream);
+    if (g_config.enable_debug) app.with_debug_ws(g_config.debug_port);
+    if (g_config.enable_mqtt) {
+        const ha_mqtt::ClientOptions opts = mqtt_options();
+        app.with_mqtt(opts);
+        // The ONVIF switch lives in /userdata/local/onvif.conf, written by the console.
+        g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+        if (g_onvif_meta.enabled()) {
+            MA_LOGI(TAG, "ONVIF metadata: %s (every %ums)",
+                    g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+        }
     }
-
-    if (!init_video_streaming()) {
-        MA_LOGE(TAG, "Video streaming initialization failed");
-        cleanup();
-        return 1;
+    const OnvifMetaConfig& oc = g_onvif_meta.config();
+    if (oc.service_enabled) {
+        af::OnvifOptions onvif;
+        onvif.port = oc.service_port;
+        onvif.serial = ha_mqtt::readDeviceIdentifier();
+        onvif.device_name = "reCamera";
+        onvif.username = oc.username;
+        onvif.password = oc.password;
+        onvif.location = oc.location;
+        app.with_onvif(onvif);
     }
-
-    // Debug stream (non-fatal: on failure run without it)
-    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
-    }
-
-    if (!init_mqtt()) {
-        MA_LOGE(TAG, "MQTT initialization failed");
-        cleanup();
-        return 1;
-    }
-
-    // Start camera streaming
-    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
-
-    // Start video streaming if enabled
-    if (g_config.enable_rtsp) {
-        startVideo();
-    }
-
-    // Initialize blur AFTER video pipeline is started (RGN needs VPSS channel running)
-    if (!init_blur()) {
-        MA_LOGW(TAG, "Face blur initialization failed, continuing without blur");
-        g_config.enable_blur = false;
-    }
-
-    // ONVIF discovery + Device/Media2 services. After startVideo() on purpose:
-    // GetProfiles and GetStreamUri are answered from the running RTSP server's
-    // session list, so bringing this up earlier advertises zero profiles and a
-    // VMS shows a camera with no video.
-    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
-            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
-        onvif_service_soap_running()) {
-        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
-    }
-
-    MA_LOGI(TAG, "Face analysis running...");
-    MA_LOGI(TAG, "RTSP stream: rtsp://<device_ip>:554/live");
     MA_LOGI(TAG, "MQTT topic: %s", g_config.mqtt_topic.c_str());
 
-    // Main processing loop
-    while (g_running.load()) {
-        process_frame();
-    }
+    app.on_started(init_blur)
+       .on_stopping(deinit_blur)
+       .on_snapshot(mask_snapshot)
+       .on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
+    const int rc = app.run();
 
-    // Cleanup
-    cleanup();
-
+    deinit_blur();  // no-op unless run() failed before on_stopping
+    release_models();
     MA_LOGI(TAG, "Face Analysis Application terminated");
-    return 0;
+    return rc;
 }

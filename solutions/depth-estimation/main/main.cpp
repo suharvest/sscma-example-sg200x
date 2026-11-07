@@ -11,23 +11,20 @@
  */
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <getopt.h>
 #include <string>
-#include <thread>
-#include <unistd.h>
 
+#include <af/app.h>
+#include <af/ma_image.h>
 #include <sscma.h>
 #include <video.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
 #include "onvif_meta_gate.h"
-#include "onvif_service_bringup.h"
-#include "rtsp_server.h"
+#include "onvif_service.h"
 
 #include "depth_estimator.h"
 #include "depth_overlay.h"
@@ -74,25 +71,21 @@ static struct {
     bool verbose     = false;
 } g_config;
 
-static std::atomic<bool> g_running(true);
 static depth::DepthEstimator* g_estimator = nullptr;
 static depth::DepthOverlay* g_overlay     = nullptr;
-static ha_mqtt::MqttPublisher* g_mqtt     = nullptr;
-static Camera* g_camera                   = nullptr;
 static uint32_t g_frame_id                = 0;
 static int64_t g_last_mqtt_ms             = 0;
 static bool g_roi_logged                  = false;
 
+/* Result::json / debug_extra point here; they must outlive the handler. */
+static std::string g_mqtt_payload;
+static std::string g_debug_extra;
+
 /* ONVIF analytics metadata is deliberately not published: a depth map has no
  * objects, and inventing bounding boxes for one would put fiction on a VMS
- * timeline. The gate is still read so the Device/Media2 services below get the
+ * timeline. The gate is still read so the Device/Media2 services get the
  * console's port, credentials and location. */
 static OnvifMetaGate g_onvif_meta;
-
-static void signal_handler(int sig) {
-    MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
-    g_running.store(false);
-}
 
 static void print_usage(const char* prog) {
     printf("Monocular Depth Estimation for ReCamera\n");
@@ -179,67 +172,7 @@ static bool init_estimator() {
     return true;
 }
 
-static bool init_camera() {
-    Device* device = Device::getInstance();
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() != ma::Sensor::Type::kCamera) continue;
-
-        g_camera = static_cast<Camera*>(sensor);
-        g_camera->init(0);
-
-        Camera::CtrlValue value;
-        value.i32 = 0;
-        g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-        value.i32 = g_config.inference_fps;
-        g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-        value.u16s[0] = g_config.inference_width;
-        value.u16s[1] = g_config.inference_height;
-        g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-        value.i32 = 0;
-        g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-        MA_LOGI(TAG, "Camera initialized (requested %dx%d @ %dfps)",
-                g_config.inference_width, g_config.inference_height, g_config.inference_fps);
-        return true;
-    }
-    MA_LOGE(TAG, "No camera found");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (!g_config.enable_rtsp) {
-        MA_LOGI(TAG, "RTSP streaming disabled");
-        return true;
-    }
-
-    if (initVideo() != 0) {
-        MA_LOGE(TAG, "Failed to initialize video subsystem");
-        return false;
-    }
-
-    video_ch_param_t stream_param;
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width  = g_config.stream_width;
-    stream_param.height = g_config.stream_height;
-    stream_param.fps    = g_config.stream_fps;
-    setupVideo(VIDEO_CH2, &stream_param);
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    initRtsp((0x01 << VIDEO_CH2));
-
-    MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps)",
-            g_config.stream_width, g_config.stream_height, g_config.stream_fps);
-    return true;
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        MA_LOGI(TAG, "MQTT publishing disabled");
-        return true;
-    }
-
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "depth-estimation";
     opts.client_id     = "recamera-depth-estimation";
@@ -262,40 +195,44 @@ static bool init_mqtt() {
                      "{{ value_json.depth.zones[4] }}",
                      "", "", "measurement"},
     };
-
-    g_mqtt = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt->init(opts)) {
-        MA_LOGE(TAG, "Failed to initialize MQTT publisher");
-        return false;
-    }
-
-    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
-    return true;
+    return opts;
 }
 
-static void cleanup() {
+/* The overlay region attaches to the stream channel's VPSS, which only exists
+ * once the stream is running -- hence App::on_started, never before. A failure
+ * here is not fatal: the depth report is the product, the preview is a
+ * convenience. */
+static void on_started() {
+    if (g_config.enable_pip && g_config.enable_rtsp) {
+        g_overlay = new depth::DepthOverlay();
+        if (!g_overlay->init(g_config.stream_width, g_config.stream_height,
+                             g_config.pip_width, g_config.pip_height,
+                             g_config.pip_margin, 0, VIDEO_CH2)) {
+            MA_LOGW(TAG, "Depth preview unavailable; continuing without it");
+            delete g_overlay;
+            g_overlay = nullptr;
+        }
+    }
+
+    if (onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    }
+
+    MA_LOGI(TAG, "Depth estimation running...");
+    MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
+    MA_LOGI(TAG, "MQTT: %s (every %dms)", g_config.mqtt_topic.c_str(), g_config.mqtt_interval_ms);
+}
+
+/* RGN regions must be detached while the VPSS channel still exists. */
+static void on_stopping() {
     if (g_overlay) { g_overlay->deinit(); delete g_overlay; g_overlay = nullptr; }
-    if (g_camera) g_camera->stopStream();
-    if (g_config.enable_debug) debug_stream_destroy();
-    onvif_service_stop();
-    if (g_config.enable_rtsp) { deinitRtsp(); deinitVideo(); }
-    if (g_mqtt) { g_mqtt->deinit(); delete g_mqtt; g_mqtt = nullptr; }
-    if (g_estimator) { delete g_estimator; g_estimator = nullptr; }
-    MA_LOGI(TAG, "Cleanup completed");
 }
 
-static void process_frame() {
-    ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        return;
-    }
-
+static void on_frame(af::App& app, const af::VideoFrame& f, af::Result& r) {
     const auto t_got_frame = std::chrono::steady_clock::now();
+    const int64_t timestamp_ms = static_cast<int64_t>(r.wall_ms);
 
-    const auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::system_clock::now().time_since_epoch())
-                                  .count();
+    ma_img_t frame = af::to_ma_img(f);
 
     /* Strip the VPSS letterbox before inference, not after: grey bars are
      * out-of-distribution input for a depth model and corrupt both the depth
@@ -310,19 +247,12 @@ static void process_frame() {
         g_roi_logged = true;
     }
 
-    const bool ok = g_estimator->run(&frame, roi);
-
-    /* Offer the raw frame for /snapshot.jpg before returnFrame() invalidates
-     * frame.data. Cheap unless a snapshot client asked recently. */
-    debug_stream_offer_snapshot(frame.data, frame.width, frame.height);
-    const int src_w = frame.width;
-    const int src_h = frame.height;
-    g_camera->returnFrame(frame);
-
-    if (!ok) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    if (!g_estimator->run(&frame, roi)) {
+        r.publish = false;  // nothing to report for this frame
         return;
     }
+    const int src_w = frame.width;
+    const int src_h = frame.height;
 
     const auto t_infer_done = std::chrono::steady_clock::now();
 
@@ -360,23 +290,24 @@ static void process_frame() {
                 ms(t_got_frame, t_overlay_done));
     }
 
-    /* Debug console: no boxes -- there are no objects here -- and the depth
-     * object as an extra top-level member. */
+    /* Debug console (framework sink, stream-dims envelope): no boxes -- there
+     * are no objects here -- and the depth object as an extra top-level member. */
+    r.seq          = g_frame_id;
+    r.inference_ms = inference_ms;
+    r.set_boxes(nullptr, 0);
+    r.debug_extra = {};
     if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
-        const std::vector<debug_stream_box_t> no_boxes;
-        const std::string extra = "\"depth\":" + depth::buildDepthObject(stats);
-        const std::string json  = debug_stream_build_results(
-            timestamp_ms, g_frame_id, inference_ms,
-            g_config.stream_width, g_config.stream_height, no_boxes, nullptr, extra);
-        debug_stream_publish_result(json.c_str(), json.size());
+        g_debug_extra = "\"depth\":" + depth::buildDepthObject(stats);
+        r.debug_extra = g_debug_extra;
     }
 
-    if (g_config.enable_mqtt && g_mqtt &&
+    /* MQTT is rate-limited: only frames past the interval carry a payload. */
+    r.json = {};
+    if (g_config.enable_mqtt && app.mqtt() &&
         (timestamp_ms - g_last_mqtt_ms) >= g_config.mqtt_interval_ms) {
         g_last_mqtt_ms = timestamp_ms;
-        const std::string payload =
-            depth::buildResultJson(timestamp_ms, g_frame_id, inference_ms, stats);
-        g_mqtt->publishResultsJson(payload);
+        g_mqtt_payload = depth::buildResultJson(timestamp_ms, g_frame_id, inference_ms, stats);
+        r.json = g_mqtt_payload;
     }
 
     if (g_config.verbose) {
@@ -397,52 +328,52 @@ int main(int argc, char** argv) {
     MA_LOGI(TAG, "Model: %s", g_config.model_path.c_str());
     MA_LOGI(TAG, "Output is relative depth (smaller = nearer); no absolute distance");
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    if (!init_estimator()) { delete g_estimator; return 1; }
 
-    if (!init_estimator()) { cleanup(); return 1; }
-    if (!init_camera()) { cleanup(); return 1; }
-    if (!init_video_streaming()) { cleanup(); return 1; }
-    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
+    af::App app("depth-estimation");
+    app.with_camera({static_cast<uint16_t>(g_config.inference_width),
+                     static_cast<uint16_t>(g_config.inference_height),
+                     static_cast<uint8_t>(g_config.inference_fps), false});
+
+    af::RtspOptions stream;
+    stream.width  = static_cast<uint16_t>(g_config.stream_width);
+    stream.height = static_cast<uint16_t>(g_config.stream_height);
+    stream.fps    = static_cast<uint8_t>(g_config.stream_fps);
+    app.with_stream(stream);
+    if (g_config.enable_rtsp) {
+        app.with_rtsp(stream);
+    } else {
+        MA_LOGI(TAG, "RTSP streaming disabled");
     }
-    if (!init_mqtt()) { cleanup(); return 1; }
-
-    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
-
-    /* The overlay region attaches to the stream channel's VPSS, which only
-     * exists once the stream is running -- hence after startStream(), never
-     * before. A failure here is not fatal: the depth report is the product,
-     * the preview is a convenience. */
-    if (g_config.enable_pip && g_config.enable_rtsp) {
-        g_overlay = new depth::DepthOverlay();
-        if (!g_overlay->init(g_config.stream_width, g_config.stream_height,
-                             g_config.pip_width, g_config.pip_height,
-                             g_config.pip_margin, 0, VIDEO_CH2)) {
-            MA_LOGW(TAG, "Depth preview unavailable; continuing without it");
-            delete g_overlay;
-            g_overlay = nullptr;
-        }
+    if (g_config.enable_debug) {
+        app.with_debug_ws(g_config.debug_port);
     }
-
-    /* After RTSP: GetProfiles and GetStreamUri are answered from the running
-     * server's session list (onvif_service_bringup.h:23-35). */
-    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
-                              "reCamera",
-                              g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
-        onvif_service_soap_running()) {
-        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    if (g_config.enable_mqtt) {
+        const ha_mqtt::ClientOptions opts = mqtt_options();
+        app.with_mqtt(opts);
+        g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
+    } else {
+        MA_LOGI(TAG, "MQTT publishing disabled");
     }
-
-    MA_LOGI(TAG, "Depth estimation running...");
-    MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:8554/live0");
-    MA_LOGI(TAG, "MQTT: %s (every %dms)", g_config.mqtt_topic.c_str(), g_config.mqtt_interval_ms);
-
-    while (g_running.load()) {
-        process_frame();
+    const OnvifMetaConfig& oc = g_onvif_meta.config();
+    if (oc.service_enabled) {
+        af::OnvifOptions onvif;
+        onvif.port        = oc.service_port;
+        onvif.serial      = ha_mqtt::readDeviceIdentifier();
+        onvif.device_name = "reCamera";
+        onvif.username    = oc.username;
+        onvif.password    = oc.password;
+        onvif.location    = oc.location;
+        app.with_onvif(onvif);
     }
 
-    cleanup();
+    app.on_started(on_started)
+       .on_stopping(on_stopping)
+       .on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
+    const int rc = app.run();
+
+    delete g_estimator;
+    g_estimator = nullptr;
     MA_LOGI(TAG, "Monocular Depth Estimation terminated");
-    return 0;
+    return rc;
 }

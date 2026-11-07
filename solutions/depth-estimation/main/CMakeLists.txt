@@ -11,6 +11,6 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS onvif_meta onvif_service sscma-micro sophgo rtsp_server ha_mqtt debug_stream rgn
+    PRIVATE_REQUIREDS app_framework onvif_meta onvif_service sscma-micro sophgo rtsp_server ha_mqtt debug_stream rgn
     REQUIREDS opencv_core opencv_imgcodecs opencv_imgproc
 )

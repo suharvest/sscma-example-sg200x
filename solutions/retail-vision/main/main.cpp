@@ -1,12 +1,9 @@
 #include <chrono>
-#include <thread>
-#include <signal.h>
-#include <unistd.h>
 #include <getopt.h>
-#include <atomic>
+#include <string>
+#include <vector>
 
 #include <sscma.h>
-#include <video.h>
 #include <debug_stream.h>
 #include "rtsp_server.h"
 
@@ -15,7 +12,10 @@
 #include <ha_mqtt.h>
 #include "onvif_meta.h"
 #include "onvif_meta_gate.h"
-#include "onvif_service_bringup.h"
+#include "onvif_service.h"
+
+#include "af/app.h"
+#include "af/ma_image.h"
 
 #include "detector.h"
 #include "person_tracker.h"
@@ -92,12 +92,9 @@ static struct {
 static const char* APP_CONFIG_PATH = "/userdata/local/apps/retail-vision.config.json";
 static retail_vision::AppConfig g_app_config;
 
-static std::atomic<bool> g_running(true);
 static Detector* g_detector = nullptr;
 static PersonTracker* g_tracker = nullptr;
 static ZoneMetrics* g_zone_metrics = nullptr;
-static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
-static Camera* g_camera = nullptr;
 static uint32_t g_frame_id = 0;
 /* Privacy mask over the people this application tracks. Null unless
  * /userdata/local/blur.conf switches it on: analytics is the product here and
@@ -114,11 +111,6 @@ static std::chrono::steady_clock::time_point g_fps_last_time;
 // ONVIF analytics metadata, off unless switched on in the console. The gate
 // owns the switch and the rate limit; when disabled it costs one bool test.
 static OnvifMetaGate g_onvif_meta;
-
-static void signal_handler(int sig) {
-    MA_LOGI(TAG, "Received signal %d, shutting down...", sig);
-    g_running.store(false);
-}
 
 static void print_usage(const char* prog) {
     printf("Retail Vision - People Flow Analytics for ReCamera\n");
@@ -295,137 +287,7 @@ static bool init_tracker() {
     return true;
 }
 
-static bool init_camera() {
-    Device* device = Device::getInstance();
-
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() == ma::Sensor::Type::kCamera) {
-            g_camera = static_cast<Camera*>(sensor);
-            g_camera->init(0);
-
-            Camera::CtrlValue value;
-
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-            // Apply a frame rate to the inference channel (else it defaults to
-            // 30fps and the capture->inference FIFO fills faster than inference
-            // drains). retail has no separate inference_fps; reuse stream_fps.
-            value.i32 = g_config.stream_fps;
-            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-            value.u16s[0] = g_config.inference_width;
-            value.u16s[1] = g_config.inference_height;
-            g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-            MA_LOGI(TAG, "Camera initialized (%dx%d)", g_config.inference_width, g_config.inference_height);
-            return true;
-        }
-    }
-
-    MA_LOGE(TAG, "No camera found");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (!g_config.enable_rtsp) {
-        MA_LOGI(TAG, "RTSP streaming disabled");
-        return true;
-    }
-
-    if (initVideo() != 0) {
-        MA_LOGE(TAG, "Failed to initialize video subsystem");
-        return false;
-    }
-
-    video_ch_param_t stream_param;
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width = g_config.stream_width;
-    stream_param.height = g_config.stream_height;
-    stream_param.fps = g_config.stream_fps;
-    setupVideo(VIDEO_CH2, &stream_param);
-
-    // rtsp_server rather than sscma-micro's TransportRTSP, which this
-    // application used until the streams it produced turned out to be
-    // undecodable. The old frame callback forwarded each VENC pack with its own
-    // send(), so the SPS, the PPS and the slice of one frame left as three
-    // separate RTP frames; a decoder then met a slice referencing a parameter
-    // set that was not part of its access unit and reported "non-existing PPS 0
-    // referenced" forever. rtsp_server writes all packs of a frame as one
-    // CVI_RTSP_DATA, which is what the other seven applications have always
-    // done. Moving over also lets ONVIF query the port and session name instead
-    // of being told them.
-    rtsp_server_config_t rtsp_cfg;
-    rtsp_server_config_init(&rtsp_cfg);
-    rtsp_cfg.port = g_config.rtsp_port;
-    rtsp_cfg.session_prefix = g_config.rtsp_session_prefix.c_str();
-    rtsp_cfg.username = g_config.rtsp_user.empty() ? nullptr : g_config.rtsp_user.c_str();
-    rtsp_cfg.password = g_config.rtsp_pass.empty() ? nullptr : g_config.rtsp_pass.c_str();
-    rtsp_cfg.ch_mask = (0x01 << VIDEO_CH2);
-    rtsp_cfg.metadata_enabled = g_onvif_meta.enabled();
-    if (rtsp_server_start(&rtsp_cfg) != 0) {
-        MA_LOGE(TAG, "Failed to start RTSP server");
-        return false;
-    }
-
-    // Debug stream registers its own consumer (idx 1); RTSP owns idx 0.
-    registerVideoFrameHandler(VIDEO_CH2, 0, rtsp_server_video_handler, nullptr);
-
-    // Asked of the server rather than assembled here. Hand-assembled URLs are
-    // how ":554" stayed wrong across eight applications.
-    char url[192];
-    if (rtsp_server_url(url, sizeof(url), "<device_ip>", 0) < 0) {
-        url[0] = '\0';
-    }
-    MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps) %s",
-            g_config.stream_width, g_config.stream_height, g_config.stream_fps, url);
-    return true;
-}
-
-// Assemble the debug /results envelope (shared debug_stream builder).
-// DetectionBox x/y are normalized center coordinates; box[5] is
-// "T<track_id> <dwell_state>" (rendered verbatim by the console overlay).
-// A compact `zone` summary rides along for the console's raw-message panel.
-static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t frame_id,
-                                            const std::vector<TrackedPerson>& persons,
-                                            const ZoneSnapshot& zone,
-                                            float inference_time_ms) {
-    std::vector<debug_stream_box_t> boxes;
-    boxes.reserve(persons.size());
-    for (const auto& p : persons) {
-        boxes.push_back({p.detection.x * g_config.inference_width,
-                         p.detection.y * g_config.inference_height,
-                         p.detection.w * g_config.inference_width,
-                         p.detection.h * g_config.inference_height,
-                         p.detection.score,
-                         "T" + std::to_string(p.track_id) + " " + getDwellStateName(p.dwell_state)});
-    }
-    std::ostringstream zone_json;
-    zone_json << "\"zone\":{"
-              << "\"occupancy\":" << zone.occupancy_count << ","
-              << "\"browsing\":" << zone.browsing_count << ","
-              << "\"engaged\":" << zone.engaged_count << ","
-              << "\"assistance\":" << zone.assist_count << ","
-              << "\"entry\":" << zone.entry_count << ","
-              << "\"exit\":" << zone.exit_count << "}";
-    // The inference channel is letterboxed vs the 16:9 debug video (stream);
-    // remap boxes into the stream frame so the overlay aligns with the video.
-    debug_stream_letterbox_to_display(boxes, g_config.inference_width, g_config.inference_height,
-                                      g_config.stream_width, g_config.stream_height);
-    return debug_stream_build_results(timestamp_ms, frame_id, inference_time_ms,
-                                      g_config.stream_width, g_config.stream_height,
-                                      boxes, nullptr, zone_json.str());
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        MA_LOGI(TAG, "MQTT publishing disabled");
-        return true;
-    }
-
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "retail-vision";
     opts.client_id     = "recamera-retail-vision";
@@ -456,20 +318,13 @@ static bool init_mqtt() {
                      "{{ value_json.zone.exit_count }}",
                      "", "", "total_increasing"},
     };
-
-    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt_publisher->init(opts)) {
-        MA_LOGE(TAG, "Failed to initialize MQTT publisher");
-        return false;
-    }
-
-    return true;
+    return opts;
 }
 
 static void init_onvif_config() {
     /* Load independently of MQTT. The RTSP metadata track and SOAP service are
      * useful when no broker is configured, and both must know the switch before
-     * init_video_streaming() creates the session SDP. */
+     * the RTSP options (session SDP) are built. */
     g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), "retail-vision");
     if (g_onvif_meta.enabled()) {
         MA_LOGI(TAG, "ONVIF metadata enabled (profile=%s, every %ums)",
@@ -478,6 +333,7 @@ static void init_onvif_config() {
     }
 }
 
+// Runs from App::on_started(): RGN regions attach to a live VPSS channel.
 static bool init_blur() {
     PrivacyBlurConfig cfg;
     loadPrivacyBlurConfig(privacy_blur::PRIVACY_BLUR_CONFIG_PATH, cfg, nullptr);
@@ -502,45 +358,42 @@ static bool init_blur() {
     return true;
 }
 
-static void cleanup() {
+// Runs from App::on_stopping(): detach the RGN masks while VPSS still exists.
+static void deinit_blur() {
     if (g_privacy_blur) {
         g_privacy_blur->deinit();
         delete g_privacy_blur;
         g_privacy_blur = nullptr;
     }
+}
 
-    if (g_camera) {
-        g_camera->stopStream();
+static void on_started() {
+    // Non-fatal, because unmasked analytics still beats no analytics.
+    if (!init_blur()) {
+        MA_LOGW(TAG, "Privacy blur initialization failed, continuing without it");
     }
-
-    if (g_config.enable_debug) {
-        debug_stream_destroy();
-    }
-
-    onvif_service_stop();
-
-    rtsp_server_stop();
 
     if (g_config.enable_rtsp) {
-        deinitVideo();
+        // Asked of the server rather than assembled here. Hand-assembled URLs are
+        // how ":554" stayed wrong across eight applications.
+        char url[192];
+        if (rtsp_server_url(url, sizeof(url), "<device_ip>", 0) < 0) {
+            url[0] = '\0';
+        }
+        MA_LOGI(TAG, "RTSP streaming initialized (%dx%d @ %dfps) %s",
+                g_config.stream_width, g_config.stream_height, g_config.stream_fps, url);
+    } else {
+        MA_LOGI(TAG, "RTSP streaming disabled");
     }
 
-    if (g_mqtt_publisher) {
-        g_mqtt_publisher->deinit();
-        delete g_mqtt_publisher;
-        g_mqtt_publisher = nullptr;
+    // The App starts ONVIF after RTSP (GetProfiles/GetStreamUri read the live server).
+    if (g_onvif_meta.config().service_enabled && onvif_service_soap_running()) {
+        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
     }
 
-    delete g_zone_metrics;
-    g_zone_metrics = nullptr;
-
-    delete g_tracker;
-    g_tracker = nullptr;
-
-    delete g_detector;
-    g_detector = nullptr;
-
-    MA_LOGI(TAG, "Cleanup completed");
+    MA_LOGI(TAG, "Retail Vision running...");
+    if (g_config.enable_rtsp) MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:%d/%s0", g_config.rtsp_port, g_config.rtsp_session_prefix.c_str());
+    if (g_config.enable_mqtt) MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
 }
 
 static void update_fps() {
@@ -554,15 +407,18 @@ static void update_fps() {
     }
 }
 
-static void process_frame() {
-    ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        return;
-    }
+// Storage behind af::Result (string_views / box pointers), reused across frames.
+static struct {
+    std::vector<DetectionBox> detections;  // raw detections of the held frame (snapshot mask)
+    std::vector<af::Box> boxes;            // debug overlay boxes
+    std::vector<std::string> labels;       // "T<track_id> <dwell_state>" per box
+    std::string zone_extra;                // debug envelope `zone` member
+    std::string payload;                   // MQTT results payload
+} g_out;
 
+static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
     auto start_time = std::chrono::high_resolution_clock::now();
-    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+    const uint64_t timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
 
@@ -570,17 +426,20 @@ static void process_frame() {
         std::chrono::steady_clock::now() - g_start_time
     ).count() / 1000.0f;
 
-    // Detect
-    auto detections = g_detector->detect(&frame);
+    ma_img_t img = af::to_ma_img(frame);
 
-    // Mask the people before the frame goes back to the camera: the pixelating
-    // backend averages the pixels it is about to hide, and frame.data is
-    // invalid after returnFrame(). Fed from the raw detections rather than the
-    // tracker output so a person is masked on the frame they first appear,
-    // without waiting for the track to be confirmed.
+    // Detect
+    g_out.detections = g_detector->detect(&img);
+    const auto& detections = g_out.detections;
+
+    // Mask the people while the frame is held: the pixelating backend averages
+    // the pixels it is about to hide, and the buffer is invalid once on_frame
+    // returns. Fed from the raw detections rather than the tracker output so a
+    // person is masked on the frame they first appear, without waiting for the
+    // track to be confirmed.
     if (g_privacy_blur) {
         /* fromCenter: PersonDetector passes the model's centre xy through,
-         * same as the overlay path a few hundred lines up reads it. */
+         * same as the overlay path reads it. */
         std::vector<geometry::InferBox> boxes;
         boxes.reserve(detections.size());
         for (const auto& d : detections) {
@@ -589,10 +448,8 @@ static void process_frame() {
         g_privacy_blur->onDetection(
             geometry::toStream(boxes, g_config.inference_width, g_config.inference_height,
                                g_config.stream_width, g_config.stream_height),
-            &frame);
+            &img);
     }
-
-    g_camera->returnFrame(frame);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     float inference_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -612,18 +469,48 @@ static void process_frame() {
     // Update FPS
     update_fps();
 
-    // Push the same result to debug WS clients (sscma-node format).
-    // debug_stream is lazy: skip building JSON when nobody is connected.
+    r.seq = g_frame_id;
+    r.wall_ms = timestamp_ms;
+    r.inference_ms = inference_time_ms;
+
+    // Debug /results envelope (published by the App's debug sink, which maps
+    // the boxes from the letterboxed inference frame into the stream frame).
+    // Box x/y are centre pixels; the label is "T<track_id> <dwell_state>"
+    // (rendered verbatim by the console overlay). A compact `zone` summary
+    // rides along for the console's raw-message panel. Skipped when nobody is
+    // connected, as before.
     if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        g_out.boxes.resize(tracked_persons.size());
+        g_out.labels.resize(tracked_persons.size());
+        for (size_t i = 0; i < tracked_persons.size(); ++i) {
+            const auto& p = tracked_persons[i];
+            g_out.labels[i] = "T" + std::to_string(p.track_id) + " " + getDwellStateName(p.dwell_state);
+            af::Box& b = g_out.boxes[i];
+            b.x = p.detection.x * g_config.inference_width;
+            b.y = p.detection.y * g_config.inference_height;
+            b.w = p.detection.w * g_config.inference_width;
+            b.h = p.detection.h * g_config.inference_height;
+            b.score = p.detection.score;
+            b.label = g_out.labels[i].c_str();
+        }
+        r.set_boxes(g_out.boxes.data(), g_out.boxes.size());
+
         auto zone = g_zone_metrics->getSnapshot();
-        std::string debug_json = build_debug_results_json(timestamp_ms, g_frame_id,
-                                                          tracked_persons, zone,
-                                                          inference_time_ms);
-        debug_stream_publish_result(debug_json.c_str(), debug_json.size());
+        std::ostringstream zone_json;
+        zone_json << "\"zone\":{"
+                  << "\"occupancy\":" << zone.occupancy_count << ","
+                  << "\"browsing\":" << zone.browsing_count << ","
+                  << "\"engaged\":" << zone.engaged_count << ","
+                  << "\"assistance\":" << zone.assist_count << ","
+                  << "\"entry\":" << zone.entry_count << ","
+                  << "\"exit\":" << zone.exit_count << "}";
+        g_out.zone_extra = zone_json.str();
+        r.debug_extra = g_out.zone_extra;
     }
 
-    // Publish the existing application-specific MQTT payload.
-    if (g_config.enable_mqtt && g_mqtt_publisher) {
+    // Application-specific MQTT payload (published by the App's MQTT sink).
+    ha_mqtt::MqttPublisher* mqtt = app.mqtt();
+    if (mqtt != nullptr) {
         static uint64_t s_last_publish_ms = 0;
         bool due = g_config.mqtt_interval_ms <= 0 ||
                    timestamp_ms - s_last_publish_ms >=
@@ -631,14 +518,13 @@ static void process_frame() {
         if (due) {
             s_last_publish_ms = timestamp_ms;
             auto zone = g_zone_metrics->getSnapshot();
-            std::string payload = buildVisionJson(
+            g_out.payload = buildVisionJson(
                 timestamp_ms, g_frame_id, g_fps, inference_time_ms,
                 zone, tracked_persons,
                 g_config.stream_width, g_config.stream_height,
                 g_detector->getInputWidth(), g_detector->getInputHeight());
-            g_mqtt_publisher->publishResultsJson(payload);
+            r.json = g_out.payload;
         }
-
     }
 
     /* Build the standard analytics frame once and fan it out to both ONVIF
@@ -646,8 +532,7 @@ static void process_frame() {
      * RTSP consumer must work on a camera with MQTT disabled. Stable tracker
      * ids become tt:Object/@ObjectId so downstream can follow one person. */
     const bool send_onvif_rtsp = rtsp_server_metadata_enabled();
-    const bool send_onvif_mqtt = g_config.enable_mqtt && g_mqtt_publisher &&
-                                 g_onvif_meta.take(timestamp_ms);
+    const bool send_onvif_mqtt = mqtt != nullptr && g_onvif_meta.take(timestamp_ms);
     if (send_onvif_rtsp || send_onvif_mqtt) {
         onvif_frame_t f;
         f.utc_ms = timestamp_ms;
@@ -687,7 +572,7 @@ static void process_frame() {
             }
         }
         if (send_onvif_mqtt) {
-            g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
+            mqtt->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
         }
     }
 
@@ -709,6 +594,31 @@ static void process_frame() {
     g_frame_id++;
 }
 
+// App::on_snapshot(): /snapshot.jpg is encoded from the inference frame, which
+// the RGN mask (VPSS->VENC path) never touches. Mask the same people the stream
+// masks; detections are normalised against this buffer, so no letterbox mapping.
+static void mask_snapshot(const af::VideoFrame& frame) {
+    if (g_privacy_blur == nullptr || !g_privacy_blur->enabled() || g_out.detections.empty()) {
+        return;
+    }
+    std::vector<geometry::InferBox> snap_boxes;
+    snap_boxes.reserve(g_out.detections.size());
+    for (const auto& d : g_out.detections) {
+        snap_boxes.push_back(geometry::InferBox::fromCenter(d.x, d.y, d.w, d.h, d.score));
+    }
+    privacy_blur::pixelateRgb888(frame.planes[0].vir, frame.width, frame.height, snap_boxes,
+                                 g_privacy_blur->blockPx());
+}
+
+static void release_models() {
+    delete g_zone_metrics;
+    g_zone_metrics = nullptr;
+    delete g_tracker;
+    g_tracker = nullptr;
+    delete g_detector;
+    g_detector = nullptr;
+}
+
 int main(int argc, char** argv) {
     if (!parse_args(argc, argv)) return 1;
 
@@ -719,52 +629,65 @@ int main(int argc, char** argv) {
     MA_LOGI(TAG, "Model: %s", g_config.model_path.c_str());
     MA_LOGI(TAG, "Confidence: %.2f", g_config.conf_threshold);
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
     g_start_time = std::chrono::steady_clock::now();
     g_fps_last_time = g_start_time;
 
+    // Before the RTSP options: the metadata track is part of the session SDP.
     init_onvif_config();
 
-    if (!init_detector()) { cleanup(); return 1; }
-    if (!init_tracker())  { cleanup(); return 1; }
-    if (!init_camera())   { cleanup(); return 1; }
-    if (!init_video_streaming()) { cleanup(); return 1; }
-    // Debug stream (non-fatal: on failure run without it)
-    if (g_config.enable_debug && debug_stream_start_or_disable(g_config.debug_port, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
-    }
-    if (!init_mqtt())     { cleanup(); return 1; }
-
-    g_camera->startStream(Camera::StreamMode::kRefreshOnReturn);
-
-    // Privacy blur after the video pipeline is up: RGN regions attach to a live
-    // VPSS channel. Non-fatal, because unmasked analytics still beats no
-    // analytics.
-    if (!init_blur()) {
-        MA_LOGW(TAG, "Privacy blur initialization failed, continuing without it");
+    if (!init_detector() || !init_tracker()) {
+        release_models();
+        return 1;
     }
 
-    // ONVIF discovery + Device/Media1/Media2 services. After init_video_streaming() on
-    // purpose: GetProfiles and GetStreamUri are answered from the running RTSP
-    // server, so bringing this up earlier advertises zero profiles and a VMS
-    // shows a camera with no video.
-    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
-            "reCamera", g_config.enable_debug ? g_config.debug_port : 0) == 0 &&
-        onvif_service_soap_running()) {
-        MA_LOGI(TAG, "ONVIF service on port %d", g_onvif_meta.config().service_port);
+    af::CameraOptions cam;
+    cam.width = static_cast<uint16_t>(g_config.inference_width);
+    cam.height = static_cast<uint16_t>(g_config.inference_height);
+    // Apply a frame rate to the inference channel (else it defaults to 30fps
+    // and the capture->inference FIFO fills faster than inference drains).
+    // retail has no separate inference_fps; reuse stream_fps.
+    cam.fps = static_cast<uint8_t>(g_config.stream_fps);
+
+    af::RtspOptions stream;
+    stream.width = static_cast<uint16_t>(g_config.stream_width);
+    stream.height = static_cast<uint16_t>(g_config.stream_height);
+    stream.fps = static_cast<uint8_t>(g_config.stream_fps);
+    stream.port = g_config.rtsp_port;
+    stream.session_prefix = g_config.rtsp_session_prefix;
+    stream.username = g_config.rtsp_user;
+    stream.password = g_config.rtsp_pass;
+    stream.metadata = g_onvif_meta.enabled();
+
+    af::App app("retail-vision");
+    app.with_camera(cam).with_stream(stream);
+    if (g_config.enable_rtsp) app.with_rtsp(stream);
+    if (g_config.enable_debug) app.with_debug_ws(g_config.debug_port);
+    if (g_config.enable_mqtt) {
+        app.with_mqtt(mqtt_options());
+    } else {
+        MA_LOGI(TAG, "MQTT publishing disabled");
+    }
+    const OnvifMetaConfig& oc = g_onvif_meta.config();
+    if (oc.service_enabled) {
+        af::OnvifOptions onvif;
+        onvif.port = oc.service_port;
+        onvif.serial = ha_mqtt::readDeviceIdentifier();
+        onvif.device_name = "reCamera";
+        onvif.username = oc.username;
+        onvif.password = oc.password;
+        onvif.location = oc.location;
+        app.with_onvif(onvif);
     }
 
-    MA_LOGI(TAG, "Retail Vision running...");
-    if (g_config.enable_rtsp) MA_LOGI(TAG, "RTSP: rtsp://<device_ip>:%d/%s0", g_config.rtsp_port, g_config.rtsp_session_prefix.c_str());
-    if (g_config.enable_mqtt) MA_LOGI(TAG, "MQTT: %s", g_config.mqtt_topic.c_str());
+    app.on_started(on_started)
+       .on_stopping(deinit_blur)
+       .on_snapshot(mask_snapshot)
+       .on_frame([&app](const af::VideoFrame& f, af::Result& r) { on_frame(app, f, r); });
+    const int rc = app.run();
 
-    while (g_running.load()) {
-        process_frame();
-    }
-
-    cleanup();
+    deinit_blur();  // no-op unless run() failed before on_stopping
+    release_models();
+    MA_LOGI(TAG, "Cleanup completed");
     MA_LOGI(TAG, "Retail Vision terminated");
-    return 0;
+    return rc;
 }

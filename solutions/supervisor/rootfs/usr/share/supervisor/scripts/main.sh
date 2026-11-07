@@ -547,7 +547,18 @@ readonly WPA_CLI="wpa_cli -i wlan0"
 _check_wifi() { [ -z "$(ifconfig wlan0 2>/dev/null)" ] && return 1 || return 0; }
 _sta_stop() { _stop_pidname "wpa_supplicant"; }
 _ap_stop() {
-    _stop_pidname "hostapd"
+    # Stop only the hostapd that supervisor started (hostapd_2g4/5g.conf). Another
+    # hotspot on wlan1 (e.g. rebot-teleop's hostapd_arm) belongs to that app;
+    # killing every hostapd here dropped its clients whenever Ethernet or STA came up.
+    local stopped=0 pid
+    for pid in $(pidof hostapd); do
+        case "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)" in
+        *hostapd_2g4.conf* | *hostapd_5g.conf*)
+            kill -9 "$pid" 2>/dev/null && stopped=1
+            ;;
+        esac
+    done
+    [ $stopped -eq 1 ] || return 0
     ifconfig wlan1 0
     ifconfig wlan1 down
     sleep 0.5

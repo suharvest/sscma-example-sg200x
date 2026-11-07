@@ -94,7 +94,9 @@ cmake --build build
 cd build && cpack
 ```
 
-This will generate an `.ipk` package for installation.
+This will generate a `.deb` package for installation. CPack is configured to output gzip-compressed `.deb` packages.
+
+> **Note on manual packaging**: If repacking or patching deb packages manually with `dpkg-deb`, you **must** use `dpkg-deb -Zgzip -b <pkg_dir> <output.deb>`. Modern Ubuntu (22.04+) defaults to zstd compression (`control.tar.zst`, `data.tar.zst`), which the embedded `opkg` on reCamera cannot extract.
 
 ## Deploying & Running  
 
@@ -103,7 +105,7 @@ This will generate an `.ipk` package for installation.
 Copy the package to the ReCamera device using `scp`:  
 
 ```bash
-scp build/supervisor-1.0.0-1.ipk recamera@192.168.42.1:/tmp/
+scp build/supervisor-1.0.0-1.deb recamera@192.168.42.1:/tmp/
 ```
 
 Replace `recamera@192.168.42.1` with your device's IP address.
@@ -114,7 +116,7 @@ SSH into the device and install the package:
 
 ```bash
 ssh recamera@192.168.42.1
-sudo opkg install /tmp/supervisor-1.0.0-1.ipk
+sudo opkg install /tmp/supervisor-1.0.0-1.deb
 ```
 
 ### 3. Run the Supervisor Service  

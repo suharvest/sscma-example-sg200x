@@ -6,6 +6,6 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS sophgo rtsp_server ha_mqtt debug_stream geometry json sscma-micro
+    PRIVATE_REQUIREDS app_framework sophgo rtsp_server ha_mqtt debug_stream geometry json sscma-micro
     REQUIREDS opencv_core opencv_imgproc
 )

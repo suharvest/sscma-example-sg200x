@@ -145,16 +145,22 @@ void api_wifi::start_wifi()
     _nw_info["wifiEnable"] = sta;
 
     _worker = std::thread([&]() {
-        uint8_t timeout = 10;
+        uint8_t timeout = 30; // AP-mode link watch only (no scan); each pass forks ~30 processes
 
         _need_scan = true;
         while (_running) {
             if (_need_scan || (_ap_enable == 1)) {
+                // Scan only on demand (page request, connect, IP change). The
+                // periodic AP-mode refresh keeps watching link state for the
+                // AP auto-stop below, but `iw scan` takes the shared radio off
+                // the hotspot channel: every ~12 s it stalled hotspot clients
+                // (ping p99 409 ms, max 718 ms measured 2026-11-06).
+                const bool scan = _need_scan && scan_due();
                 _need_scan = false;
                 auto&& e = get_eth();
                 auto&& c = get_sta_current();
                 auto&& n = get_sta_connected(c);
-                auto&& l = get_scan_list(n);
+                json l = scan ? get_scan_list(n) : json::array();
 
                 if ((e.value("status", 0) == 3) || (c.value("status", 0) == 3)) {
                     if (_ap_enable == 1) {
