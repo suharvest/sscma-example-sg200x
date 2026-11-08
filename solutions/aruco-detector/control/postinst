@@ -12,6 +12,18 @@ mkdir -p /userdata/local/apps
 chmod +x /usr/local/bin/aruco-detector
 chmod +x /etc/init.d/K92aruco-detector 2>/dev/null || true
 
+# Configuration: keep an existing (user-edited) file, install defaults only if missing
+CONF=/etc/aruco-detector.conf
+SAVE=/etc/aruco-detector.conf.upgrade-save
+DEFAULT_CONF=/usr/share/aruco-detector/aruco-detector.conf.default
+if [ -f "$SAVE" ]; then
+    mv -f "$SAVE" "$CONF"
+    echo "Kept existing configuration: $CONF"
+elif [ ! -f "$CONF" ] && [ -f "$DEFAULT_CONF" ]; then
+    cp "$DEFAULT_CONF" "$CONF"
+    echo "Installed default configuration: $CONF"
+fi
+
 APPS_DIR=/userdata/local/apps
 SHARE_DIR=/usr/share/aruco-detector
 for f in aruco-detector.json aruco-detector.md aruco-detector.zh.md; do

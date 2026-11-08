@@ -1,2 +1,12 @@
 #!/bin/sh
+
+# Pre-installation script for aruco-detector.
+# Older packages shipped /etc/aruco-detector.conf as a plain package file, so an
+# upgrade would replace or delete it. Save the current copy; postinst restores it.
+CONF=/etc/aruco-detector.conf
+SAVE=/etc/aruco-detector.conf.upgrade-save
+if [ -f "$CONF" ]; then
+    cp -p "$CONF" "$SAVE"
+fi
+
 exit 0

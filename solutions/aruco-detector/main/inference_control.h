@@ -15,6 +15,7 @@ struct InferenceResult {
     uint64_t ts_ms = 0;                 ///< frame capture time, Unix epoch ms
     float inference_ms = 0;
     int count = 0;
+    bool undistorted = false;           ///< pose solved on lens-undistorted corners
     std::string markers_json = "[]";    ///< JSON array of detected markers
 };
 

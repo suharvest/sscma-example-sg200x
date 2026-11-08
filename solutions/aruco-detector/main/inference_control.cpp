@@ -202,6 +202,7 @@ static HttpReply latest_reply(InferenceControl& ctl, const std::string& query, u
       << ",\"age_ms\":" << (age < 0 ? 0 : age)
       << ",\"inference_time_ms\":" << std::setprecision(1) << r.inference_ms
       << ",\"count\":" << r.count
+      << ",\"undistorted\":" << (r.undistorted ? "true" : "false")
       << ",\"markers\":" << r.markers_json;
     if (timeout) s << ",\"timeout\":true";
     s << "}";
@@ -244,6 +245,7 @@ static HttpReply trigger_reply(InferenceControl& ctl, const std::string& query, 
       << ",\"age_ms\":" << (age < 0 ? 0 : age)
       << ",\"inference_time_ms\":" << std::setprecision(1) << r.inference_ms
       << ",\"count\":" << r.count
+      << ",\"undistorted\":" << (r.undistorted ? "true" : "false")
       << ",\"markers\":" << r.markers_json
       << "}";
     return {200, s.str()};

@@ -30,6 +30,7 @@
 #include <ha_mqtt.h>
 #include <sscma.h>
 
+#include "camera_model.h"
 #include "http_control.h"
 #include "inference_control.h"
 
@@ -65,6 +66,8 @@ struct Config {
     double fy = 600.0;          // focal length y
     double cx = 320.0;          // principal point x
     double cy = 180.0;          // principal point y
+    // OpenCV Brown-Conrady distortion (k1, k2, p1, p2, k3); all zero = no undistortion
+    double k1 = 0.0, k2 = 0.0, p1 = 0.0, p2 = 0.0, k3 = 0.0;
 
     // MQTT
     bool enable_mqtt = true;
@@ -148,6 +151,7 @@ static void print_usage(const char* prog) {
     printf("      --fy <pixels>         Camera focal length Y [default: 600.0]\n");
     printf("      --cx <pixels>         Principal point X [default: 320.0]\n");
     printf("      --cy <pixels>         Principal point Y [default: 180.0]\n");
+    printf("      --k1 --k2 --p1 --p2 --k3 <v>  Lens distortion (OpenCV order, at inference resolution) [default: 0]\n");
     printf("      --decimate <factor>   Quad decimation factor (1.0, 1.5, 2.0) [default: 2.0]\n");
     printf("      --camera-width <w>    Inference width [default: 640]\n");
     printf("      --camera-height <h>   Inference height [default: 360]\n");
@@ -184,6 +188,11 @@ static void parse_args(int argc, char** argv) {
         {"debug-port", required_argument, nullptr, 1012},
         {"control-port", required_argument, nullptr, 1013},
         {"inference-on", no_argument, nullptr, 1014},
+        {"k1", required_argument, nullptr, 1015},
+        {"k2", required_argument, nullptr, 1016},
+        {"p1", required_argument, nullptr, 1017},
+        {"p2", required_argument, nullptr, 1018},
+        {"k3", required_argument, nullptr, 1019},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
@@ -210,6 +219,11 @@ static void parse_args(int argc, char** argv) {
             case 1012: g_config.debug_port = std::atoi(optarg); break;
             case 1013: g_config.control_port = std::atoi(optarg); break;
             case 1014: g_config.inference_enabled = true; break;
+            case 1015: g_config.k1 = std::atof(optarg); break;
+            case 1016: g_config.k2 = std::atof(optarg); break;
+            case 1017: g_config.p1 = std::atof(optarg); break;
+            case 1018: g_config.p2 = std::atof(optarg); break;
+            case 1019: g_config.k3 = std::atof(optarg); break;
             case 'v': g_config.verbose = true; break;
             case 'h':
                 print_usage(argv[0]);
@@ -230,6 +244,21 @@ int main(int argc, char** argv) {
 
     MA_LOGI(TAG, "Initializing ArUco & AprilTag detector (Family: %s, MarkerSize: %.3fm)",
             g_config.family_name.c_str(), g_config.marker_size);
+
+    aruco::CameraModel cam_model;
+    cam_model.fx = g_config.fx;
+    cam_model.fy = g_config.fy;
+    cam_model.cx = g_config.cx;
+    cam_model.cy = g_config.cy;
+    cam_model.k1 = g_config.k1;
+    cam_model.k2 = g_config.k2;
+    cam_model.p1 = g_config.p1;
+    cam_model.p2 = g_config.p2;
+    cam_model.k3 = g_config.k3;
+    const bool undistort = cam_model.has_distortion();
+    MA_LOGI(TAG, "Intrinsics @%dx%d: fx=%.3f fy=%.3f cx=%.3f cy=%.3f | dist k1=%.6f k2=%.6f p1=%.6f p2=%.6f k3=%.6f (undistort %s)",
+            g_config.camera_w, g_config.camera_h, cam_model.fx, cam_model.fy, cam_model.cx, cam_model.cy,
+            cam_model.k1, cam_model.k2, cam_model.p1, cam_model.p2, cam_model.k3, undistort ? "on" : "off");
 
     // Initialize AprilTag family and detector
     apriltag_family_t* tf = create_family(g_config.family_name);
@@ -386,7 +415,23 @@ int main(int argc, char** argv) {
 
             // Estimate 6-DoF Metric Pose
             apriltag_detection_info_t info;
+            // Pose is solved on ideal (undistorted) pixel coordinates; JSON keeps raw corners.
+            apriltag_detection_t det_u;
+            matd_t* H_u = nullptr;
             info.det = det;
+            if (undistort) {
+                det_u = *det;
+                for (int p = 0; p < 4; ++p) {
+                    cam_model.undistort(det->p[p][0], det->p[p][1], det_u.p[p][0], det_u.p[p][1]);
+                }
+                cam_model.undistort(det->c[0], det->c[1], det_u.c[0], det_u.c[1]);
+                double h[9];
+                if (aruco::homography_from_corners(det_u.p, h)) {
+                    H_u = matd_create_data(3, 3, h);
+                    det_u.H = H_u;
+                    info.det = &det_u;
+                }
+            }
             info.tagsize = g_config.marker_size;
             info.fx = g_config.fx;
             info.fy = g_config.fy;
@@ -435,6 +480,7 @@ int main(int argc, char** argv) {
 
             matd_destroy(pose.R);
             matd_destroy(pose.t);
+            if (H_u) matd_destroy(H_u);
         }
 
         markers_payload.push_back(']');
@@ -452,6 +498,7 @@ int main(int argc, char** argv) {
         json_payload.append(g_config.family_name);
         json_payload.append("\",\"count\":");
         json_payload.append(std::to_string(count));
+        json_payload.append(undistort ? ",\"undistorted\":true" : ",\"undistorted\":false");
         json_payload.append(",\"markers\":");
         json_payload.append(markers_payload);
         json_payload.append("}");
@@ -463,6 +510,7 @@ int main(int argc, char** argv) {
         ir.inference_ms = proc_ms;
         ir.count = count;
         ir.markers_json = markers_payload;
+        ir.undistorted = undistort;
         g_inference->publish(ir);
 
         // Feed results into af::Result sink fan-out

@@ -1,0 +1,50 @@
+# ArUco Marker Detector Configuration for reCamera (SG2002 RISC-V)
+#
+# Installed as /etc/aruco-detector.conf on first install only; package upgrades
+# keep an existing (user-edited) file. Pristine default:
+#   /usr/share/aruco-detector/aruco-detector.conf.default
+
+MQTT_HOST=localhost
+MQTT_PORT=1883
+MQTT_TOPIC=recamera/aruco-detector/results
+
+RTSP_ENABLED=1
+STREAM_WIDTH=1280
+STREAM_HEIGHT=720
+STREAM_FPS=30
+
+# Detection frame (NV21 Y-plane direct grayscale)
+CAMERA_WIDTH=640
+CAMERA_HEIGHT=360
+CAMERA_FPS=25
+
+# Marker family: aruco4x4_50, aruco4x4_100, aruco4x4_250, aruco5x5_50, aruco6x6_250, tag36h11
+FAMILY=aruco4x4_50
+
+# Marker side length in meters (e.g. 0.05 = 50mm)
+MARKER_SIZE=0.05
+
+# Camera intrinsics (pixels) and lens distortion, expressed at the detection
+# resolution CAMERA_WIDTH x CAMERA_HEIGHT above. The values below are
+# uncalibrated placeholders. Replace them with the output of
+#   rebot-companion/tools/calibrate_intrinsics.py
+# which prints exactly: FX FY CX CY K1 K2 P1 P2 K3 CAMERA_WIDTH CAMERA_HEIGHT.
+# Keep CAMERA_WIDTH/CAMERA_HEIGHT equal to the resolution used for calibration.
+FX=600.0
+FY=600.0
+CX=320.0
+CY=180.0
+
+# OpenCV Brown-Conrady distortion (k1, k2, p1, p2, k3). All 0 = no undistortion.
+# When any is non-zero, the 4 corners + centre are undistorted before pose
+# estimation; JSON corners/center stay in raw image pixels.
+K1=0.0
+K2=0.0
+P1=0.0
+P2=0.0
+K3=0.0
+
+# Quad decimate (2.0 = fast embedded real-time 25-30fps)
+DECIMATE=2.0
+
+VERBOSE=0
