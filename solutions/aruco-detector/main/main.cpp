@@ -160,6 +160,9 @@ static void print_usage(const char* prog) {
     printf("      --camera-width <w>    Inference width [default: 640]\n");
     printf("      --camera-height <h>   Inference height [default: 360]\n");
     printf("      --camera-fps <fps>    Inference fps [default: 25]\n");
+    printf("      --stream-width <w>    RTSP/WebSocket stream width [default: 1280]\n");
+    printf("      --stream-height <h>   RTSP/WebSocket stream height [default: 720]\n");
+    printf("      --stream-fps <fps>    RTSP/WebSocket stream fps [default: 30]\n");
     printf("  -m, --mqtt-host <host>    MQTT broker host [default: localhost]\n");
     printf("  -p, --mqtt-port <port>    MQTT broker port [default: 1883]\n");
     printf("      --mqtt-topic <topic>  MQTT topic [default: recamera/aruco-detector/results]\n");
@@ -203,6 +206,9 @@ static void parse_args(int argc, char** argv) {
         {"min-margin", required_argument, nullptr, 1020},
         {"min-side", required_argument, nullptr, 1021},
         {"ids", required_argument, nullptr, 1022},
+        {"stream-width", required_argument, nullptr, 1023},
+        {"stream-height", required_argument, nullptr, 1024},
+        {"stream-fps", required_argument, nullptr, 1025},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
@@ -254,6 +260,9 @@ static void parse_args(int argc, char** argv) {
                 }
                 break;
             }
+            case 1023: g_config.stream_w = std::atoi(optarg); break;
+            case 1024: g_config.stream_h = std::atoi(optarg); break;
+            case 1025: g_config.stream_fps = std::atoi(optarg); break;
             case 'v': g_config.verbose = true; break;
             case 'h':
                 print_usage(argv[0]);

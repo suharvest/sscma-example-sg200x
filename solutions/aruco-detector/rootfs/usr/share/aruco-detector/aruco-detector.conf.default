@@ -8,6 +8,7 @@ MQTT_HOST=localhost
 MQTT_PORT=1883
 MQTT_TOPIC=recamera/aruco-detector/results
 
+# RTSP / WebSocket preview stream (passed as --stream-width/--stream-height/--stream-fps)
 RTSP_ENABLED=1
 STREAM_WIDTH=1280
 STREAM_HEIGHT=720
