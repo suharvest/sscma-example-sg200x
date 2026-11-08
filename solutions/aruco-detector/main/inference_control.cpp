@@ -9,20 +9,93 @@
 
 namespace aruco {
 
+static uint64_t get_unix_ms() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count());
+}
+
 InferenceControl::InferenceControl(int active_fps, bool enabled, OnChange on_change)
-    : active_fps_(active_fps), on_change_(std::move(on_change)), enabled_(enabled) {}
+    : active_fps_(active_fps), on_change_(std::move(on_change)), continuous_enabled_(enabled), active_triggers_(0) {
+    if (on_change_) {
+        const bool eff = effective_enabled_locked();
+        on_change_(eff, eff ? active_fps_ : kIdleFps);
+    }
+}
+
+bool InferenceControl::continuous_enabled() const noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    return continuous_enabled_;
+}
+
+bool InferenceControl::effective_enabled() const noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    return effective_enabled_locked();
+}
+
+int InferenceControl::current_fps() const noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    return effective_enabled_locked() ? active_fps_ : kIdleFps;
+}
 
 bool InferenceControl::set_enabled(bool on) {
-    bool changed;
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        changed = enabled_.exchange(on, std::memory_order_acq_rel) != on;
-        if (changed && on_change_) {
-            on_change_(on, on ? active_fps_ : kIdleFps);
+        if (continuous_enabled_ != on) {
+            const bool old_eff = effective_enabled_locked();
+            continuous_enabled_ = on;
+            const bool new_eff = effective_enabled_locked();
+            changed = true;
+            if (old_eff != new_eff && on_change_) {
+                on_change_(new_eff, new_eff ? active_fps_ : kIdleFps);
+            }
         }
     }
-    cv_.notify_all();
+    if (changed) {
+        cv_.notify_all();
+    }
     return changed;
+}
+
+void InferenceControl::trigger_begin() {
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        const bool old_eff = effective_enabled_locked();
+        ++active_triggers_;
+        const bool new_eff = effective_enabled_locked();
+        if (old_eff != new_eff) {
+            changed = true;
+            if (on_change_) {
+                on_change_(new_eff, new_eff ? active_fps_ : kIdleFps);
+            }
+        }
+    }
+    if (changed) {
+        cv_.notify_all();
+    }
+}
+
+void InferenceControl::trigger_end() {
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (active_triggers_ > 0) {
+            const bool old_eff = effective_enabled_locked();
+            --active_triggers_;
+            const bool new_eff = effective_enabled_locked();
+            if (old_eff != new_eff) {
+                changed = true;
+                if (on_change_) {
+                    on_change_(new_eff, new_eff ? active_fps_ : kIdleFps);
+                }
+            }
+        }
+    }
+    if (changed) {
+        cv_.notify_all();
+    }
 }
 
 void InferenceControl::publish(const InferenceResult& r) {
@@ -41,7 +114,7 @@ bool InferenceControl::latest(bool has_after, uint32_t after, int wait_ms, Infer
     auto satisfied = [&] { return !has_after || latest_.frame_id > after; };
     if (has_after && wait_ms > 0) {
         cv_.wait_for(lk, std::chrono::milliseconds(wait_ms),
-                     [&] { return satisfied() || stopping_ || !enabled(); });
+                     [&] { return satisfied() || stopping_ || !effective_enabled_locked(); });
     }
     out = latest_;
     return latest_.frame_id == 0 || !satisfied();
@@ -63,7 +136,7 @@ static std::string error_body(const std::string& msg) {
 
 static std::string state_body(const InferenceControl& ctl) {
     std::ostringstream s;
-    s << "{\"enabled\":" << (ctl.enabled() ? "true" : "false")
+    s << "{\"enabled\":" << (ctl.continuous_enabled() ? "true" : "false")
       << ",\"fps\":" << ctl.current_fps()
       << ",\"active_fps\":" << ctl.active_fps()
       << ",\"idle_fps\":" << InferenceControl::kIdleFps << "}";
@@ -121,7 +194,8 @@ static HttpReply latest_reply(InferenceControl& ctl, const std::string& query, u
         s << "{\"enabled\":" << enabled << ",\"frame_id\":0,\"count\":0,\"markers\":[],\"timeout\":true}";
         return {200, s.str()};
     }
-    const long long age = static_cast<long long>(now_ms) - static_cast<long long>(r.ts_ms);
+    const uint64_t effective_now = (now_ms == 0) ? get_unix_ms() : now_ms;
+    const long long age = static_cast<long long>(effective_now) - static_cast<long long>(r.ts_ms);
     s << std::fixed << "{\"enabled\":" << enabled
       << ",\"frame_id\":" << r.frame_id
       << ",\"ts_ms\":" << r.ts_ms
@@ -145,20 +219,15 @@ static HttpReply trigger_reply(InferenceControl& ctl, const std::string& query, 
                       : static_cast<int>(n);
     }
 
-    const bool was_enabled = ctl.enabled();
     InferenceResult current;
     ctl.latest(false, 0, 0, current);
     const uint32_t baseline_frame_id = current.frame_id;
 
-    if (!was_enabled) {
-        ctl.set_enabled(true);
-    }
-
     InferenceResult r;
-    const bool timeout = ctl.latest(true, baseline_frame_id, wait_ms, r);
-
-    if (!was_enabled) {
-        ctl.set_enabled(false);
+    bool timeout = false;
+    {
+        auto scope = ctl.trigger_scope();
+        timeout = ctl.latest(true, baseline_frame_id, wait_ms, r);
     }
 
     std::ostringstream s;
@@ -167,7 +236,8 @@ static HttpReply trigger_reply(InferenceControl& ctl, const std::string& query, 
         return {200, s.str()};
     }
 
-    const long long age = static_cast<long long>(now_ms) - static_cast<long long>(r.ts_ms);
+    const uint64_t effective_now = (now_ms == 0) ? get_unix_ms() : now_ms;
+    const long long age = static_cast<long long>(effective_now) - static_cast<long long>(r.ts_ms);
     s << std::fixed << "{\"success\":true"
       << ",\"frame_id\":" << r.frame_id
       << ",\"ts_ms\":" << r.ts_ms

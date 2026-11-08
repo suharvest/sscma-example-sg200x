@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -52,6 +53,9 @@ static void test_toggle() {
     std::vector<std::pair<bool, int>> calls;
     InferenceControl c(25, false, [&](bool on, int fps) { calls.push_back({on, fps}); });
 
+    // Initial state: constructor invoked on_change(false, 1) to sync initial idle camera FPS
+    CHECK(calls.size() == 1 && calls[0] == std::make_pair(false, 1));
+
     json s = get(c, "GET", "/api/inference", "");
     CHECK(s == json::parse(R"({"enabled":false,"fps":1,"active_fps":25,"idle_fps":1})"));
 
@@ -60,11 +64,11 @@ static void test_toggle() {
     CHECK(st == 200 && s["enabled"] == true && s["fps"] == 25);
 
     get(c, "POST", "/api/inference", R"({"enabled":true})");  // idempotent
-    CHECK(calls.size() == 1 && calls[0] == std::make_pair(true, 25));
+    CHECK(calls.size() == 2 && calls[1] == std::make_pair(true, 25));
 
     s = get(c, "POST", "/api/inference", R"({"enabled":false})");
     CHECK(s["enabled"] == false && s["fps"] == 1);
-    CHECK(calls.size() == 2 && calls[1] == std::make_pair(false, 1));
+    CHECK(calls.size() == 3 && calls[2] == std::make_pair(false, 1));
 
     for (const char* bad : {"", "nope", "[]", "{}", R"({"enabled":1})", R"({"enabled":"true"})"}) {
         s = get(c, "POST", "/api/inference", bad, &st);
@@ -85,6 +89,8 @@ static void test_latest_and_wait() {
     c.publish(make_dummy_result(1));
     s = get(c, "GET", "/api/results/latest", "");
     CHECK(s["frame_id"] == 1 && s["count"] == 1 && !s.contains("timeout"));
+    CHECK(s["ts_ms"] == 1000001);
+    CHECK(s["age_ms"] == 99);
 
     // Long poll waiting for frame > 1
     const auto t0 = clk::now();
@@ -98,11 +104,14 @@ static void test_latest_and_wait() {
     const long dur = ms_since(t0);
     CHECK(dur >= 40 && dur < 400);
     CHECK(s["frame_id"] == 2 && s["count"] == 1);
+    CHECK(s["ts_ms"] == 1000002);
+    CHECK(s["age_ms"] == 98);
 }
 
 static void test_trigger() {
     std::vector<std::pair<bool, int>> calls;
     InferenceControl c(25, false, [&](bool on, int fps) { calls.push_back({on, fps}); });
+    CHECK(calls.size() == 1 && calls[0] == std::make_pair(false, 1));
 
     std::thread publisher([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -115,10 +124,124 @@ static void test_trigger() {
     CHECK(s["success"] == true);
     CHECK(s["frame_id"] == 10);
     CHECK(s["count"] == 1);
+    CHECK(s["ts_ms"] == 1000010);
+    CHECK(s["age_ms"] == 90);
     CHECK(c.enabled() == false);  // restored to idle
-    CHECK(calls.size() == 2);
-    CHECK(calls[0] == std::make_pair(true, 25));
-    CHECK(calls[1] == std::make_pair(false, 1));
+    CHECK(c.continuous_enabled() == false);
+    CHECK(calls.size() == 3);
+    CHECK(calls[0] == std::make_pair(false, 1));
+    CHECK(calls[1] == std::make_pair(true, 25));
+    CHECK(calls[2] == std::make_pair(false, 1));
+}
+
+static void test_concurrent_triggers_and_set_enabled() {
+    // 1. Two concurrent triggers: only transition to active on first, and to idle on last
+    {
+        std::vector<std::pair<bool, int>> calls;
+        InferenceControl c(25, false, [&](bool on, int fps) { calls.push_back({on, fps}); });
+        CHECK(calls.size() == 1 && calls[0] == std::make_pair(false, 1));
+
+        auto s1 = c.trigger_scope();
+        CHECK(c.enabled() == true);
+        CHECK(calls.size() == 2 && calls[1] == std::make_pair(true, 25));
+
+        auto s2 = c.trigger_scope();
+        CHECK(c.enabled() == true);
+        CHECK(calls.size() == 2);  // No duplicate notification
+
+        s1.release();
+        CHECK(c.enabled() == true);  // s2 is still active!
+        CHECK(calls.size() == 2);    // Still at active FPS
+
+        s2.release();
+        CHECK(c.enabled() == false);
+        CHECK(calls.size() == 3 && calls[2] == std::make_pair(false, 1));
+    }
+
+    // 2. Trigger while set_enabled(true) happens
+    {
+        std::vector<std::pair<bool, int>> calls;
+        InferenceControl c(25, false, [&](bool on, int fps) { calls.push_back({on, fps}); });
+        CHECK(calls.size() == 1);
+
+        auto s = c.trigger_scope();
+        CHECK(c.enabled() == true);
+        CHECK(calls.size() == 2 && calls[1] == std::make_pair(true, 25));
+
+        // External set_enabled(true)
+        CHECK(c.set_enabled(true) == true);
+        CHECK(c.continuous_enabled() == true);
+        CHECK(calls.size() == 2);  // Effective was already true
+
+        // Trigger ends: must NOT switch back to idle because continuous is true!
+        s.release();
+        CHECK(c.enabled() == true);
+        CHECK(calls.size() == 2);
+
+        // Now external set_enabled(false) switches to idle
+        CHECK(c.set_enabled(false) == true);
+        CHECK(c.enabled() == false);
+        CHECK(calls.size() == 3 && calls[2] == std::make_pair(false, 1));
+    }
+
+    // 3. Continuous enabled, trigger starts, external set_enabled(false) happens during trigger
+    {
+        std::vector<std::pair<bool, int>> calls;
+        InferenceControl c(25, true, [&](bool on, int fps) { calls.push_back({on, fps}); });
+        CHECK(calls.size() == 1 && calls[0] == std::make_pair(true, 25));
+
+        auto s = c.trigger_scope();
+        CHECK(c.enabled() == true);
+        CHECK(calls.size() == 1);  // Already active
+
+        // External set_enabled(false) during trigger
+        CHECK(c.set_enabled(false) == true);
+        CHECK(c.continuous_enabled() == false);
+        // Effective must REMAIN TRUE because trigger is still running!
+        CHECK(c.enabled() == true);
+        CHECK(calls.size() == 1);  // Not switched to idle yet!
+
+        // Trigger finishes: NOW effective becomes false and switches to idle
+        s.release();
+        CHECK(c.enabled() == false);
+        CHECK(calls.size() == 2 && calls[1] == std::make_pair(false, 1));
+    }
+
+    // 4. Multi-threaded stress: concurrent triggers and set_enabled
+    {
+        std::atomic<bool> stop_flag{false};
+        InferenceControl c(25, false, nullptr);
+        std::vector<std::thread> workers;
+
+        for (int i = 0; i < 4; ++i) {
+            workers.emplace_back([&] {
+                while (!stop_flag.load(std::memory_order_relaxed)) {
+                    auto s = c.trigger_scope();
+                    std::this_thread::yield();
+                }
+            });
+        }
+        for (int i = 0; i < 2; ++i) {
+            workers.emplace_back([&] {
+                bool state = false;
+                while (!stop_flag.load(std::memory_order_relaxed)) {
+                    c.set_enabled(state);
+                    state = !state;
+                    std::this_thread::yield();
+                }
+            });
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        stop_flag.store(true);
+        for (auto& w : workers) {
+            w.join();
+        }
+
+        c.set_enabled(false);
+        CHECK(c.continuous_enabled() == false);
+        CHECK(c.enabled() == false);
+    }
 }
 
 static std::string http_roundtrip(int port, const std::string& raw) {
@@ -169,11 +292,127 @@ static void test_http_server() {
     server.stop();
 }
 
+static void test_http_server_lifecycle() {
+    // A. Rapid start/stop without connections
+    {
+        InferenceControl c(25, false, nullptr);
+        HttpControlServer server(c);
+        const int port = 18091;
+        for (int i = 0; i < 5; ++i) {
+            CHECK(server.start(port));
+            server.stop();
+        }
+    }
+
+    // B. Stop with active long-polling client: server.stop() must interrupt client and return promptly
+    {
+        InferenceControl c(25, false, nullptr);
+        c.set_enabled(true);
+        c.publish(make_dummy_result(1));
+        HttpControlServer server(c);
+        const int port = 18092;
+        CHECK(server.start(port));
+
+        std::atomic<int> client_status{0}; // 0: init, 1: sent, -1: error
+        std::atomic<bool> client_done{false};
+
+        std::thread client([&] {
+            int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in a;
+            std::memset(&a, 0, sizeof(a));
+            a.sin_family = AF_INET;
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            a.sin_port = htons(static_cast<uint16_t>(port));
+
+            if (::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) {
+                client_status.store(-1);
+                ::close(fd);
+                client_done.store(true);
+                return;
+            }
+
+            // Request a 5-second wait
+            std::string req = "GET /api/results/latest?after=1&wait_ms=5000 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+            ::send(fd, req.data(), req.size(), 0);
+            client_status.store(1);
+            char buf[512];
+            while (::recv(fd, buf, sizeof(buf), 0) > 0) {}
+            ::close(fd);
+            client_done.store(true);
+        });
+
+        // Wait with deadline until client has sent the request
+        const auto wait_start = clk::now();
+        while (client_status.load() == 0 && ms_since(wait_start) < 2000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(client_status.load() == 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+        const auto t0 = clk::now();
+        // server.stop() MUST interrupt the long poll and return quickly (< 1000ms), NOT hang for 5s
+        server.stop();
+        const long stop_dur = ms_since(t0);
+        CHECK(stop_dur < 1000);
+
+        client.join();
+        CHECK(client_done.load() == true);
+    }
+
+    // C. Stop with active trigger client
+    {
+        InferenceControl c(25, false, nullptr);
+        HttpControlServer server(c);
+        const int port = 18093;
+        CHECK(server.start(port));
+
+        std::atomic<int> client_status{0};
+        std::thread client([&] {
+            int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in a;
+            std::memset(&a, 0, sizeof(a));
+            a.sin_family = AF_INET;
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            a.sin_port = htons(static_cast<uint16_t>(port));
+
+            if (::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) {
+                client_status.store(-1);
+                ::close(fd);
+                return;
+            }
+
+            std::string req = "POST /api/trigger?wait_ms=5000 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+            ::send(fd, req.data(), req.size(), 0);
+            client_status.store(1);
+            char buf[512];
+            while (::recv(fd, buf, sizeof(buf), 0) > 0) {}
+            ::close(fd);
+        });
+
+        // Wait until client has sent the request and trigger actually took effect in InferenceControl
+        const auto wait_start = clk::now();
+        while ((client_status.load() == 0 || !c.effective_enabled()) && ms_since(wait_start) < 2000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(client_status.load() == 1);
+        CHECK(c.effective_enabled());
+
+        const auto t0 = clk::now();
+        server.stop();
+        const long stop_dur = ms_since(t0);
+        CHECK(stop_dur < 1000);
+
+        client.join();
+    }
+}
+
 int main() {
     test_toggle();
     test_latest_and_wait();
     test_trigger();
+    test_concurrent_triggers_and_set_enabled();
     test_http_server();
+    test_http_server_lifecycle();
 
     if (g_fail == 0) {
         std::printf("ALL ARUCO INFERENCE CONTROL TESTS PASSED\n");

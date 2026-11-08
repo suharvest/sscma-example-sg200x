@@ -36,12 +36,6 @@ namespace aruco {
 static constexpr size_t kMaxRequestBytes = 8192;
 static constexpr int kReadTimeoutMs = 2000;
 
-static uint64_t unix_ms() {
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                     std::chrono::system_clock::now().time_since_epoch())
-                                     .count());
-}
-
 static const char* status_text(int code) {
     switch (code) {
         case 200: return "OK";
@@ -107,43 +101,107 @@ bool HttpControlServer::start(int port) {
     return true;
 }
 
+void HttpControlServer::clean_finished_clients() {
+    std::vector<std::shared_ptr<ClientContext>> to_clean;
+    {
+        std::lock_guard<std::mutex> lk(clients_mu_);
+        for (auto it = clients_.begin(); it != clients_.end(); ) {
+            if ((*it)->done.load(std::memory_order_acquire)) {
+                to_clean.push_back(std::move(*it));
+                it = clients_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& c : to_clean) {
+        if (c->thread.joinable()) {
+            c->thread.join();
+        }
+    }
+}
+
 void HttpControlServer::stop() {
     if (!running_.exchange(false)) return;
+
     ctl_.shutdown();
-    if (thread_ && thread_->joinable()) thread_->join();
+
+    if (server_fd_ >= 0) {
+        ::shutdown(server_fd_, SHUT_RDWR);
+    }
+
+    std::vector<std::shared_ptr<ClientContext>> clients_copy;
+    {
+        std::lock_guard<std::mutex> lk(clients_mu_);
+        for (auto& c : clients_) {
+            if (c->fd >= 0) {
+                ::shutdown(c->fd, SHUT_RDWR);
+            }
+        }
+        clients_copy = std::move(clients_);
+    }
+
+    if (thread_ && thread_->joinable()) {
+        thread_->join();
+    }
     thread_.reset();
+
     if (server_fd_ >= 0) {
         ::close(server_fd_);
         server_fd_ = -1;
     }
-    for (int i = 0; i < 100 && clients_.load() > 0; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    for (auto& c : clients_copy) {
+        if (c->thread.joinable()) {
+            c->thread.join();
+        }
+        if (c->fd >= 0) {
+            ::close(c->fd);
+            c->fd = -1;
+        }
     }
 }
 
 void HttpControlServer::accept_loop() {
     while (running_.load()) {
-        pollfd pfd = {server_fd_, POLLIN, 0};
+        clean_finished_clients();
+        const int sfd = server_fd_;
+        if (sfd < 0) break;
+        pollfd pfd = {sfd, POLLIN, 0};
         const int pr = ::poll(&pfd, 1, 200);
-        if (pr <= 0) continue;
+        if (pr <= 0 || !running_.load()) continue;
 
         sockaddr_in caddr;
         socklen_t clen = sizeof(caddr);
-        const int cfd = ::accept(server_fd_, reinterpret_cast<sockaddr*>(&caddr), &clen);
+        const int cfd = ::accept(sfd, reinterpret_cast<sockaddr*>(&caddr), &clen);
         if (cfd < 0) continue;
 
-        if (clients_.load() >= kMaxClients) {
-            send_reply(cfd, {503, "{\"error\":\"too many connections\"}"});
-            ::close(cfd);
-            continue;
+        std::shared_ptr<ClientContext> ctx = std::make_shared<ClientContext>();
+        ctx->fd = cfd;
+        {
+            std::lock_guard<std::mutex> lk(clients_mu_);
+            if (!running_.load()) {
+                ::close(cfd);
+                continue;
+            }
+            if (clients_.size() >= kMaxClients) {
+                send_reply(cfd, {503, "{\"error\":\"too many connections\"}"});
+                ::close(cfd);
+                continue;
+            }
+            ctx->thread = std::thread([this, ctx]() {
+                handle_client(ctx->fd);
+                {
+                    std::lock_guard<std::mutex> lk(clients_mu_);
+                    if (ctx->fd >= 0) {
+                        ::close(ctx->fd);
+                        ctx->fd = -1;
+                    }
+                }
+                ctx->done.store(true, std::memory_order_release);
+            });
+            clients_.push_back(ctx);
         }
-
-        clients_.fetch_add(1, std::memory_order_relaxed);
-        std::thread([this, cfd]() {
-            handle_client(cfd);
-            ::close(cfd);
-            clients_.fetch_sub(1, std::memory_order_relaxed);
-        }).detach();
     }
 }
 
@@ -213,7 +271,7 @@ void HttpControlServer::handle_client(int fd) {
     }
 
     const std::string body = buf.substr(header_end + 4, has_content_length ? content_length : std::string::npos);
-    const HttpReply r = handle_control_request(ctl_, method, target, body, unix_ms());
+    const HttpReply r = handle_control_request(ctl_, method, target, body, 0);
     send_reply(fd, r);
 }
 

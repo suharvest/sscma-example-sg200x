@@ -313,6 +313,9 @@ int main(int argc, char** argv) {
     uint32_t processed_frames = 0;
 
     app.on_frame([&](const af::VideoFrame& frame, af::Result& result) {
+        const uint64_t capture_unix_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
         frame_seq++;
 
         if (!g_inference->enabled()) {
@@ -444,7 +447,7 @@ int main(int argc, char** argv) {
         json_payload.append("{\"frame_id\":");
         json_payload.append(std::to_string(frame_seq));
         json_payload.append(",\"timestamp\":");
-        json_payload.append(std::to_string(frame.ts_ms));
+        json_payload.append(std::to_string(capture_unix_ms));
         json_payload.append(",\"family\":\"");
         json_payload.append(g_config.family_name);
         json_payload.append("\",\"count\":");
@@ -456,7 +459,7 @@ int main(int argc, char** argv) {
         // Publish to InferenceControl
         aruco::InferenceResult ir;
         ir.frame_id = static_cast<uint32_t>(frame_seq);
-        ir.ts_ms = frame.ts_ms;
+        ir.ts_ms = capture_unix_ms;
         ir.inference_ms = proc_ms;
         ir.count = count;
         ir.markers_json = markers_payload;
