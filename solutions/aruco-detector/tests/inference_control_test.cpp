@@ -291,7 +291,47 @@ static void test_http_server() {
     CHECK(resp.find("\"enabled\":true") != std::string::npos);
     CHECK(c.enabled() == true);
 
+    // No CORS headers on any reply
+    CHECK(resp.find("Access-Control") == std::string::npos);
+
+    // POST without / with a non-JSON Content-Type is rejected and does not change state
+    const std::string off = R"({"enabled":false})";
+    for (const char* ct : {"", "Content-Type: text/plain\r\n", "Content-Type: application/x-www-form-urlencoded\r\n"}) {
+        resp = http_roundtrip(port, std::string("POST /api/inference HTTP/1.1\r\nHost: localhost\r\n") + ct +
+                                        "Content-Length: " + std::to_string(off.size()) + "\r\nConnection: close\r\n\r\n" + off);
+        CHECK(resp.find("415 Unsupported Media Type") != std::string::npos);
+        CHECK(resp.find("Access-Control") == std::string::npos);
+    }
+    resp = http_roundtrip(port, "POST /api/trigger HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    CHECK(resp.find("415") != std::string::npos);
+    CHECK(c.enabled() == true);
+
+    // Content-Type with parameters is accepted
+    resp = http_roundtrip(port, "POST /api/inference HTTP/1.1\r\nHost: localhost\r\nContent-Type: Application/JSON; charset=utf-8\r\nContent-Length: " +
+                                    std::to_string(off.size()) + "\r\nConnection: close\r\n\r\n" + off);
+    CHECK(resp.find("200 OK") != std::string::npos);
+    CHECK(c.enabled() == false);
+
+    // Preflight is not approved
+    resp = http_roundtrip(port, "OPTIONS /api/inference HTTP/1.1\r\nHost: localhost\r\nOrigin: http://evil.example\r\n"
+                                "Access-Control-Request-Method: POST\r\nConnection: close\r\n\r\n");
+    CHECK(resp.find("405 Method Not Allowed") != std::string::npos);
+    CHECK(resp.find("Access-Control") == std::string::npos);
+
     server.stop();
+}
+
+static void test_precheck() {
+    CHECK(is_json_content_type("application/json"));
+    CHECK(is_json_content_type("  APPLICATION/json ; charset=utf-8"));
+    CHECK(!is_json_content_type(""));
+    CHECK(!is_json_content_type("text/plain"));
+    CHECK(!is_json_content_type("application/jsonx"));
+    CHECK(precheck_request("GET", "") == 0);
+    CHECK(precheck_request("POST", "application/json") == 0);
+    CHECK(precheck_request("POST", "text/plain") == 415);
+    CHECK(precheck_request("OPTIONS", "application/json") == 405);
+    CHECK(precheck_request("DELETE", "application/json") == 405);
 }
 
 static void test_http_server_lifecycle() {
@@ -383,7 +423,7 @@ static void test_http_server_lifecycle() {
                 return;
             }
 
-            std::string req = "POST /api/trigger?wait_ms=5000 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+            std::string req = "POST /api/trigger?wait_ms=5000 HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n";
             ::send(fd, req.data(), req.size(), 0);
             client_status.store(1);
             char buf[512];
@@ -413,6 +453,7 @@ int main() {
     test_latest_and_wait();
     test_trigger();
     test_concurrent_triggers_and_set_enabled();
+    test_precheck();
     test_http_server();
     test_http_server_lifecycle();
 

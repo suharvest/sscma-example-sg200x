@@ -41,9 +41,27 @@ static const char* status_text(int code) {
         case 200: return "OK";
         case 400: return "Bad Request";
         case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 415: return "Unsupported Media Type";
         case 503: return "Service Unavailable";
         default: return "Error";
     }
+}
+
+bool is_json_content_type(const std::string& value) {
+    size_t b = 0;
+    while (b < value.size() && (value[b] == ' ' || value[b] == '\t')) ++b;
+    size_t e = b;
+    while (e < value.size() && value[e] != ';' && value[e] != ' ' && value[e] != '\t') ++e;
+    std::string media = value.substr(b, e - b);
+    for (char& c : media) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return media == "application/json";
+}
+
+int precheck_request(const std::string& method, const std::string& content_type) {
+    if (method == "GET") return 0;
+    if (method == "POST") return is_json_content_type(content_type) ? 0 : 415;
+    return 405;  // OPTIONS and everything else: no CORS preflight is approved
 }
 
 static void send_reply(int fd, const HttpReply& r) {
@@ -52,9 +70,6 @@ static void send_reply(int fd, const HttpReply& r) {
        << "Content-Type: application/json\r\n"
        << "Content-Length: " << r.body.size() << "\r\n"
        << "Cache-Control: no-store\r\n"
-       << "Access-Control-Allow-Origin: *\r\n"
-       << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-       << "Access-Control-Allow-Headers: Content-Type\r\n"
        << "Connection: close\r\n\r\n"
        << r.body;
     const std::string out = ss.str();
@@ -215,6 +230,7 @@ void HttpControlServer::handle_client(int fd) {
     size_t header_end = std::string::npos;
     size_t content_length = 0;
     bool has_content_length = false;
+    std::string content_type;
 
     while (buf.size() < kMaxRequestBytes) {
         const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
@@ -234,12 +250,17 @@ void HttpControlServer::handle_client(int fd) {
                     if (colon == std::string::npos) continue;
                     std::string name = line.substr(0, colon);
                     for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (name == "content-type") {
+                        size_t vstart = colon + 1;
+                        while (vstart < line.size() && (line[vstart] == ' ' || line[vstart] == '\t')) ++vstart;
+                        content_type = line.substr(vstart);
+                        continue;
+                    }
                     if (name == "content-length") {
                         size_t vstart = colon + 1;
                         while (vstart < line.size() && line[vstart] == ' ') ++vstart;
                         content_length = std::strtoul(line.c_str() + vstart, nullptr, 10);
                         has_content_length = true;
-                        break;
                     }
                 }
             }
@@ -265,8 +286,9 @@ void HttpControlServer::handle_client(int fd) {
     const std::string method = line1.substr(0, s1);
     const std::string target = line1.substr(s1 + 1, s2 - s1 - 1);
 
-    if (method == "OPTIONS") {
-        send_reply(fd, {200, "{}"});
+    if (const int rc = precheck_request(method, content_type)) {
+        send_reply(fd, {rc, rc == 415 ? "{\"error\":\"Content-Type must be application/json\"}"
+                                      : "{\"error\":\"method not allowed\"}"});
         return;
     }
 
