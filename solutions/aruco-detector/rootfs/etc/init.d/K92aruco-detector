@@ -75,6 +75,12 @@ start() {
         fi
         rm -f $PIDFILE
     fi
+    # PID file missing or stale but a daemon process exists: never start a second instance
+    RUNNING=$(pidof "$NAME" 2>/dev/null)
+    if [ -n "$RUNNING" ]; then
+        echo "$NAME is already running (PID: $RUNNING)"
+        return 1
+    fi
 
     stop_conflicting_services
 
@@ -116,7 +122,8 @@ stop() {
         return 0
     fi
 
-    # Graceful shutdown with SIGTERM (DO NOT use kill -9 to avoid VPSS hardware lock)
+    # SIGTERM first so the camera/VPSS pipeline is released cleanly; SIGKILL only
+    # if the process is still alive after the grace period.
     start-stop-daemon -K -p $PIDFILE -s TERM 2>/dev/null || true
     i=0
     while [ $i -lt 15 ]; do
@@ -129,8 +136,21 @@ stop() {
         i=$((i + 1))
     done
 
-    echo "Warning: $NAME took longer than 7.5s to release VPSS; waiting further..."
+    echo "Warning: $NAME (PID $PID) still running after 7.5s; waiting 2s more before SIGKILL..."
     sleep 2
+    if [ -d "/proc/$PID" ]; then
+        echo "Sending SIGKILL to $NAME (PID $PID)"
+        kill -9 "$PID" 2>/dev/null || true
+        i=0
+        while [ $i -lt 6 ] && [ -d "/proc/$PID" ]; do
+            sleep 0.5
+            i=$((i + 1))
+        done
+    fi
+    if [ -d "/proc/$PID" ]; then
+        echo "Error: $NAME (PID $PID) could not be stopped; PID file kept"
+        return 1
+    fi
     rm -f $PIDFILE
     echo "OK"
     return 0
@@ -139,7 +159,7 @@ stop() {
 case "$1" in
     start) start ;;
     stop) stop ;;
-    restart) stop; sleep 1; start ;;
+    restart) stop || exit 1; sleep 1; start ;;
     *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
 esac
-exit 0
+exit $?
