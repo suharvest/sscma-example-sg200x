@@ -42,6 +42,8 @@ DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
 [ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
 # Stream endpoints: ws (default, H.264 over WebSocket, no RTSP) | rtsp | both | none
 [ -n "$STREAM_MODE" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-mode $STREAM_MODE"
+# Stream frame rate, 1..30 (default 15)
+[ -n "$STREAM_FPS" ] && DAEMON_OPTS="$DAEMON_OPTS --stream-fps $STREAM_FPS"
 # Inference at startup: on | off (default off; switched at runtime via HTTP /api/inference)
 [ -n "$INFERENCE" ] && DAEMON_OPTS="$DAEMON_OPTS --inference $INFERENCE"
 

@@ -45,7 +45,7 @@ static struct {
     int inference_fps = 8;   // capture->inference channel rate; the SG2002 sustains ~4-5 inferences/s, and every channel frame costs a CPU copy (Thread_Venc0) on the single core
     int stream_width = 1280;
     int stream_height = 720;
-    int stream_fps = 30;    // teleop video: 30 fps halves per-stage pipeline delay vs 15 and is visibly smoother
+    int stream_fps = 15;    // teleop video; the ISP processes only this many sensor frames (VPSS online_frc), so CPU scales with it: 15 fps ~9% vs 30 fps ~17% for camera+detector
     // VENC CBR target. 1000 kbps is the ipcam default this app ran with before
     // app_framework (whose StreamOptions default is 2500); with MaxQp 35 the
     // encoder already overshoots it during motion, and the stream goes over WiFi.
@@ -140,6 +140,7 @@ static void print_usage(const char* prog) {
     printf("  --no-debug                Remove the WebSocket stream from the stream mode\n");
     printf("  --debug-port PORT         Debug WebSocket port (default: %d)\n", g_config.debug_port);
     printf("  --stream-bitrate KBPS     Stream H.264 CBR target in kbps (default: %d)\n", g_config.stream_bitrate_kbps);
+    printf("  --stream-fps N            Stream frame rate, 1..30 (default: %d)\n", g_config.stream_fps);
     printf("  --inference on|off        Run inference at startup (default: off; toggle via HTTP)\n");
     printf("  --control-port PORT       HTTP inference control port (default: %d)\n", g_config.control_port);
     printf("  -v, --verbose             Enable verbose logging\n");
@@ -173,6 +174,7 @@ static bool parse_args(int argc, char** argv) {
         {"stream-bitrate", required_argument, 0, 16},
         {"inference", required_argument, 0, 17},
         {"control-port", required_argument, 0, 18},
+        {"stream-fps", required_argument, 0, 19},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -215,6 +217,7 @@ static bool parse_args(int argc, char** argv) {
                 }
                 break;
             case 18: g_config.control_port = std::stoi(optarg); break;
+            case 19: g_config.stream_fps = std::max(1, std::min(30, std::stoi(optarg))); break;
             case 'v': g_config.verbose = true; break;
             case 'h': print_usage(argv[0]); exit(0);
             default: print_usage(argv[0]); return false;
