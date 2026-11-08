@@ -22,9 +22,21 @@ bool is_json_content_type(const std::string& value);
  */
 int precheck_request(const std::string& method, const std::string& content_type);
 
+enum class ReadStatus { Ok, Timeout, Closed };
+
+/**
+ * Read one HTTP request (headers + Content-Length body, max 8 KiB) from a
+ * socket. The whole read, not each recv, must finish within deadline_ms;
+ * EINTR is retried. Fills header_end (npos if the header never completed)
+ * and the parsed Content-Type / Content-Length headers.
+ */
+ReadStatus read_http_request(int fd, int deadline_ms, std::string& buf, size_t& header_end,
+                             std::string& content_type, size_t& content_length, bool& has_content_length);
+
 class HttpControlServer {
 public:
     static constexpr int kMaxClients = 8;
+    static constexpr int kRequestDeadlineMs = 3000;  // headers + body, total
 
     explicit HttpControlServer(InferenceControl& ctl) : ctl_(ctl) {}
     ~HttpControlServer();

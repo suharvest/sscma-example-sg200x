@@ -334,6 +334,43 @@ static void test_precheck() {
     CHECK(precheck_request("DELETE", "application/json") == 405);
 }
 
+static void test_request_deadline() {
+    const int port = 18091;
+    InferenceControl c(25, false, nullptr);
+    HttpControlServer server(c);
+    CHECK(server.start(port));
+
+    // Slowloris: one byte every 500 ms never completes the headers; the whole
+    // request is cut off near kRequestDeadlineMs even though no single gap
+    // exceeds a per-recv timeout.
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a;
+    std::memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = htons(static_cast<uint16_t>(port));
+    CHECK(::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
+    const auto t0 = clk::now();
+    const char* drip = "GET /api/inference HTTP/1.1\r\nX-A: b";
+    for (size_t i = 0; i < std::strlen(drip) && ms_since(t0) < 6000; ++i) {
+        if (::send(fd, drip + i, 1, MSG_NOSIGNAL) <= 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    std::string out;
+    char buf[512];
+    ssize_t n;
+    while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0) out.append(buf, static_cast<size_t>(n));
+    ::close(fd);
+    const long dur = ms_since(t0);
+    CHECK(out.find("408 Request Timeout") != std::string::npos);
+    CHECK(dur >= HttpControlServer::kRequestDeadlineMs - 100 && dur < HttpControlServer::kRequestDeadlineMs + 1500);
+
+    // A normal request still works afterwards
+    std::string resp = http_roundtrip(port, "GET /api/inference HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    CHECK(resp.find("200 OK") != std::string::npos);
+    server.stop();
+}
+
 static void test_http_server_lifecycle() {
     // A. Rapid start/stop without connections
     {
@@ -455,6 +492,7 @@ int main() {
     test_concurrent_triggers_and_set_enabled();
     test_precheck();
     test_http_server();
+    test_request_deadline();
     test_http_server_lifecycle();
 
     if (g_fail == 0) {

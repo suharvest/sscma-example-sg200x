@@ -34,13 +34,13 @@
 namespace aruco {
 
 static constexpr size_t kMaxRequestBytes = 8192;
-static constexpr int kReadTimeoutMs = 2000;
 
 static const char* status_text(int code) {
     switch (code) {
         case 200: return "OK";
         case 400: return "Bad Request";
         case 404: return "Not Found";
+        case 408: return "Request Timeout";
         case 405: return "Method Not Allowed";
         case 415: return "Unsupported Media Type";
         case 503: return "Service Unavailable";
@@ -220,27 +220,42 @@ void HttpControlServer::accept_loop() {
     }
 }
 
-void HttpControlServer::handle_client(int fd) {
-    timeval tv{kReadTimeoutMs / 1000, (kReadTimeoutMs % 1000) * 1000};
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+static int64_t now_ms_steady() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
-    std::string buf;
-    buf.reserve(1024);
+ReadStatus read_http_request(int fd, int deadline_ms, std::string& buf, size_t& header_end,
+                             std::string& content_type, size_t& content_length, bool& has_content_length) {
+    const int64_t deadline = now_ms_steady() + deadline_ms;
     char chunk[1024];
-    size_t header_end = std::string::npos;
-    size_t content_length = 0;
-    bool has_content_length = false;
-    std::string content_type;
+    header_end = std::string::npos;
+    content_length = 0;
+    has_content_length = false;
+    content_type.clear();
+    buf.clear();
 
     while (buf.size() < kMaxRequestBytes) {
-        const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
-        if (n <= 0) break;
+        const int64_t remaining = deadline - now_ms_steady();
+        if (remaining <= 0) return ReadStatus::Timeout;
+        pollfd pfd = {fd, POLLIN, 0};
+        const int pr = ::poll(&pfd, 1, static_cast<int>(remaining));
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return ReadStatus::Closed;
+        }
+        if (pr == 0) return ReadStatus::Timeout;
+        const ssize_t n = ::recv(fd, chunk, sizeof(chunk), MSG_DONTWAIT);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            return ReadStatus::Closed;
+        }
+        if (n == 0) break;
         buf.append(chunk, static_cast<size_t>(n));
 
         if (header_end == std::string::npos) {
             header_end = buf.find("\r\n\r\n");
             if (header_end != std::string::npos) {
-                // Parse Content-Length (case-insensitive header lookup)
                 const std::string headers = buf.substr(0, header_end);
                 std::istringstream hs(headers);
                 std::string line;
@@ -250,15 +265,11 @@ void HttpControlServer::handle_client(int fd) {
                     if (colon == std::string::npos) continue;
                     std::string name = line.substr(0, colon);
                     for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    size_t vstart = colon + 1;
+                    while (vstart < line.size() && (line[vstart] == ' ' || line[vstart] == '\t')) ++vstart;
                     if (name == "content-type") {
-                        size_t vstart = colon + 1;
-                        while (vstart < line.size() && (line[vstart] == ' ' || line[vstart] == '\t')) ++vstart;
                         content_type = line.substr(vstart);
-                        continue;
-                    }
-                    if (name == "content-length") {
-                        size_t vstart = colon + 1;
-                        while (vstart < line.size() && line[vstart] == ' ') ++vstart;
+                    } else if (name == "content-length") {
                         content_length = std::strtoul(line.c_str() + vstart, nullptr, 10);
                         has_content_length = true;
                     }
@@ -267,8 +278,24 @@ void HttpControlServer::handle_client(int fd) {
         }
         if (header_end != std::string::npos) {
             const size_t body_have = buf.size() - (header_end + 4);
-            if (!has_content_length || body_have >= content_length) break;
+            if (!has_content_length || body_have >= content_length) return ReadStatus::Ok;
         }
+    }
+    return ReadStatus::Ok;
+}
+
+void HttpControlServer::handle_client(int fd) {
+    std::string buf;
+    size_t header_end = std::string::npos;
+    size_t content_length = 0;
+    bool has_content_length = false;
+    std::string content_type;
+
+    const ReadStatus rs = read_http_request(fd, kRequestDeadlineMs, buf, header_end, content_type,
+                                            content_length, has_content_length);
+    if (rs == ReadStatus::Timeout) {
+        send_reply(fd, {408, "{\"error\":\"request timeout\"}"});
+        return;
     }
 
     if (header_end == std::string::npos) {
