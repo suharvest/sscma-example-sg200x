@@ -7,6 +7,27 @@ static bool is_started   = false;
 static bool video_mirror = false;
 static bool video_flip   = false;
 
+/* VPSS output blocks for channels that feed the encoder. VENC keeps 3 input
+ * frames in flight, so with the default 4 VPSS had one free block and the ISP
+ * trigger for 2 of every 3 sensor frames was refused ("No sc-2 buffer
+ * available"): every stream ran at 10 fps whatever it was configured to.
+ * 6 leaves VPSS a spare block at 30 fps (measured MinFree 1). */
+#define VENC_CHN_VB_BLK_NUM 6
+
+static bool isEncoded(const video_ch_param_t* param) {
+    return param->format == VIDEO_FORMAT_H264 || param->format == VIDEO_FORMAT_H265;
+}
+
+/* Rate VPSS receives from the ISP: the sensor rate when the VI channel sets
+ * one, else the 30 fps the shipped sensor configs run at (sensors.c). */
+static int sensorFps(void) {
+    APP_PARAM_VI_CTX_S* vi = app_ipcam_Vi_Param_Get();
+    if (vi != NULL && vi->astChnInfo[0].f32Fps > 0) {
+        return (int)vi->astChnInfo[0].f32Fps;
+    }
+    return 30;
+}
+
 static int setVbPool(video_ch_index_t ch, const video_ch_param_t* param) {
     APP_PARAM_SYS_CFG_S* sys = app_ipcam_Sys_Param_Get();
 
@@ -24,6 +45,9 @@ static int setVbPool(video_ch_index_t ch, const video_ch_param_t* param) {
     vb->width              = param->width;
     vb->height             = param->height;
     vb->fmt                = (param->format == VIDEO_FORMAT_RGB888) ? PIXEL_FORMAT_RGB_888 : PIXEL_FORMAT_NV21;
+    if (isEncoded(param)) {
+        vb->vb_blk_num = VENC_CHN_VB_BLK_NUM;
+    }
 
     return 0;
 }
@@ -51,6 +75,19 @@ static int setGrpChn(int grp, video_ch_index_t ch, const video_ch_param_t* param
     vpss_chn->u32Width        = param->width;
     vpss_chn->u32Height       = param->height;
     vpss_chn->enPixelFormat   = (param->format == VIDEO_FORMAT_RGB888) ? PIXEL_FORMAT_RGB_888 : PIXEL_FORMAT_NV21;
+    /* Drop frames in hardware down to the configured rate. With every enabled
+     * channel of the online group set below the sensor rate, the VPSS driver
+     * (osdrv online_frc) also lets the ISP skip frames above the fastest one,
+     * so a lower rate saves ISP work too. Raw channels are set to their start
+     * rate; runtime decreases (Camera kFps) still go through the camera
+     * callback's software gate. */
+    if (param->fps > 0 && param->fps < sensorFps()) {
+        vpss_chn->stFrameRate.s32SrcFrameRate = sensorFps();
+        vpss_chn->stFrameRate.s32DstFrameRate = param->fps;
+    } else {
+        vpss_chn->stFrameRate.s32SrcFrameRate = -1;
+        vpss_chn->stFrameRate.s32DstFrameRate = -1;
+    }
 
     return 0;
 }
@@ -80,6 +117,11 @@ static int setVencChn(video_ch_index_t ch, const video_ch_param_t* param) {
     pvchn->u32Width           = param->width;
     pvchn->u32Height          = param->height;
     pvchn->u32DstFrameRate    = param->fps;
+    if (isEncoded(param) && param->fps > 0) {
+        /* VPSS already delivers param->fps: no further encoder frame-rate
+         * control, and rate control budgets per delivered frame. */
+        pvchn->u32SrcFrameRate = param->fps;
+    }
 
     if ((VIDEO_FORMAT_RGB888 == param->format) || (VIDEO_FORMAT_NV21 == param->format)) {
         pvchn->no_need_venc = 1;
