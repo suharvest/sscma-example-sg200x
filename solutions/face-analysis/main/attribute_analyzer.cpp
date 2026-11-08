@@ -248,13 +248,28 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
                     evidence_.add(tid, AttributeEvidence::HEAD_GENDER, agr.gender_probs, 2);
                     evidence_.add(tid, AttributeEvidence::HEAD_AGE, agr.age_probs, 9);
                 } else {
-                    // InsightFace: continuous age regression, no per-class
-                    // distribution to accumulate -- single-frame result stands.
+                    // DexAttribute / Continuous age:
+                    // 1. Accumulate gender distribution into evidence_ for multi-frame voting
+                    evidence_.add(tid, AttributeEvidence::HEAD_GENDER, agr.gender_probs, 2);
+
+                    // 2. Continuous age: EMA temporal smoothing with DEX variance gating
+                    auto& st = age_tracks_[tid];
+                    const bool reliable = (agr.age_variance <= 55.0f);
+
+                    if (st.update_count == 0 || st.smoothed_age < 0.0f) {
+                        st.smoothed_age = agr.continuous_age_float;
+                        st.update_count = 1;
+                    } else if (reliable) {
+                        // Exponential Moving Average: 0.75 historical + 0.25 new frame
+                        const float alpha = 0.75f;
+                        st.smoothed_age = alpha * st.smoothed_age + (1.0f - alpha) * agr.continuous_age_float;
+                        st.update_count++;
+                    }
+
+                    int final_age = (int)std::round(st.smoothed_age);
                     analyzed.attributes.is_fairface = false;
-                    analyzed.attributes.gender = (agr.gender == 1) ? "male" : "female";
-                    analyzed.attributes.gender_confidence = agr.gender_score;
-                    analyzed.attributes.age_continuous = agr.age;
-                    analyzed.attributes.age_label = std::to_string(agr.age);
+                    analyzed.attributes.age_continuous = final_age;
+                    analyzed.attributes.age_label = std::to_string(final_age);
                     analyzed.attributes.age_confidence = agr.age_score;
                 }
             }
@@ -310,6 +325,13 @@ std::vector<AnalyzedFace> AttributeAnalyzer::analyzeAll(
                 analyzed.attributes.age_bin = va.index;
                 analyzed.attributes.age_label = getAgeBinLabel(va.index);
                 analyzed.attributes.age_confidence = va.confidence;
+            }
+        } else {
+            // DexAttribute: Gender also reads the multi-frame accumulated verdict
+            const Verdict vg = evidence_.verdict(tid, AttributeEvidence::HEAD_GENDER);
+            if (vg.index >= 0) {
+                analyzed.attributes.gender = (vg.index == 1) ? "male" : "female";
+                analyzed.attributes.gender_confidence = vg.confidence;
             }
         }
 

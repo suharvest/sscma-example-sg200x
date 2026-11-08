@@ -28,6 +28,10 @@ struct AgeGenderRaceResult {
     float race_probs[7]   = {};
     float gender_probs[2] = {};
     float age_probs[9]    = {};
+
+    // Continuous DEX fields
+    float continuous_age_float = 0.0f;
+    float age_variance = 0.0f;
 };
 
 // Age/Gender/Race inference (SG2002 / CVIMODEL)
@@ -88,8 +92,9 @@ private:
     bool parseOutputs(AgeGenderRaceResult& out);
     bool parseOutputsFairFace(AgeGenderRaceResult& out);
     bool parseOutputsInsightFace(AgeGenderRaceResult& out);
+    bool parseOutputsDex(AgeGenderRaceResult& out);
 
-    enum class ModelFormat { Unknown, FairFace, InsightFace };
+    enum class ModelFormat { Unknown, FairFace, InsightFace, DexAttribute };
     ModelFormat detectModelFormat() const;
 
 private:

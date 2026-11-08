@@ -135,9 +135,11 @@ AgeGenderRaceRunner::ModelFormat AgeGenderRaceRunner::detectModelFormat() const 
     }
 
     // FairFace: 18 elements (7 race + 2 gender + 9 age)
-    if (total >= 18) return ModelFormat::FairFace;
+    if (total == 18) return ModelFormat::FairFace;
     // InsightFace: 3 elements (2 gender logits + 1 age)
     if (total == 3) return ModelFormat::InsightFace;
+    // DexAttribute: 103 elements (2 gender logits + 101 DEX age)
+    if (total == 103) return ModelFormat::DexAttribute;
 
     return ModelFormat::Unknown;
 }
@@ -464,6 +466,8 @@ bool AgeGenderRaceRunner::parseOutputs(AgeGenderRaceResult& out) {
             return parseOutputsFairFace(out);
         case ModelFormat::InsightFace:
             return parseOutputsInsightFace(out);
+        case ModelFormat::DexAttribute:
+            return parseOutputsDex(out);
         default:
             return false;
     }
@@ -588,6 +592,74 @@ bool AgeGenderRaceRunner::parseOutputsInsightFace(AgeGenderRaceResult& out) {
     out.race = -1;
     out.race_score = 0.f;
 
+    out.is_fairface = false;
+    out.ok = (out.gender >= 0);
+    return out.ok;
+}
+
+bool AgeGenderRaceRunner::parseOutputsDex(AgeGenderRaceResult& out) {
+    const int out_n = engine_->getOutputSize();
+    if (out_n <= 0) return false;
+
+    auto tensor_numel = [&](const ma_tensor_t& t) -> size_t {
+        size_t n = shape_numel(t.shape);
+        if (n > 0) return n;
+        const size_t es = elem_size(t.type);
+        return (es > 0) ? (t.size / es) : 0;
+    };
+
+    std::vector<float> vals;
+    for (int oi = 0; oi < out_n; ++oi) {
+        const ma_tensor_t t = engine_->getOutput(oi);
+        const int n = (int)tensor_numel(t);
+        for (int i = 0; i < n; ++i) vals.push_back(read_val(t, i));
+    }
+
+    if (vals.size() < 103) return false;
+
+    // Gender: vals[0]=Male logit, vals[1]=Female logit
+    float g_m = vals[0];
+    float g_f = vals[1];
+    float g_max = std::max(g_m, g_f);
+    float exp_m = std::exp(g_m - g_max);
+    float exp_f = std::exp(g_f - g_max);
+    float p_male = exp_m / (exp_m + exp_f);
+    float p_female = exp_f / (exp_m + exp_f);
+
+    out.gender = (p_male >= p_female) ? 1 : 0;
+    out.gender_score = std::max(p_male, p_female);
+    out.gender_probs[1] = p_male;
+    out.gender_probs[0] = p_female;
+
+    // DEX continuous age: vals[2..102] -> Softmax -> expected value
+    float max_age_l = vals[2];
+    for (int i = 1; i <= 100; ++i) {
+        if (vals[2 + i] > max_age_l) max_age_l = vals[2 + i];
+    }
+    float sum_exp = 0.0f;
+    float age_probs[101];
+    for (int i = 0; i <= 100; ++i) {
+        age_probs[i] = std::exp(vals[2 + i] - max_age_l);
+        sum_exp += age_probs[i];
+    }
+    float expected_age = 0.0f;
+    for (int i = 0; i <= 100; ++i) {
+        age_probs[i] /= sum_exp;
+        expected_age += (float)i * age_probs[i];
+    }
+
+    float age_var = 0.0f;
+    for (int i = 0; i <= 100; ++i) {
+        float diff = (float)i - expected_age;
+        age_var += diff * diff * age_probs[i];
+    }
+
+    out.age = (int)std::round(expected_age);
+    out.continuous_age_float = expected_age;
+    out.age_variance = age_var;
+    out.age_score = std::max(0.1f, 1.0f - std::min(1.0f, age_var / 80.0f));
+    out.race = -1;
+    out.race_score = 0.0f;
     out.is_fairface = false;
     out.ok = (out.gender >= 0);
     return out.ok;

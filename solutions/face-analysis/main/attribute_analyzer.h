@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <array>
+#include <unordered_map>
 
 #include "face_detector.h"
 #include "attribute_evidence.h"
@@ -123,7 +124,12 @@ public:
     const EvidenceConfig& evidenceConfig() const { return evidence_.config(); }
 
     // Drop the evidence of tracks the tracker retired this frame.
-    void sweepEvidence(const std::vector<int>& removed_ids) { evidence_.sweep(removed_ids); }
+    void sweepEvidence(const std::vector<int>& removed_ids) {
+        evidence_.sweep(removed_ids);
+        for (int id : removed_ids) {
+            age_tracks_.erase(id);
+        }
+    }
 
     bool isGenderAgeReady() const { return genderage_ready_; }
     bool isEmotionReady() const { return emotion_ready_; }
@@ -144,11 +150,17 @@ private:
     int emotion_interval_ = 2;
     uint32_t frame_counter_ = 0;
 
+    struct TrackedAgeState {
+        float smoothed_age = -1.0f;
+        int update_count = 0;
+    };
+
     // Replaces the old IoU-matched emotion cache: on a frame where emotion is
     // skipped, the track's accumulated verdict is reported instead. That is both
     // simpler and more correct -- IoU matching against the previous frame's box
     // set mismatches two faces that pass close to each other.
     AttributeEvidence evidence_;
+    std::unordered_map<int, TrackedAgeState> age_tracks_;
     bool agr_is_fairface_ = false;
 };
 
