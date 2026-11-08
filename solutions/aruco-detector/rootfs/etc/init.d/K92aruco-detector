@@ -1,0 +1,135 @@
+#!/bin/sh
+
+### BEGIN INIT INFO
+# Provides:          aruco-detector
+# Required-Start:    $network $local_fs
+# Required-Stop:     $network $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: ArUco Marker Detector for Robotic Arm (recamera-app compliant)
+### END INIT INFO
+
+NAME=aruco-detector
+DAEMON=/usr/local/bin/aruco-detector
+PIDFILE=/var/run/$NAME.pid
+LOGFILE=/var/log/$NAME.log
+
+# CVI SDK library paths
+export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
+
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+[ -f /etc/aruco-detector.conf ] && . /etc/aruco-detector.conf
+
+DAEMON_OPTS=""
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS -m $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS -p $MQTT_PORT"
+MQTT_TOPIC="${MQTT_TOPIC:-recamera/aruco-detector/results}"
+DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
+
+[ -n "$CAMERA_WIDTH" ] && DAEMON_OPTS="$DAEMON_OPTS --camera-width $CAMERA_WIDTH"
+[ -n "$CAMERA_HEIGHT" ] && DAEMON_OPTS="$DAEMON_OPTS --camera-height $CAMERA_HEIGHT"
+[ -n "$CAMERA_FPS" ] && DAEMON_OPTS="$DAEMON_OPTS --camera-fps $CAMERA_FPS"
+[ -n "$FAMILY" ] && DAEMON_OPTS="$DAEMON_OPTS -f $FAMILY"
+[ -n "$MARKER_SIZE" ] && DAEMON_OPTS="$DAEMON_OPTS -s $MARKER_SIZE"
+[ -n "$FX" ] && DAEMON_OPTS="$DAEMON_OPTS --fx $FX"
+[ -n "$FY" ] && DAEMON_OPTS="$DAEMON_OPTS --fy $FY"
+[ -n "$CX" ] && DAEMON_OPTS="$DAEMON_OPTS --cx $CX"
+[ -n "$CY" ] && DAEMON_OPTS="$DAEMON_OPTS --cy $CY"
+[ -n "$DECIMATE" ] && DAEMON_OPTS="$DAEMON_OPTS --decimate $DECIMATE"
+[ "$RTSP_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-rtsp"
+[ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+[ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
+
+# Stop conflicting services that use the camera hardware exclusively
+stop_conflicting_services() {
+    echo "Stopping conflicting camera services..."
+    for prefix in S K; do
+        [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
+        [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
+    done
+    for svc in face-analysis detection-blur ppocr-reader retail-vision yolo-detector qrcode-reader trigger-inspection-demo microduck-pose-qa; do
+        for script in /etc/init.d/[SK]*${svc}; do
+            [ -x "$script" ] && "$script" stop 2>/dev/null || true
+        done
+    done
+    sleep 2
+}
+
+start() {
+    echo "Starting $NAME..."
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is already running (PID: $PID)"
+            return 1
+        fi
+        rm -f $PIDFILE
+    fi
+
+    stop_conflicting_services
+
+    start-stop-daemon -S -b -m -p $PIDFILE -a /bin/sh -- -c "exec $DAEMON $DAEMON_OPTS >> $LOGFILE 2>&1"
+    if [ $? -ne 0 ]; then
+        echo "$NAME failed to start"
+        rm -f $PIDFILE
+        return 1
+    fi
+
+    # Stability window check
+    sleep 1
+    i=0
+    while [ $i -lt 3 ]; do
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+            echo "$NAME exited immediately after start"
+            rm -f $PIDFILE
+            return 1
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+
+    echo "OK"
+    return 0
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    if [ ! -f $PIDFILE ]; then
+        echo "$NAME is not running"
+        return 0
+    fi
+    PID=$(cat $PIDFILE 2>/dev/null)
+    if [ -z "$PID" ]; then
+        rm -f $PIDFILE
+        echo "$NAME is not running"
+        return 0
+    fi
+
+    # Graceful shutdown with SIGTERM (DO NOT use kill -9 to avoid VPSS hardware lock)
+    start-stop-daemon -K -p $PIDFILE -s TERM 2>/dev/null || true
+    i=0
+    while [ $i -lt 15 ]; do
+        if [ ! -d "/proc/$PID" ]; then
+            rm -f $PIDFILE
+            echo "OK"
+            return 0
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+
+    echo "Warning: $NAME took longer than 7.5s to release VPSS; waiting further..."
+    sleep 2
+    rm -f $PIDFILE
+    echo "OK"
+    return 0
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0

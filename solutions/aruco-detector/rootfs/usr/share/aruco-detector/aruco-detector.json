@@ -1,0 +1,23 @@
+{
+  "id": "aruco-detector",
+  "name": "ArUco Marker Detector",
+  "name_zh": "ArUco / 机械臂标定定位码识别",
+  "scene": "Robotics",
+  "scene_zh": "机器人与机械臂",
+  "description": "High-performance fiducial marker detector and 6-DoF pose estimator for robotic arms, visual servoing, and hand-eye calibration on reCamera.",
+  "description_zh": "面向机器人与机械臂的高性能 ArUco / AprilTag 标定码识别与 6-DoF 位姿解算系统，支持视觉伺服闭环与手眼标定。",
+  "type": "native",
+  "init_script": "/etc/init.d/K92aruco-detector",
+  "image": "/apps/qrcode-reader.svg",
+  "rtsp_url": "rtsp://{host}:8554/live0",
+  "mqtt_topic": "recamera/aruco-detector/results",
+  "debug_ws": {
+    "port": 8001,
+    "video_path": "/",
+    "results_path": "/results"
+  },
+  "tags": ["aruco", "apriltag", "robotics", "pose-estimation", "visual-servoing"],
+  "models": [],
+  "version": "0.1.0",
+  "author": "Seeed Studio"
+}

@@ -1,0 +1,34 @@
+#!/bin/sh
+
+# Post-installation script for aruco-detector
+
+echo "Installing ArUco Marker Detector..."
+
+# Create data directories if not exists
+mkdir -p /userdata/local/models
+mkdir -p /userdata/local/apps
+
+# Set permissions
+chmod +x /usr/local/bin/aruco-detector
+chmod +x /etc/init.d/K92aruco-detector 2>/dev/null || true
+
+APPS_DIR=/userdata/local/apps
+SHARE_DIR=/usr/share/aruco-detector
+for f in aruco-detector.json aruco-detector.md aruco-detector.zh.md; do
+    if [ -f "$SHARE_DIR/$f" ]; then
+        cp -f "$SHARE_DIR/$f" "$APPS_DIR/$f"
+    fi
+done
+echo "App manifest installed: $APPS_DIR/aruco-detector.json"
+
+echo "ArUco Marker Detector installed successfully!"
+echo ""
+echo "Configuration file: /etc/aruco-detector.conf"
+echo ""
+echo "RTSP stream:     rtsp://<device_ip>:8554/live0"
+echo "MQTT topic:      recamera/aruco-detector/results"
+echo "Debug WebSocket: ws://<device_ip>:8001/ (video), ws://<device_ip>:8001/results"
+
+rm -f /etc/init.d/S92aruco-detector
+
+exit 0

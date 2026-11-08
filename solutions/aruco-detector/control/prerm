@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Pre-removal script for aruco-detector
+
+echo "Removing ArUco Marker Detector..."
+
+# Stop the service if running
+for script in /etc/init.d/[SK]92aruco-detector; do
+    [ -x "$script" ] && "$script" stop 2>/dev/null || true
+done
+pkill -f /usr/local/bin/aruco-detector 2>/dev/null || true
+
+echo "ArUco Marker Detector removed."
+
+exit 0

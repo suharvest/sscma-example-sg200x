@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Post-removal script for aruco-detector
+
+APPS_DIR=/userdata/local/apps
+for f in aruco-detector.json aruco-detector.md aruco-detector.zh.md; do
+    rm -f "$APPS_DIR/$f"
+done
+
+rm -f /etc/init.d/K92aruco-detector
+rm -f /etc/init.d/S92aruco-detector
+
+echo "ArUco Marker Detector cleanup completed."
+
+exit 0
