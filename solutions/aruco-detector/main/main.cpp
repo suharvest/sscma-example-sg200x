@@ -30,6 +30,9 @@
 #include <ha_mqtt.h>
 #include <sscma.h>
 
+#include "http_control.h"
+#include "inference_control.h"
+
 #define TAG "aruco-detector"
 
 // ---------------------------------------------------------------------------
@@ -74,7 +77,13 @@ struct Config {
     int debug_port = 8001;
     int rtsp_port = 8554;
     bool verbose = false;
+
+    // On-demand inference control (HTTP 8090)
+    bool inference_enabled = false;
+    int control_port = 8090;
 } g_config;
+
+static aruco::InferenceControl* g_inference = nullptr;
 
 // ---------------------------------------------------------------------------
 // Helpers: Euler angles from 3x3 rotation matrix
@@ -149,6 +158,8 @@ static void print_usage(const char* prog) {
     printf("      --no-mqtt             Disable MQTT publishing\n");
     printf("      --no-rtsp             Disable RTSP server\n");
     printf("      --debug-port <port>   WebSocket debug port [default: 8001]\n");
+    printf("      --control-port <port> HTTP control port [default: 8090]\n");
+    printf("      --inference-on        Start with inference enabled [default: standby/off]\n");
     printf("  -v, --verbose             Verbose logging\n");
     printf("  -h, --help                Show this help\n");
 }
@@ -171,6 +182,8 @@ static void parse_args(int argc, char** argv) {
         {"no-mqtt", no_argument, nullptr, 1010},
         {"no-rtsp", no_argument, nullptr, 1011},
         {"debug-port", required_argument, nullptr, 1012},
+        {"control-port", required_argument, nullptr, 1013},
+        {"inference-on", no_argument, nullptr, 1014},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
@@ -195,6 +208,8 @@ static void parse_args(int argc, char** argv) {
             case 1010: g_config.enable_mqtt = false; break;
             case 1011: g_config.enable_rtsp = false; break;
             case 1012: g_config.debug_port = std::atoi(optarg); break;
+            case 1013: g_config.control_port = std::atoi(optarg); break;
+            case 1014: g_config.inference_enabled = true; break;
             case 'v': g_config.verbose = true; break;
             case 'h':
                 print_usage(argv[0]);
@@ -243,6 +258,7 @@ int main(int argc, char** argv) {
     cam_opt.height = static_cast<uint16_t>(g_config.camera_h);
     cam_opt.fps = static_cast<uint8_t>(g_config.camera_fps);
     cam_opt.physical = false;
+    cam_opt.idle_fps = aruco::InferenceControl::kIdleFps;
 
     // Stream channel: CH2 (1280x720 @ 30fps H.264)
     af::StreamOptions stream_opt;
@@ -271,13 +287,26 @@ int main(int argc, char** argv) {
         app.with_mqtt(mqtt_opt);
     }
 
+    // On-demand inference and HTTP control
+    aruco::InferenceControl inference(
+        g_config.camera_fps, g_config.inference_enabled,
+        [&](bool, int fps) { app.set_camera_fps(static_cast<uint8_t>(fps)); });
+    g_inference = &inference;
+
+    aruco::HttpControlServer http(inference);
+    if (!http.start(g_config.control_port)) {
+        MA_LOGW(TAG, "Failed to start HTTP control on port %d", g_config.control_port);
+    }
+
     // Preallocated buffers for zero-heap-allocation per-frame processing
     std::vector<uint8_t> gray_buf(g_config.camera_w * g_config.camera_h);
     std::vector<af::Box> boxes;
     std::vector<std::string> label_storage;
     std::vector<std::string> detail_storage;
     std::string json_payload;
+    std::string markers_payload;
     json_payload.reserve(2048);
+    markers_payload.reserve(2048);
 
     uint64_t frame_seq = 0;
     auto last_stat_time = std::chrono::steady_clock::now();
@@ -285,6 +314,12 @@ int main(int argc, char** argv) {
 
     app.on_frame([&](const af::VideoFrame& frame, af::Result& result) {
         frame_seq++;
+
+        if (!g_inference->enabled()) {
+            result.publish = false;
+            return;
+        }
+
         processed_frames++;
 
         if (!frame.valid() || !frame.cpu_accessible()) {
@@ -328,16 +363,8 @@ int main(int argc, char** argv) {
         label_storage.reserve(count);
         detail_storage.reserve(count);
 
-        json_payload.clear();
-        json_payload.append("{\"frame_id\":");
-        json_payload.append(std::to_string(frame_seq));
-        json_payload.append(",\"timestamp\":");
-        json_payload.append(std::to_string(frame.ts_ms));
-        json_payload.append(",\"family\":\"");
-        json_payload.append(g_config.family_name);
-        json_payload.append("\",\"count\":");
-        json_payload.append(std::to_string(count));
-        json_payload.append(",\"markers\":[");
+        markers_payload.clear();
+        markers_payload.push_back('[');
 
         for (int i = 0; i < count; ++i) {
             apriltag_detection_t* det = nullptr;
@@ -387,7 +414,7 @@ int main(int argc, char** argv) {
             boxes.push_back(b);
 
             // Append marker object to JSON payload
-            if (i > 0) json_payload.push_back(',');
+            if (i > 0) markers_payload.push_back(',');
             char item[384];
             snprintf(item, sizeof(item),
                      "{\"id\":%d,\"center\":[%.1f,%.1f],\"corners\":[[%.1f,%.1f],[%.1f,%.1f],[%.1f,%.1f],[%.1f,%.1f]],"
@@ -401,17 +428,39 @@ int main(int argc, char** argv) {
                      MATD_EL(pose.t, 0, 0), MATD_EL(pose.t, 1, 0), MATD_EL(pose.t, 2, 0),
                      roll * 180.0 / M_PI, pitch * 180.0 / M_PI, yaw * 180.0 / M_PI,
                      err);
-            json_payload.append(item);
+            markers_payload.append(item);
 
             matd_destroy(pose.R);
             matd_destroy(pose.t);
         }
 
-        json_payload.append("]}");
+        markers_payload.push_back(']');
         apriltag_detections_destroy(detections);
 
         auto end_proc = std::chrono::steady_clock::now();
         float proc_ms = std::chrono::duration<float, std::milli>(end_proc - start_proc).count();
+
+        json_payload.clear();
+        json_payload.append("{\"frame_id\":");
+        json_payload.append(std::to_string(frame_seq));
+        json_payload.append(",\"timestamp\":");
+        json_payload.append(std::to_string(frame.ts_ms));
+        json_payload.append(",\"family\":\"");
+        json_payload.append(g_config.family_name);
+        json_payload.append("\",\"count\":");
+        json_payload.append(std::to_string(count));
+        json_payload.append(",\"markers\":");
+        json_payload.append(markers_payload);
+        json_payload.append("}");
+
+        // Publish to InferenceControl
+        aruco::InferenceResult ir;
+        ir.frame_id = static_cast<uint32_t>(frame_seq);
+        ir.ts_ms = frame.ts_ms;
+        ir.inference_ms = proc_ms;
+        ir.count = count;
+        ir.markers_json = markers_payload;
+        g_inference->publish(ir);
 
         // Feed results into af::Result sink fan-out
         result.width = width;
@@ -433,6 +482,9 @@ int main(int argc, char** argv) {
     });
 
     int exit_code = app.run();
+
+    http.stop();
+    g_inference = nullptr;
 
     // Clean up
     apriltag_detector_destroy(td);

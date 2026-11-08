@@ -38,6 +38,8 @@ DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
 [ -n "$DECIMATE" ] && DAEMON_OPTS="$DAEMON_OPTS --decimate $DECIMATE"
 [ "$RTSP_ENABLED" = "0" ] && DAEMON_OPTS="$DAEMON_OPTS --no-rtsp"
 [ -n "$DEBUG_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+[ -n "$CONTROL_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --control-port $CONTROL_PORT"
+[ "$INFERENCE_AT_STARTUP" = "on" ] && DAEMON_OPTS="$DAEMON_OPTS --inference-on"
 [ "$VERBOSE" = "1" ] && DAEMON_OPTS="$DAEMON_OPTS -v"
 
 # Stop conflicting services that use the camera hardware exclusively

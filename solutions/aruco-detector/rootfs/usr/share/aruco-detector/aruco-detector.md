@@ -1,35 +1,25 @@
-# ArUco Marker Detector for Robotic Arm (SG2002 RISC-V)
+# Robotic Arm Vision Companion Atomic Service (reCamera SG2002 RISC-V)
 
-High-performance visual fiducial marker detector and 6-DoF pose estimator designed for robotic arms, visual servoing, and hand-eye calibration on Seeed reCamera (Sophgo SG2002 single-core 1.0 GHz RISC-V).
+High-performance atomic vision service running on Seeed reCamera (SG2002 single-core 1.0 GHz RISC-V), designed for robotic arm visual servoing, hand-eye calibration, and precision grasping.
 
-## Features
-- **Zero-Copy Grayscale Pipeline**: Directly ingests hardware NV21 Y-plane from the VPSS image processing pipeline with zero CPU format conversion overhead.
-- **Embedded AprilTag 3 Engine**: Lightweight, pure C99 implementation supporting standard ArUco dictionary families (`tagAruco4x4_50`, `tagAruco4x4_100`, `tagAruco4x4_250`, `tagAruco5x5_50`, `tagAruco6x6_250`) and AprilTag (`tag36h11`).
-- **High FPS & Low Latency**: Runs at 25–30 FPS with decimated gradient clustering and sub-pixel edge refinement.
-- **6-DoF Metric Pose Estimation**: Solves 3D translation ($tvec = [x, y, z]$ in meters) and orientation (Euler angles roll, pitch, yaw) directly in the camera coordinate frame.
-- **MQTT & Web Console Stream**: Publishes structured JSON data over MQTT for ROS/ROS2 nodes and streams H.264 preview with corner highlights over WebSocket port 8001.
+## Architectural Boundary Principles
+**reCamera only provides low-level, high-performance atomic capabilities without hosting complex application orchestration or heavy Python runtimes:**
+- High-level orchestration, VLM visual reasoning, and trajectory generation are handled remotely by host PC / cloud Agents.
+- Once the pipeline logic is verified, it can be compiled into a hardened local binary running deterministically on the client.
 
-## MQTT Payload Format
-Topic: `recamera/aruco-detector/results`
-```json
-{
-  "type": "aruco_detection",
-  "frame_id": 1024,
-  "timestamp_ms": 1718000000123,
-  "detect_cost_ms": 14.5,
-  "marker_count": 1,
-  "markers": [
-    {
-      "id": 12,
-      "family": "aruco4x4_50",
-      "center": [0.512, 0.485],
-      "corners": [[0.45, 0.40], [0.58, 0.41], [0.57, 0.56], [0.44, 0.55]],
-      "pose": {
-        "tvec": [0.0150, -0.0420, 0.4500],
-        "rvec_deg": [1.5, 3.2, 45.0],
-        "error": 0.00012
-      }
-    }
-  ]
-}
-```
+## Core Atomic Capabilities & API Endpoints
+
+| Protocol / Port | Endpoint | Mode | Description |
+|---|---|---|---|
+| **HTTP :8090** | `GET /api/inference` | Status | Returns `{"enabled":false,"fps":1,"active_fps":25,"idle_fps":1}` |
+| **HTTP :8090** | `POST /api/inference` | Switch | Pass `{"enabled":true}` or `{"enabled":false}` to toggle standby rate |
+| **HTTP :8090** | `POST /api/trigger` | **Atomic Trigger** | Single-shot capture & pose estimation; auto-restores to standby |
+| **HTTP :8090** | `GET /api/results/latest` | Long poll | `?after=<id>&wait_ms=1000`, waits for fresh frame |
+| **HTTP :80** | `GET /snapshot.jpg` | Snapshot | Raw JPEG image for remote VLM / multimodal Agents |
+| **WS :8001** | `ws://{host}:8001/` | H.264 Stream | Low-latency 720P video preview stream (hardware decoded by JMuxer) |
+| **WS :8001** | `ws://{host}:8001/results`| Telemetry | Continuous detection stream with pixel centers and 6-DoF poses |
+| **MQTT :1883** | `recamera/aruco-detector/results` | Pub/Sub | MQTT topic broadcast for automation buses |
+
+## Low Power & Thermal Efficiency
+- **Standby Mode (Inference Disabled)**: Camera throttled to 1 FPS, pose estimation bypassed. SG2002 CPU load < 3%, case temperature steady at 38°C.
+- **Active Mode (Triggered)**: Resumes to full 25 FPS with ~4ms processing latency per frame.

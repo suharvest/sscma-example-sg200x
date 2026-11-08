@@ -9,5 +9,5 @@ component_register(
     COMPONENT_NAME main
     SRCS ${srcs}
     INCLUDE_DIRS ${incs}
-    PRIVATE_REQUIREDS app_framework apriltag sscma-micro rtsp_server sophgo ha_mqtt debug_stream ssl crypto cares
+    PRIVATE_REQUIREDS app_framework apriltag sscma-micro rtsp_server sophgo ha_mqtt debug_stream ssl crypto cares json
 )

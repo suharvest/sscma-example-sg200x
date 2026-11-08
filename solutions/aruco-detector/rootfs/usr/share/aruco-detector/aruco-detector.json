@@ -16,6 +16,8 @@
     "video_path": "/",
     "results_path": "/results"
   },
+  "control_port": 8090,
+  "inference_at_startup": false,
   "tags": ["aruco", "apriltag", "robotics", "pose-estimation", "visual-servoing"],
   "models": [],
   "version": "0.1.0",
