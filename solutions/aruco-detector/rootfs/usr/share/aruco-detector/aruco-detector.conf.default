@@ -44,6 +44,16 @@ P1=0.0
 P2=0.0
 K3=0.0
 
+# False-positive filter, applied before pose estimation. Filtered detections are
+# omitted from markers/count and reported in "rejected".
+# MIN_DECISION_MARGIN: drop detections with apriltag decision_margin below this (0 = off).
+# MIN_SIDE_PX: drop detections whose shortest quad edge (raw pixels) is below this (0 = off).
+# MARKER_IDS: comma-separated id allowlist, e.g. 3,7,12 (empty = all ids). A malformed
+#   list makes the daemon exit at startup.
+MIN_DECISION_MARGIN=30
+MIN_SIDE_PX=12
+MARKER_IDS=
+
 # Quad decimate (2.0 = fast embedded real-time 25-30fps)
 DECIMATE=2.0
 

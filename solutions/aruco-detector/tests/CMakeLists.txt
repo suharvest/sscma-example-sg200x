@@ -28,3 +28,12 @@ target_include_directories(camera_model_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/.
 target_compile_options(camera_model_test PRIVATE -Wall -Wextra)
 
 add_test(NAME camera_model COMMAND camera_model_test)
+
+add_executable(marker_filter_test
+    ${CMAKE_CURRENT_LIST_DIR}/marker_filter_test.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../main/marker_filter.cpp
+)
+target_include_directories(marker_filter_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../main)
+target_compile_options(marker_filter_test PRIVATE -Wall -Wextra)
+
+add_test(NAME marker_filter COMMAND marker_filter_test)

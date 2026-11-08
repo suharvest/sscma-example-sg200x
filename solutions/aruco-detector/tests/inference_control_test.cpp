@@ -38,6 +38,7 @@ static InferenceResult make_dummy_result(uint32_t id) {
     r.ts_ms = 1000000 + id;
     r.inference_ms = 4.2f;
     r.count = 1;
+    r.rejected = 2;
     r.markers_json = "[{\"id\":0,\"center\":[320.0,180.0],\"pose\":{\"t\":[0.05,0.02,0.45],\"r_deg\":[0.0,0.0,15.0],\"error\":0.001}}]";
     return r;
 }
@@ -90,6 +91,7 @@ static void test_latest_and_wait() {
     s = get(c, "GET", "/api/results/latest", "");
     CHECK(s["frame_id"] == 1 && s["count"] == 1 && !s.contains("timeout"));
     CHECK(s["ts_ms"] == 1000001);
+    CHECK(s["rejected"] == 2);
     CHECK(s["age_ms"] == 99);
 
     // Long poll waiting for frame > 1

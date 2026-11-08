@@ -14,7 +14,8 @@ struct InferenceResult {
     uint32_t frame_id = 0;              ///< 0: no result produced yet
     uint64_t ts_ms = 0;                 ///< frame capture time, Unix epoch ms
     float inference_ms = 0;
-    int count = 0;
+    int count = 0;                      ///< accepted markers (after filtering)
+    int rejected = 0;                   ///< detections dropped by the false-positive filter
     bool undistorted = false;           ///< pose solved on lens-undistorted corners
     std::string markers_json = "[]";    ///< JSON array of detected markers
 };

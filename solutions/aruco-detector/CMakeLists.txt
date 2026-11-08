@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
 
-project(aruco-detector VERSION 0.1.1 LANGUAGES C CXX)
+project(aruco-detector VERSION 0.1.2 LANGUAGES C CXX)
 
 get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
 message(STATUS "PROJECT_DIR: ${PROJECT_DIR}")

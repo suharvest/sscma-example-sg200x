@@ -33,6 +33,7 @@
 #include "camera_model.h"
 #include "http_control.h"
 #include "inference_control.h"
+#include "marker_filter.h"
 
 #define TAG "aruco-detector"
 
@@ -84,6 +85,9 @@ struct Config {
     // On-demand inference control (HTTP 8090)
     bool inference_enabled = false;
     int control_port = 8090;
+
+    // False-positive filter (applied before pose estimation)
+    aruco::MarkerFilter filter;  // defaults: min_margin 30, min_side_px 12, all ids
 } g_config;
 
 static aruco::InferenceControl* g_inference = nullptr;
@@ -163,6 +167,9 @@ static void print_usage(const char* prog) {
     printf("      --no-rtsp             Disable RTSP server\n");
     printf("      --debug-port <port>   WebSocket debug port [default: 8001]\n");
     printf("      --control-port <port> HTTP control port [default: 8090]\n");
+    printf("      --min-margin <v>      Drop detections with decision_margin below v (0 = off) [default: 30]\n");
+    printf("      --min-side <px>       Drop detections whose shortest quad edge is below px (0 = off) [default: 12]\n");
+    printf("      --ids <list>          Comma-separated marker id allowlist, e.g. 3,7,12 [default: empty = all]\n");
     printf("      --inference-on        Start with inference enabled [default: standby/off]\n");
     printf("  -v, --verbose             Verbose logging\n");
     printf("  -h, --help                Show this help\n");
@@ -193,6 +200,9 @@ static void parse_args(int argc, char** argv) {
         {"p1", required_argument, nullptr, 1017},
         {"p2", required_argument, nullptr, 1018},
         {"k3", required_argument, nullptr, 1019},
+        {"min-margin", required_argument, nullptr, 1020},
+        {"min-side", required_argument, nullptr, 1021},
+        {"ids", required_argument, nullptr, 1022},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
@@ -224,6 +234,26 @@ static void parse_args(int argc, char** argv) {
             case 1017: g_config.p1 = std::atof(optarg); break;
             case 1018: g_config.p2 = std::atof(optarg); break;
             case 1019: g_config.k3 = std::atof(optarg); break;
+            case 1020:
+            case 1021: {
+                char* end = nullptr;
+                const double v = std::strtod(optarg, &end);
+                if (end == optarg || *end != '\0' || !std::isfinite(v) || v < 0.0) {
+                    fprintf(stderr, "Invalid value for --%s: '%s' (expected number >= 0)\n",
+                            opt == 1020 ? "min-margin" : "min-side", optarg);
+                    exit(1);
+                }
+                (opt == 1020 ? g_config.filter.min_margin : g_config.filter.min_side_px) = static_cast<float>(v);
+                break;
+            }
+            case 1022: {
+                std::string err;
+                if (!aruco::parse_id_list(optarg, g_config.filter.ids, &err)) {
+                    fprintf(stderr, "Invalid --ids '%s': %s\n", optarg, err.c_str());
+                    exit(1);
+                }
+                break;
+            }
             case 'v': g_config.verbose = true; break;
             case 'h':
                 print_usage(argv[0]);
@@ -259,6 +289,10 @@ int main(int argc, char** argv) {
     MA_LOGI(TAG, "Intrinsics @%dx%d: fx=%.3f fy=%.3f cx=%.3f cy=%.3f | dist k1=%.6f k2=%.6f p1=%.6f p2=%.6f k3=%.6f (undistort %s)",
             g_config.camera_w, g_config.camera_h, cam_model.fx, cam_model.fy, cam_model.cx, cam_model.cy,
             cam_model.k1, cam_model.k2, cam_model.p1, cam_model.p2, cam_model.k3, undistort ? "on" : "off");
+
+    MA_LOGI(TAG, "Marker filter: min_margin=%.1f min_side=%.1fpx ids=%s",
+            g_config.filter.min_margin, g_config.filter.min_side_px,
+            aruco::format_id_list(g_config.filter.ids).c_str());
 
     // Initialize AprilTag family and detector
     apriltag_family_t* tf = create_family(g_config.family_name);
@@ -386,22 +420,39 @@ int main(int argc, char** argv) {
 
         // Detect fiducial markers
         zarray_t* detections = apriltag_detector_detect(td, &im);
-        const int count = zarray_size(detections);
+        const int n_det = zarray_size(detections);
+        int count = 0;     // accepted
+        int rejected = 0;  // dropped by filter
 
         boxes.clear();
         label_storage.clear();
         detail_storage.clear();
-        boxes.reserve(count);
-        label_storage.reserve(count);
-        detail_storage.reserve(count);
+        boxes.reserve(n_det);
+        label_storage.reserve(n_det);
+        detail_storage.reserve(n_det);
 
         markers_payload.clear();
         markers_payload.push_back('[');
 
-        for (int i = 0; i < count; ++i) {
+        for (int i = 0; i < n_det; ++i) {
             apriltag_detection_t* det = nullptr;
             zarray_get(detections, i, &det);
             if (!det) continue;
+
+            // False-positive filter, before pose estimation
+            const aruco::FilterVerdict verdict =
+                aruco::classify_marker(g_config.filter, det->id, det->decision_margin, det->p);
+            if (verdict != aruco::FilterVerdict::Accept) {
+                ++rejected;
+                if (g_config.verbose) {
+                    MA_LOGI(TAG, "Rejected id=%d margin=%.1f side=%.1fpx (%s)", det->id, det->decision_margin,
+                            aruco::min_quad_side(det->p),
+                            verdict == aruco::FilterVerdict::LowMargin   ? "margin"
+                            : verdict == aruco::FilterVerdict::SmallSide ? "side"
+                                                                         : "id");
+                }
+                continue;
+            }
 
             // Bounding box in inference pixel space
             double min_x = det->p[0][0], max_x = det->p[0][0];
@@ -462,12 +513,13 @@ int main(int argc, char** argv) {
             boxes.push_back(b);
 
             // Append marker object to JSON payload
-            if (i > 0) markers_payload.push_back(',');
-            char item[384];
+            if (count > 0) markers_payload.push_back(',');
+            ++count;
+            char item[420];
             snprintf(item, sizeof(item),
-                     "{\"id\":%d,\"center\":[%.1f,%.1f],\"corners\":[[%.1f,%.1f],[%.1f,%.1f],[%.1f,%.1f],[%.1f,%.1f]],"
+                     "{\"id\":%d,\"margin\":%.1f,\"center\":[%.1f,%.1f],\"corners\":[[%.1f,%.1f],[%.1f,%.1f],[%.1f,%.1f],[%.1f,%.1f]],"
                      "\"pose\":{\"t\":[%.4f,%.4f,%.4f],\"r_deg\":[%.2f,%.2f,%.2f],\"error\":%.4f}}",
-                     det->id,
+                     det->id, det->decision_margin,
                      det->c[0], det->c[1],
                      det->p[0][0], det->p[0][1],
                      det->p[1][0], det->p[1][1],
@@ -499,6 +551,8 @@ int main(int argc, char** argv) {
         json_payload.append("\",\"count\":");
         json_payload.append(std::to_string(count));
         json_payload.append(undistort ? ",\"undistorted\":true" : ",\"undistorted\":false");
+        json_payload.append(",\"rejected\":");
+        json_payload.append(std::to_string(rejected));
         json_payload.append(",\"markers\":");
         json_payload.append(markers_payload);
         json_payload.append("}");
@@ -509,6 +563,7 @@ int main(int argc, char** argv) {
         ir.ts_ms = capture_unix_ms;
         ir.inference_ms = proc_ms;
         ir.count = count;
+        ir.rejected = rejected;
         ir.markers_json = markers_payload;
         ir.undistorted = undistort;
         g_inference->publish(ir);
