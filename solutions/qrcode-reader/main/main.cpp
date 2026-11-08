@@ -40,10 +40,10 @@ using Clock = std::chrono::steady_clock;
 // ---------------------------------------------------------------------------
 
 static struct {
-    // Inference (CH0) frame — QR detection runs on this RGB888 buffer.
-    int camera_w   = 1280;
-    int camera_h   = 720;
-    int camera_fps = 10;
+    // Inference (CH0) frame — QR detection runs on this NV21 (Y-plane) buffer.
+    int camera_w   = 640;
+    int camera_h   = 360;
+    int camera_fps = 20;
 
     std::string mqtt_host  = "localhost";
     int mqtt_port          = 1883;
@@ -159,8 +159,8 @@ static std::string build_debug_results_json(uint64_t timestamp_ms, uint32_t fram
 
 // ---------------------------------------------------------------------------
 // QR detection — runs on the normal-priority main loop (NOT the CH0 realtime
-// VENC consumer thread). Heavy RGB->gray + quirc work here no longer preempts
-// the RTSP/libevent server thread, so :8554 keeps accepting clients.
+// VENC consumer thread). VPSS NV21 hardware grayscale (Y-plane) eliminates the
+// heavy RGB->gray float loop.
 // ---------------------------------------------------------------------------
 
 static void processQRCode(const ma_img_t& frame) {
@@ -178,6 +178,15 @@ static void processQRCode(const ma_img_t& frame) {
             quirc_destroy(g_qr);
             g_qr = nullptr;
         }
+    } else {
+        int cur_w = 0, cur_h = 0;
+        quirc_begin(g_qr, &cur_w, &cur_h);
+        if (cur_w != W || cur_h != H) {
+            if (quirc_resize(g_qr, W, H) < 0) {
+                CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to resize Quirc\n");
+                return;
+            }
+        }
     }
     if (!g_qr) {
         CVI_TRACE_LOG(CVI_DBG_ERR, "Failed to initialize Quirc\n");
@@ -186,15 +195,10 @@ static void processQRCode(const ma_img_t& frame) {
 
     const auto t0 = Clock::now();
 
-    // RGB888 -> grayscale straight into the quirc buffer.
+    // In NV21, frame.data starts with the 8-bit Y plane of size npix = W * H.
     uint8_t* buffer = quirc_begin(g_qr, nullptr, nullptr);
-    const uint32_t npix = frame.width * frame.height;
-    for (uint32_t i = 0; i < npix; ++i) {
-        const uint8_t r = pu8VirAddr[i * 3];
-        const uint8_t g = pu8VirAddr[i * 3 + 1];
-        const uint8_t b = pu8VirAddr[i * 3 + 2];
-        buffer[i]       = static_cast<uint8_t>(0.299f * r + 0.587f * g + 0.114f * b);
-    }
+    const uint32_t npix = static_cast<uint32_t>(W * H);
+    std::memcpy(buffer, pu8VirAddr, npix);
     quirc_end(g_qr);
 
     std::vector<qrcode_reader::QrCode> codes;
@@ -222,12 +226,13 @@ static void processQRCode(const ma_img_t& frame) {
     const auto t1              = Clock::now();
     const double detect_ms     = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    // Hold the last decode for a short window so the overlay/results stay
-    // visible. Decoding is intermittent — a fixed-focus camera only nails a
-    // sharp frame every so often — so clearing on the very next empty frame
-    // made the box flash for a single frame and vanish. While a code keeps
-    // re-decoding within the window the overlay stays solid; it clears
-    // HOLD_MS after the code actually leaves the view.
+    // Hold the last decode for a short window so the presentation overlay stays
+    // visible in the Web Console. Decoding is intermittent — a fixed-focus camera
+    // only nails a sharp frame every so often — so clearing on the very next empty frame
+    // made the box flash for a single frame and vanish.
+    // Fresh detection (`codes`) is separated from presentation (`display_codes`)
+    // so MQTT/ONVIF real-time detection is never polluted by 2-second ghost readings.
+    std::vector<qrcode_reader::QrCode> display_codes = codes;
     static std::vector<qrcode_reader::QrCode> s_last_codes;
     static Clock::time_point                  s_last_decode{};
     constexpr double HOLD_MS = 2000.0;
@@ -236,7 +241,7 @@ static void processQRCode(const ma_img_t& frame) {
         s_last_decode = t1;
     } else if (!s_last_codes.empty() &&
                std::chrono::duration<double, std::milli>(t1 - s_last_decode).count() < HOLD_MS) {
-        codes = s_last_codes;  // re-show the last decode until the hold expires
+        display_codes = s_last_codes;  // re-show the last decode until the hold expires
     } else {
         s_last_codes.clear();
     }
@@ -244,8 +249,8 @@ static void processQRCode(const ma_img_t& frame) {
     const bool qr_found        = !codes.empty();
     const uint64_t frame_id    = g_frame_id.fetch_add(1) + 1;
 
-    // Publish every frame; within the hold window `codes` still carries the
-    // last decode so the Console overlay and HA qr_count stay stable.
+    // Publish every frame: real-time detection (`codes`) is sent over MQTT and ONVIF
+    // so downstream automations/PLCs never receive ghost/stale readings.
     if (g_config.enable_mqtt && g_mqtt_publisher) {
         const std::string payload =
             qrcode_reader::buildResultJson(frame_id, qr_found, detect_ms, codes);
@@ -305,7 +310,7 @@ static void processQRCode(const ma_img_t& frame) {
                                    std::chrono::system_clock::now().time_since_epoch())
                                    .count();
         const std::string dj =
-            build_debug_results_json(ts_ms, static_cast<uint32_t>(frame_id), detect_ms, codes);
+            build_debug_results_json(ts_ms, static_cast<uint32_t>(frame_id), detect_ms, display_codes);
         debug_stream_publish_result(dj.c_str(), dj.size());
     }
 
@@ -451,6 +456,9 @@ static bool init_camera() {
             value.i32 = 0;
             g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
 
+            value.i32 = MA_PIXEL_FORMAT_YUV422;
+            g_camera->commandCtrl(Camera::CtrlType::kFormat, Camera::CtrlMode::kWrite, value);
+
             // Apply the inference frame rate (else the channel defaults high and
             // the capture->inference FIFO fills faster than inference drains).
             value.i32 = g_config.camera_fps;
@@ -476,7 +484,7 @@ static bool init_camera() {
 
 static void process_frame() {
     ma_img_t frame;
-    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
+    if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_YUV422) != MA_OK) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         return;
     }
@@ -543,7 +551,7 @@ int main(int argc, char* argv[]) {
         std::printf("[OK] ONVIF service on port %d\n", g_onvif_meta.config().service_port);
     }
 
-    std::printf("[OK] qrcode reader running (inference %dx%d RGB888)\n",
+    std::printf("[OK] qrcode reader running (inference %dx%d NV21)\n",
                 g_config.camera_w, g_config.camera_h);
 
     while (g_running.load()) {
