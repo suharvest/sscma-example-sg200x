@@ -37,6 +37,8 @@ TEST(packed_defaults_stride) {
     CHECK(f.valid());
     CHECK(f.cpu_accessible());
     CHECK_EQ(f.planes[0].stride, 24u);
+    CHECK(f.data() == buf.data());
+    CHECK_EQ(f.stride(), 24u);
     CHECK(f.row(2) == buf.data() + 48);
     CHECK(f.at(3, 1) == buf.data() + 24 + 9);
 

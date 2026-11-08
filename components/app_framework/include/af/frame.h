@@ -106,6 +106,12 @@ struct VideoFrame {
     /** Pointer to pixel (x, y) in a packed single-plane frame (no bounds check). */
     uint8_t* at(int x, int y) const noexcept { return row(y) + static_cast<size_t>(x) * bytes_per_pixel(format); }
 
+    /** Pointer to the start of plane @p p (vir address, or nullptr). */
+    uint8_t* data(int p = 0) const noexcept { return planes[p].vir; }
+
+    /** Bytes between consecutive rows in plane @p p. */
+    uint32_t stride(int p = 0) const noexcept { return planes[p].stride; }
+
     /** Bounds of the whole frame. */
     Rect rect() const noexcept { return Rect{0, 0, width, height}; }
 

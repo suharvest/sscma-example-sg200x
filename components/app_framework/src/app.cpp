@@ -606,6 +606,10 @@ bool App::any_sink_active() const noexcept {
     return false;
 }
 
+int App::debug_clients_count() const noexcept {
+    return debug_stream_results_client_count();
+}
+
 ha_mqtt::MqttPublisher* App::mqtt() noexcept {
     return impl_->mqtt.get();
 }

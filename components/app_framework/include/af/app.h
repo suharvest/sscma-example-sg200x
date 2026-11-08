@@ -279,6 +279,9 @@ public:
     /** Whether any sink would deliver a result now; lets handlers skip building JSON. */
     bool any_sink_active() const noexcept;
 
+    /** Connected WebSocket debug /results clients count. */
+    int debug_clients_count() const noexcept;
+
     /** MQTT publisher for extra topics; nullptr before run() or without with_mqtt(). */
     ha_mqtt::MqttPublisher* mqtt() noexcept;
 
