@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -9,17 +8,16 @@
 #include <iomanip>
 #include <memory>
 #include <numeric>
-#include <signal.h>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <sscma.h>
-#include <video.h>
 
+#include <af/app.h>
+#include <af/frame.h>
 #include <debug_stream.h>
 #include <ha_mqtt.h>
 
@@ -27,15 +25,11 @@
 #include "mqtt_payload.h"
 #include "onvif_meta.h"
 #include "onvif_meta_gate.h"
-#include "onvif_service_bringup.h"
-#include "rtsp_server.h"
 
 using Clock = std::chrono::steady_clock;
 using namespace ma;
 
 #define TAG "weather-classifier"
-
-static std::atomic<bool> g_running{true};
 
 static double ms_between(const Clock::time_point& a, const Clock::time_point& b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
@@ -235,22 +229,16 @@ static struct {
     int stream_width  = 1280;
     int stream_height = 720;
     int stream_fps    = 15;
+    int rtsp_port     = 8554;
 
     bool enable_debug = true;  // H.264-over-WS + results JSON for supervisor console
+    int debug_port    = 8001;
     bool verbose      = false;
 } g_config;
-
-static ha_mqtt::MqttPublisher* g_mqtt_publisher = nullptr;
-static Camera* g_camera                         = nullptr;
 
 // ONVIF analytics metadata, off unless switched on in the console. The gate
 // owns the switch and the rate limit; when disabled it costs one bool test.
 static OnvifMetaGate g_onvif_meta;
-
-static void signal_handler(int sig) {
-    std::printf("[INFO] received signal %d, shutting down...\n", sig);
-    g_running.store(false);
-}
 
 static void print_usage(const char* prog) {
     std::printf("Weather Classifier for ReCamera\n");
@@ -267,9 +255,12 @@ static void print_usage(const char* prog) {
     std::printf("  --mqtt-topic TOPIC     MQTT publish topic (default: %s)\n", g_config.mqtt_topic.c_str());
     std::printf("  --no-mqtt              Disable MQTT publishing\n");
     std::printf("  --no-rtsp              Disable RTSP streaming\n");
-    std::printf("  --stream-width N       RTSP encode width (default: %d)\n", g_config.stream_width);
-    std::printf("  --stream-height N      RTSP encode height (default: %d)\n", g_config.stream_height);
-    std::printf("  --stream-fps N         RTSP encode fps (default: %d)\n", g_config.stream_fps);
+    std::printf("  --no-debug             Disable debug stream (WebSocket)\n");
+    std::printf("  --debug-port PORT      Debug stream WebSocket port (default: %d)\n", g_config.debug_port);
+    std::printf("  --rtsp-port PORT       RTSP stream port (default: %d)\n", g_config.rtsp_port);
+    std::printf("  --stream-width N       Stream encode width (default: %d)\n", g_config.stream_width);
+    std::printf("  --stream-height N      Stream encode height (default: %d)\n", g_config.stream_height);
+    std::printf("  --stream-fps N         Stream encode fps (default: %d)\n", g_config.stream_fps);
     std::printf("  -v, --verbose          Enable verbose logging\n");
     std::printf("  -h, --help             Show this help message\n\n");
     std::printf("RTSP stream: rtsp://<device-ip>:8554/live0\n");
@@ -291,6 +282,9 @@ static bool parse_args(int argc, char** argv) {
         {"stream-width",   required_argument, 0, 10 },
         {"stream-height",  required_argument, 0, 11 },
         {"stream-fps",     required_argument, 0, 12 },
+        {"no-debug",       no_argument,       0, 13 },
+        {"debug-port",     required_argument, 0, 14 },
+        {"rtsp-port",      required_argument, 0, 15 },
         {"verbose",        no_argument,       0, 'v'},
         {"help",           no_argument,       0, 'h'},
         {0, 0, 0, 0},
@@ -313,6 +307,9 @@ static bool parse_args(int argc, char** argv) {
             case 10 : g_config.stream_width   = std::atoi(optarg); break;
             case 11 : g_config.stream_height  = std::atoi(optarg); break;
             case 12 : g_config.stream_fps     = std::atoi(optarg); break;
+            case 13 : g_config.enable_debug   = false; break;
+            case 14 : g_config.debug_port     = std::atoi(optarg); break;
+            case 15 : g_config.rtsp_port      = std::atoi(optarg); break;
             case 'v': g_config.verbose        = true; break;
             case 'h': print_usage(argv[0]); std::exit(0);
             default: print_usage(argv[0]); return false;
@@ -321,84 +318,7 @@ static bool parse_args(int argc, char** argv) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Camera / RTSP / debug / MQTT bring-up (facemesh-reader pattern)
-// ---------------------------------------------------------------------------
-
-static bool init_camera() {
-    Device* device = Device::getInstance();
-
-    for (auto& sensor : device->getSensors()) {
-        if (sensor->getType() == ma::Sensor::Type::kCamera) {
-            g_camera = static_cast<Camera*>(sensor);
-            if (g_camera->init(0) != MA_OK) {
-                std::fprintf(stderr, "[ERROR] camera init failed\n");
-                return false;
-            }
-
-            Camera::CtrlValue value;
-
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kChannel, Camera::CtrlMode::kWrite, value);
-
-            // Cap the inference channel frame rate (else the capture FIFO fills
-            // faster than a whole-frame classification drains it).
-            value.i32 = g_config.camera_fps;
-            g_camera->commandCtrl(Camera::CtrlType::kFps, Camera::CtrlMode::kWrite, value);
-
-            value.u16s[0] = static_cast<uint16_t>(g_config.camera_w);
-            value.u16s[1] = static_cast<uint16_t>(g_config.camera_h);
-            g_camera->commandCtrl(Camera::CtrlType::kWindow, Camera::CtrlMode::kWrite, value);
-
-            // CPU-accessible frames: retrieveFrame() hands back a virtual
-            // address so the preprocess loop can read pixels directly (no
-            // manual CVI_SYS_Mmap of a physical address).
-            value.i32 = 0;
-            g_camera->commandCtrl(Camera::CtrlType::kPhysical, Camera::CtrlMode::kWrite, value);
-
-            std::printf("[OK] camera initialized (%dx%d @ %dfps for inference)\n",
-                        g_config.camera_w, g_config.camera_h, g_config.camera_fps);
-            return true;
-        }
-    }
-
-    std::fprintf(stderr, "[ERROR] no camera found\n");
-    return false;
-}
-
-static bool init_video_streaming() {
-    if (!g_config.enable_rtsp) {
-        std::printf("[INFO] RTSP streaming disabled\n");
-        return true;
-    }
-
-    if (initVideo() != 0) {
-        std::fprintf(stderr, "[ERROR] initVideo failed\n");
-        return false;
-    }
-
-    video_ch_param_t stream_param{};
-    stream_param.format = VIDEO_FORMAT_H264;
-    stream_param.width  = static_cast<uint32_t>(g_config.stream_width);
-    stream_param.height = static_cast<uint32_t>(g_config.stream_height);
-    stream_param.fps    = static_cast<uint8_t>(g_config.stream_fps);
-    setupVideo(VIDEO_CH2, &stream_param);
-
-    // RTSP owns VENC consumer index 0; debug_stream registers itself as index 1.
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    initRtsp((0x01 << VIDEO_CH2));
-
-    std::printf("[OK] RTSP streaming rtsp://<device-ip>:8554/live0 (%dx%d@%dfps)\n",
-                g_config.stream_width, g_config.stream_height, g_config.stream_fps);
-    return true;
-}
-
-static bool init_mqtt() {
-    if (!g_config.enable_mqtt) {
-        std::printf("[INFO] MQTT publishing disabled\n");
-        return true;
-    }
-
+static ha_mqtt::ClientOptions mqtt_options() {
     ha_mqtt::ClientOptions opts;
     opts.app_id        = "weather-classifier";
     opts.client_id     = "recamera-weather-classifier";
@@ -418,48 +338,16 @@ static bool init_mqtt() {
                      "{{ (value_json.confidence * 100) | round(1) }}",
                      "", "%", "measurement"},
     };
-
-    g_mqtt_publisher = new ha_mqtt::MqttPublisher();
-    if (!g_mqtt_publisher->init(opts)) {
-        std::fprintf(stderr, "[ERROR] MQTT publisher init failed\n");
-        return false;
-    }
-    std::printf("[OK] MQTT publishing topic=%s\n", g_config.mqtt_topic.c_str());
-
-    // Rides the connection above rather than opening a second one; the switch
-    // lives in /userdata/local/onvif.conf, written by the console.
-    g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), opts.app_id);
-    if (g_onvif_meta.enabled()) {
-        std::printf("[OK] ONVIF metadata topic=%s every %ums\n",
-                    g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
-    }
-
-    return true;
+    return opts;
 }
 
-static void cleanup() {
-    if (g_camera) {
-        g_camera->stopStream();
-        g_camera->deInit();
-        g_camera = nullptr;
-    }
-
-    if (g_config.enable_debug) debug_stream_destroy();
-
-    onvif_service_stop();
-
-    if (g_config.enable_rtsp) {
-        deinitRtsp();
-        deinitVideo();
-    }
-
-    if (g_mqtt_publisher) {
-        g_mqtt_publisher->deinit();
-        delete g_mqtt_publisher;
-        g_mqtt_publisher = nullptr;
-    }
-
-    std::printf("[INFO] cleanup completed\n");
+static af::StreamMode resolve_stream_mode() {
+    const bool ws   = g_config.enable_debug;
+    const bool rtsp = g_config.enable_rtsp;
+    if (ws && rtsp) return af::StreamMode::Both;
+    if (rtsp)       return af::StreamMode::RtspOnly;
+    if (ws)         return af::StreamMode::WsOnly;
+    return af::StreamMode::None;
 }
 
 // Debug /results envelope: classification has no boxes — the overlay box array
@@ -497,9 +385,6 @@ int main(int argc, char** argv) {
     std::printf("[INFO] model:  %s\n", g_config.model_path.c_str());
     std::printf("[INFO] labels: %s\n", g_config.labels_path.c_str());
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
     const auto labels = load_labels(g_config.labels_path);
     if (labels.empty()) {
         std::fprintf(stderr, "[WARN] labels file empty or unreadable: %s\n", g_config.labels_path.c_str());
@@ -508,70 +393,75 @@ int main(int argc, char** argv) {
     Classifier classifier;
     if (!classifier.init(g_config.model_path)) return 2;
 
-    if (!init_camera())          { cleanup(); return 3; }
-    if (!init_video_streaming()) { cleanup(); return 4; }
+    af::App app("weather-classifier");
+    app.with_camera({static_cast<uint16_t>(g_config.camera_w),
+                     static_cast<uint16_t>(g_config.camera_h),
+                     static_cast<uint8_t>(g_config.camera_fps)});
 
-    // Debug stream (non-fatal: on failure run without it)
-    if (g_config.enable_debug && debug_stream_start_or_disable(8001, VIDEO_CH2) != 0) {
-        g_config.enable_debug = false;
+    af::StreamOptions stream_opt;
+    stream_opt.width  = static_cast<uint16_t>(g_config.stream_width);
+    stream_opt.height = static_cast<uint16_t>(g_config.stream_height);
+    stream_opt.fps    = static_cast<uint8_t>(g_config.stream_fps);
+
+    const af::StreamMode stream_mode = resolve_stream_mode();
+    app.with_stream_mode(stream_mode, stream_opt, g_config.debug_port, g_config.rtsp_port);
+
+    if (g_config.enable_mqtt) {
+        const ha_mqtt::ClientOptions mqtt_opts = mqtt_options();
+        app.with_mqtt(mqtt_opts);
+        g_onvif_meta.reload(ha_mqtt::readDeviceIdentifier(), mqtt_opts.app_id);
+        if (g_onvif_meta.enabled()) {
+            std::printf("[OK] ONVIF metadata topic=%s every %ums\n",
+                        g_onvif_meta.topic().c_str(), g_onvif_meta.config().interval_ms);
+        }
+    } else {
+        std::printf("[INFO] MQTT publishing disabled\n");
     }
 
-    if (!init_mqtt())            { cleanup(); return 5; }
-
-    if (g_camera->startStream(Camera::StreamMode::kRefreshOnReturn) != MA_OK) {
-        std::fprintf(stderr, "[ERROR] camera startStream failed\n");
-        cleanup();
-        return 6;
+    const OnvifMetaConfig& oc = g_onvif_meta.config();
+    if (oc.service_enabled && g_config.enable_rtsp && app.stream_mode() == af::StreamMode::WsOnly) {
+        app.with_stream_mode(af::StreamMode::Both, stream_opt, g_config.debug_port, g_config.rtsp_port);
     }
-
-    if (g_config.enable_rtsp) startVideo();
-
-    // ONVIF discovery + Device/Media2 services. After startVideo() on purpose:
-    // GetProfiles and GetStreamUri are answered from the running RTSP server's
-    // session list, so bringing this up earlier advertises zero profiles and a
-    // VMS shows a camera with no video.
-    if (onvif_service_bringup(g_onvif_meta.config(), ha_mqtt::readDeviceIdentifier(),
-            "reCamera", g_config.enable_debug ? 8001 : 0) == 0 &&
-        onvif_service_soap_running()) {
-        std::printf("[OK] ONVIF service on port %d\n", g_onvif_meta.config().service_port);
+    if (oc.service_enabled) {
+        af::OnvifOptions onvif;
+        onvif.port        = oc.service_port;
+        onvif.serial      = ha_mqtt::readDeviceIdentifier();
+        onvif.device_name = "reCamera";
+        onvif.username    = oc.username;
+        onvif.password    = oc.password;
+        onvif.location    = oc.location;
+        app.with_onvif(onvif);
     }
 
     std::printf("[OK] weather classifier running (camera %dx%d RGB888)\n",
                 g_config.camera_w, g_config.camera_h);
     std::printf("[INFO] first 10 inference runs are warm-up and excluded from averages\n");
 
-    uint64_t frame_id  = 0;
-    uint64_t measured  = 0;
-    double sum_capture = 0.0, sum_pre = 0.0, sum_run = 0.0, sum_total = 0.0;
-    double min_run = 1e9, max_run = 0.0;
+    uint64_t frame_id   = 0;
+    uint64_t measured   = 0;
+    double sum_capture  = 0.0, sum_pre = 0.0, sum_run = 0.0, sum_total = 0.0;
+    double min_run      = 1e9, max_run = 0.0;
+    Clock::time_point t_before_grab = Clock::now();
 
-    while (g_running.load()) {
-        const auto total0 = Clock::now();
-        ma_img_t frame{};
+    app.on_before_grab([&] {
+        t_before_grab = Clock::now();
+    });
 
-        const auto cap0 = Clock::now();
-        if (g_camera->retrieveFrame(frame, MA_PIXEL_FORMAT_RGB888) != MA_OK) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-        const auto cap1 = Clock::now();
-
-        if (!frame.data || frame.width == 0 || frame.height == 0) {
-            g_camera->returnFrame(frame);
-            continue;
+    app.on_frame([&](const af::VideoFrame& frame, af::Result& r) {
+        r.publish = false;
+        if (!frame.valid() || !frame.cpu_accessible()) {
+            return;
         }
 
-        const int width  = static_cast<int>(frame.width);
-        const int height = static_cast<int>(frame.height);
-        int stride       = width * 3;
-        if (height > 0 && frame.size > 0) {
-            const size_t guessed = frame.size / static_cast<size_t>(height);
-            if (guessed >= static_cast<size_t>(width * 3))
-                stride = static_cast<int>(guessed);
-        }
+        const auto t_got_frame = Clock::now();
+        const double capture_ms = ms_between(t_before_grab, t_got_frame);
 
-        // kPhysical=0: frame.data is a CPU-visible virtual address.
-        ::cv::Mat rgb(height, width, CV_8UC3, frame.data, static_cast<size_t>(stride));
+        const int width     = static_cast<int>(frame.width);
+        const int height    = static_cast<int>(frame.height);
+        const size_t stride = static_cast<size_t>(frame.stride());
+
+        // Wrap RGB mat from frame.data() and frame.stride()
+        ::cv::Mat rgb(height, width, CV_8UC3, frame.data(), stride);
 
         const auto pre0 = Clock::now();
         classifier.preprocess(rgb);
@@ -580,23 +470,19 @@ int main(int argc, char** argv) {
         std::vector<float> logits;
         double run_ms = 0.0;
         const bool ok = classifier.infer(logits, run_ms);
+        if (!ok || logits.empty()) {
+            return;
+        }
 
-        g_camera->returnFrame(frame);
-
-        if (!ok || logits.empty())
-            continue;
-
-        // 若模型输出本身已经是概率，softmax 仍会改变结果。
-        // 可通过观察输出和与 ONNX 对比确认；默认按 logits 处理。
+        // Calculate softmax and find top prediction
         const std::vector<float> probs = softmax(logits);
         const auto best_it             = std::max_element(probs.begin(), probs.end());
         const size_t best              = static_cast<size_t>(std::distance(probs.begin(), best_it));
         const float score              = *best_it;
 
-        const auto total1       = Clock::now();
-        const double capture_ms = ms_between(cap0, cap1);
-        const double pre_ms     = ms_between(pre0, pre1);
-        const double total_ms   = ms_between(total0, total1);
+        const auto total1     = Clock::now();
+        const double pre_ms   = ms_between(pre0, pre1);
+        const double total_ms = ms_between(t_before_grab, total1);
 
         ++frame_id;
         if (frame_id > 10) {
@@ -611,35 +497,24 @@ int main(int argc, char** argv) {
 
         const std::string name = best < labels.size() ? labels[best] : ("class_" + std::to_string(best));
 
-        // Push the same result to debug WS clients (sscma-node envelope).
-        // debug_stream is lazy: skip building JSON when nobody is connected.
-        if (g_config.enable_debug && debug_stream_results_client_count() > 0) {
+        // When app.debug_clients_count() > 0: build and send the classification debug result
+        if (app.debug_clients_count() > 0) {
             const uint64_t timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            std::string dj = build_debug_results_json(timestamp_ms, static_cast<uint32_t>(frame_id),
-                                                      name, static_cast<int>(best), score,
-                                                      labels, probs, static_cast<float>(total_ms));
+            const std::string dj = build_debug_results_json(timestamp_ms, static_cast<uint32_t>(frame_id),
+                                                            name, static_cast<int>(best), score,
+                                                            labels, probs, static_cast<float>(total_ms));
             debug_stream_publish_result(dj.c_str(), dj.size());
         }
 
-        // Publish every classified frame over MQTT (independent of the stdout
-        // print_interval throttle below).
-        if (g_config.enable_mqtt && g_mqtt_publisher) {
+        // Publish MQTT result via app.mqtt()->publishResultsJson(payload)
+        if (g_config.enable_mqtt && app.mqtt()) {
             const std::string payload = weather_classifier::buildResultJson(
                 frame_id, name, static_cast<int>(best), score, labels, probs,
                 run_ms, capture_ms, pre_ms, total_ms);
-            g_mqtt_publisher->publishResultsJson(payload);
+            app.mqtt()->publishResultsJson(payload);
 
-            // Additionally publish the same verdict in ONVIF's analytics
-            // representation, on its own topic and its own rate limit. The
-            // recamera/weather/results contract above is consumed by
-            // SenseCraft's draw_weather.js and does not change.
-            //
-            // A classifier has no boxes, but the ONVIF data model has no
-            // frame-level class either, so the verdict goes out as a single
-            // object covering the whole frame -- which is literally what was
-            // classified. The class name is the weather label; ONVIF has no
-            // word for weather, and tt:ClassDescriptor/Type is free text.
+            // Publish ONVIF verdict if enabled
             const uint64_t onvif_ts = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             if (g_onvif_meta.take(onvif_ts)) {
@@ -656,7 +531,7 @@ int main(int argc, char** argv) {
                 o.h  = static_cast<float>(height);
                 o.classes.push_back({name, score});
                 f.objects.push_back(std::move(o));
-                g_mqtt_publisher->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
+                app.mqtt()->publishText(g_onvif_meta.topic(), onvif_meta_to_json(f));
             }
         }
 
@@ -673,14 +548,15 @@ int main(int argc, char** argv) {
                 run_ms,
                 total_ms);
             if (measured > 0) {
-                std::printf(" | avg_run=%.2fms min=%.2fms max=%.2fms avg_total=%.2fms", sum_run / measured, min_run, max_run, sum_total / measured);
+                std::printf(" | avg_run=%.2fms min=%.2fms max=%.2fms avg_total=%.2fms",
+                            sum_run / measured, min_run, max_run, sum_total / measured);
             }
             std::printf("\n");
             std::fflush(stdout);
         }
-    }
+    });
 
-    cleanup();
+    const int rc = app.run();
 
     if (measured > 0) {
         std::printf("\n[SUMMARY] samples=%llu\n", static_cast<unsigned long long>(measured));
@@ -691,5 +567,6 @@ int main(int argc, char** argv) {
         std::printf("  inference FPS (TPU only): %.2f\n", 1000.0 / (sum_run / measured));
         std::printf("  end-to-end FPS: %.2f\n", 1000.0 / (sum_total / measured));
     }
-    return 0;
+
+    return rc;
 }
