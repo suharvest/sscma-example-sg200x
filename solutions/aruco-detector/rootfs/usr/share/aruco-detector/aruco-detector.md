@@ -32,3 +32,4 @@ High-performance atomic vision service running on Seeed reCamera (SG2002 single-
 ## Timestamp Fields
 - `ts_ms`: capture time of the frame, Unix epoch milliseconds (time of camera capture, not the end of processing).
 - `age_ms`: server time when the reply is built minus `ts_ms`.
+- `undistorted`: `true` when lens distortion correction is configured. A marker whose undistorted corners are degenerate (homography fails) is dropped and counted in `rejected`, so every reported marker in an `undistorted:true` frame was corrected.

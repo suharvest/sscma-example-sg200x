@@ -500,6 +500,14 @@ int main(int argc, char** argv) {
                     H_u = matd_create_data(3, 3, h);
                     det_u.H = H_u;
                     info.det = &det_u;
+                } else {
+                    // Undistorted corners are degenerate: skip the marker instead of
+                    // reporting a raw-corner pose under "undistorted":true.
+                    ++rejected;
+                    if (g_config.verbose) {
+                        MA_LOGW(TAG, "Rejected id=%d: homography from undistorted corners failed", det->id);
+                    }
+                    continue;
                 }
             }
             info.tagsize = g_config.marker_size;
