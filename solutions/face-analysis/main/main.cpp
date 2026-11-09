@@ -62,7 +62,7 @@ static struct {
     float evidence_decay = 1.0f;  // Per-frame decay on accumulated evidence; 1.0 = plain sum
 
     // DEX age model only (ignored for FairFace / InsightFace)
-    float age_max_variance = 55.0f;  // Frames with a wider age distribution are not used
+    float age_max_variance = 90.0f;  // Frames with a wider age distribution are not used
     float age_ema_alpha = 0.75f;     // Weight of the previous smoothed age
 
     // Debug stream (H.264-over-WS + results JSON for the supervisor console)

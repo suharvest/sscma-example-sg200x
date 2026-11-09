@@ -75,7 +75,7 @@ inline int ageToFairFaceBin(int age) {
 struct DexAgeConfig {
     // Frames whose DEX distribution variance (years^2) exceeds this are not
     // used: neither to seed nor to update the track's age.
-    float max_variance = 55.0f;
+    float max_variance = 90.0f;
     // Weight of the previous smoothed age: age = a*prev + (1-a)*new.
     float ema_alpha = 0.75f;
 };

@@ -6,10 +6,10 @@
 
 **Typical uses**: retail audience profiling (hourly gender/age mix of visitors), campaign feedback via emotion trends, showroom audience analytics. All analysis stays on the device — raw face imagery never leaves the camera.
 
-Real-time face detection with per-face attribute analysis (age, gender, race, emotion) running fully on-device (reCamera SG2002, RISC-V + TPU). The application is a fixed multi-model pipeline:
+Real-time face detection with per-face attribute analysis (age, gender, emotion) running fully on-device (reCamera SG2002, RISC-V + TPU). The application is a fixed multi-model pipeline:
 
 1. **Face detection** — YOLOv8n-face, run on every inference frame.
-2. **Age / gender / race** — FairFace (or InsightFace variant), run per detected face.
+2. **Age / gender** — DEX MobileNetV2 (continuous age 0–100 + gender), run per detected face. FairFace (adds race, 9 age bins) can be configured instead.
 3. **Emotion** — HSEmotion (AffectNet, 8 classes), run per detected face.
 
 Outputs:
@@ -74,7 +74,7 @@ Each element of `faces[]`:
 
 Notes:
 
-- Which age keys are present depends on the deployed attribute model: FairFace (default) → `age_bin`; InsightFace → `age`; DEX → both. DEX reports `-1` for both until the track has a frame whose age-distribution variance is at or below `AGE_MAX_VARIANCE`.
+- Which age keys are present depends on the deployed attribute model: DEX (default) → both; FairFace → `age_bin`; InsightFace → `age`. DEX reports `-1` for both until the track has a frame whose age-distribution variance is at or below `AGE_MAX_VARIANCE`.
 - Numbers are serialized with 3 decimal places.
 
 ### Coordinate convention (MQTT)
@@ -103,13 +103,12 @@ px_h    = bbox.h * frame_height
       "id": 7,
       "bbox": { "x": 0.412, "y": 0.238, "w": 0.144, "h": 0.221 },
       "confidence": 0.912,
+      "age": 27,
       "age_bin": 3,
-      "age_label": "20-29",
+      "age_label": "27",
       "age_confidence": 0.671,
       "gender": "female",
       "gender_confidence": 0.983,
-      "race": "East_Asian",
-      "race_confidence": 0.542,
       "emotion": "happy",
       "emotion_confidence": 0.877,
       "emotion_probs": {
@@ -158,7 +157,7 @@ This application has **no switchable models** (`setModel` is not applicable). It
 | Stage | Model | File | Role |
 |---|---|---|---|
 | 1 | `yolov8n-face` | `/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel` | Face detection (INT8) — produces `bbox`, `confidence`, tracking `id` |
-| 2 | `fairface` | `/userdata/local/models/fairface_int8.cvimodel` | Age bin (9), gender (2), race (7) per face crop (INT8) |
+| 2 | `dex-mnv2` | `/userdata/local/models/dex_age_gender_mnv2_160_int8.cvimodel` | Continuous age (0–100) and gender per face crop (INT8, 160x160). Set `GENDERAGE_MODEL=/userdata/local/models/fairface_int8.cvimodel` in `/etc/face-analysis.conf` to use FairFace (9 age bins + race) instead |
 | 3 | `hsemotion` | `/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel` | Emotion, AffectNet 8-class per face crop (BF16) |
 
 Emotion inference runs every 2nd frame by default; cached results are reused in between.

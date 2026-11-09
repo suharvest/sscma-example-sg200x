@@ -6,10 +6,10 @@
 
 **典型场景**：门店客群画像（分时段统计到店顾客性别/年龄构成）、活动效果的情绪反馈评估、展厅观众分析。全部分析在设备端完成，人脸原始影像不出设备。
 
-实时人脸检测 + 逐人脸属性分析（年龄、性别、种族、情绪），完全在设备端运行（reCamera SG2002，RISC-V + TPU）。本应用是固定的多模型流水线：
+实时人脸检测 + 逐人脸属性分析（年龄、性别、情绪），完全在设备端运行（reCamera SG2002，RISC-V + TPU）。本应用是固定的多模型流水线：
 
 1. **人脸检测** — YOLOv8n-face，每一推理帧都跑。
-2. **年龄 / 性别 / 种族** — FairFace（或 InsightFace 变体），对每个检测到的人脸跑。
+2. **年龄 / 性别** — DEX MobileNetV2（连续年龄 0–100 + 性别），对每个检测到的人脸跑。可改配 FairFace（多出种族与 9 个年龄区间）。
 3. **情绪** — HSEmotion（AffectNet，8 类），对每个检测到的人脸跑。
 
 输出：
@@ -74,7 +74,7 @@
 
 说明：
 
-- 年龄字段取决于部署的属性模型：FairFace（默认）→ `age_bin`；InsightFace → `age`；DEX → 两者都有。DEX 在轨迹出现年龄分布方差 ≤ `AGE_MAX_VARIANCE` 的帧之前，两者均为 `-1`。
+- 年龄字段取决于部署的属性模型：DEX（默认）→ 两者都有；FairFace → `age_bin`；InsightFace → `age`。DEX 在轨迹出现年龄分布方差 ≤ `AGE_MAX_VARIANCE` 的帧之前，两者均为 `-1`。
 - 数值序列化保留 3 位小数。
 
 ### 坐标约定（MQTT）
@@ -103,13 +103,12 @@ px_h    = bbox.h * frame_height
       "id": 7,
       "bbox": { "x": 0.412, "y": 0.238, "w": 0.144, "h": 0.221 },
       "confidence": 0.912,
+      "age": 27,
       "age_bin": 3,
-      "age_label": "20-29",
+      "age_label": "27",
       "age_confidence": 0.671,
       "gender": "female",
       "gender_confidence": 0.983,
-      "race": "East_Asian",
-      "race_confidence": 0.542,
       "emotion": "happy",
       "emotion_confidence": 0.877,
       "emotion_probs": {
@@ -158,7 +157,7 @@ sscma-node 兼容格式，每推理帧一条消息：
 | 级 | 模型 | 文件 | 作用 |
 |---|---|---|---|
 | 1 | `yolov8n-face` | `/userdata/local/models/yolov8n_face_cv181x_int8.cvimodel` | 人脸检测（INT8）——产出 `bbox`、`confidence`、跟踪 `id` |
-| 2 | `fairface` | `/userdata/local/models/fairface_int8.cvimodel` | 逐人脸裁剪的年龄区间（9）、性别（2）、种族（7）（INT8） |
+| 2 | `dex-mnv2` | `/userdata/local/models/dex_age_gender_mnv2_160_int8.cvimodel` | 逐人脸裁剪的连续年龄（0–100）与性别（INT8，160x160）。在 `/etc/face-analysis.conf` 设 `GENDERAGE_MODEL=/userdata/local/models/fairface_int8.cvimodel` 可改用 FairFace（9 个年龄区间 + 种族） |
 | 3 | `hsemotion` | `/userdata/local/models/enet_b0_8_best_afew_cv181x_bf16.cvimodel` | 情绪，逐人脸裁剪的 AffectNet 8 类（BF16） |
 
 情绪推理默认每隔一帧跑一次；其间复用缓存结果。
