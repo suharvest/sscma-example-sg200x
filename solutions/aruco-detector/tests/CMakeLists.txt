@@ -37,3 +37,9 @@ target_include_directories(marker_filter_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/
 target_compile_options(marker_filter_test PRIVATE -Wall -Wextra)
 
 add_test(NAME marker_filter COMMAND marker_filter_test)
+
+add_executable(capture_time_test ${CMAKE_CURRENT_LIST_DIR}/capture_time_test.cpp)
+target_include_directories(capture_time_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../main)
+target_compile_options(capture_time_test PRIVATE -Wall -Wextra)
+
+add_test(NAME capture_time COMMAND capture_time_test)

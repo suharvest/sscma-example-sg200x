@@ -23,3 +23,12 @@ High-performance atomic vision service running on Seeed reCamera (SG2002 single-
 ## Low Power & Thermal Efficiency
 - **Standby Mode (Inference Disabled)**: Camera throttled to 1 FPS, pose estimation bypassed. SG2002 CPU load < 3%, case temperature steady at 38°C.
 - **Active Mode (Triggered)**: Resumes to full 25 FPS with ~4ms processing latency per frame.
+
+## HTTP Control Access Rules
+- `:8090` listens on all interfaces. It sends no CORS headers and answers `OPTIONS` with 405, so web pages on other origins cannot call it.
+- `POST` requests must carry `Content-Type: application/json`; otherwise the reply is 415. `POST /api/trigger` takes no body but still needs the header.
+- The request (headers and body) must arrive within 3 s, otherwise the reply is 408.
+
+## Timestamp Fields
+- `ts_ms`: capture time of the frame, Unix epoch milliseconds (time of camera capture, not the end of processing).
+- `age_ms`: server time when the reply is built minus `ts_ms`.

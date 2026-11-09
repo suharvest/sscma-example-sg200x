@@ -46,3 +46,12 @@
 ## 待机低功耗指标
 - **待机状态 (Inference Disabled)**：底层相机动态降至 1 FPS，跳过 AprilTag 解算，SG2002 CPU 占用 < 3%，机身常温保持 38℃。
 - **触发工作 (Triggered / Enabled)**：瞬间恢复至 25 FPS 工作帧率，单帧解算时间约 4ms。
+
+## HTTP 控制接口访问规则
+- `:8090` 监听所有网卡，不发送 CORS 头，`OPTIONS` 返回 405，其他来源的网页无法调用。
+- `POST` 请求必须带 `Content-Type: application/json`，否则返回 415。`POST /api/trigger` 无请求体，仍需带该头。
+- 请求（头和体）须在 3 秒内收完，否则返回 408。
+
+## 时间戳字段
+- `ts_ms`：该帧的相机采集时刻，Unix 毫秒时间戳（不是处理结束时刻）。
+- `age_ms`：返回时的服务器时间减去 `ts_ms`。

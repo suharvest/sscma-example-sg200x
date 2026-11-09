@@ -15,6 +15,8 @@
 // components/app_framework
 #include <af/app.h>
 
+#include <time.h>
+
 // AprilTag 3 & ArUco dictionaries
 #include "apriltag.h"
 #include "apriltag_pose.h"
@@ -31,6 +33,7 @@
 #include <sscma.h>
 
 #include "camera_model.h"
+#include "capture_time.h"
 #include "http_control.h"
 #include "inference_control.h"
 #include "marker_filter.h"
@@ -385,9 +388,16 @@ int main(int argc, char** argv) {
     uint32_t processed_frames = 0;
 
     app.on_frame([&](const af::VideoFrame& frame, af::Result& result) {
-        const uint64_t capture_unix_ms = static_cast<uint64_t>(
+        // Capture time of this frame (not processing time): wall clock minus the
+        // frame's age, where frame.ts_ms is CLOCK_MONOTONIC ms stamped at grab.
+        timespec mono_ts{};
+        clock_gettime(CLOCK_MONOTONIC, &mono_ts);
+        const uint32_t now_mono_ms = static_cast<uint32_t>(
+            (static_cast<uint64_t>(mono_ts.tv_sec) * 1000u + static_cast<uint64_t>(mono_ts.tv_nsec) / 1000000u));
+        const uint64_t now_unix_ms = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
+        const uint64_t capture_unix_ms = aruco::capture_unix_ms(now_unix_ms, now_mono_ms, frame.ts_ms);
         frame_seq++;
 
         if (!g_inference->enabled()) {
