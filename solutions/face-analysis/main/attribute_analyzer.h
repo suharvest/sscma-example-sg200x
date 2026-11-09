@@ -60,15 +60,38 @@ inline const char* getRaceLabel(int race_bin) {
     return "unknown";
 }
 
+// Map a continuous age in years onto the FairFace 9-bin index, so DEX output
+// can also be published as `age_bin` for consumers of the FairFace contract.
+inline int ageToFairFaceBin(int age) {
+    static const int upper[] = {2, 9, 19, 29, 39, 49, 59, 69};
+    if (age < 0) return -1;
+    for (int i = 0; i < 8; ++i) {
+        if (age <= upper[i]) return i;
+    }
+    return 8;
+}
+
+// DEX continuous-age temporal smoothing.
+struct DexAgeConfig {
+    // Frames whose DEX distribution variance (years^2) exceeds this are not
+    // used: neither to seed nor to update the track's age.
+    float max_variance = 55.0f;
+    // Weight of the previous smoothed age: age = a*prev + (1-a)*new.
+    float ema_alpha = 0.75f;
+};
+
 struct FaceAttributes {
     // Model format indicator
-    bool is_fairface = false;  // true=FairFace (age bins+race), false=InsightFace (continuous age)
+    bool is_fairface = false;  // true=FairFace (age bins+race), false=InsightFace/DEX (continuous age)
+    bool is_dex = false;       // true=DEX: both age_continuous and age_bin are filled
 
     // Age prediction
     // FairFace: age_bin=0..8 (bin index), age_label="0-2","3-9",...,"70+"
     // InsightFace: age_bin=-1, age_continuous=0..100 (years), age_label="28"
+    // DEX: age_continuous=0..100 (smoothed years), age_bin=its FairFace bin,
+    //      age_label="28"; both stay -1 until a reliable frame has been seen
     int age_bin = -1;
-    int age_continuous = -1;   // InsightFace: age in years (0-100), FairFace: -1
+    int age_continuous = -1;   // InsightFace/DEX: age in years (0-100), FairFace: -1
     std::string age_label;
     float age_confidence = 0.f;
 
@@ -123,6 +146,8 @@ public:
     void setEvidenceConfig(const EvidenceConfig& cfg) { evidence_.setConfig(cfg); }
     const EvidenceConfig& evidenceConfig() const { return evidence_.config(); }
 
+    void setDexAgeConfig(const DexAgeConfig& cfg) { dex_cfg_ = cfg; }
+
     // Drop the evidence of tracks the tracker retired this frame.
     void sweepEvidence(const std::vector<int>& removed_ids) {
         evidence_.sweep(removed_ids);
@@ -152,7 +177,8 @@ private:
 
     struct TrackedAgeState {
         float smoothed_age = -1.0f;
-        int update_count = 0;
+        int update_count = 0;      // Reliable frames folded into smoothed_age
+        float age_confidence = 0.f;  // From the last reliable frame
     };
 
     // Replaces the old IoU-matched emotion cache: on a frame where emotion is
@@ -162,6 +188,8 @@ private:
     AttributeEvidence evidence_;
     std::unordered_map<int, TrackedAgeState> age_tracks_;
     bool agr_is_fairface_ = false;
+    bool agr_is_dex_ = false;
+    DexAgeConfig dex_cfg_;
 };
 
 }  // namespace face_analysis

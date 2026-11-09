@@ -17,7 +17,8 @@ struct AgeGenderRaceResult {
     float gender_score = 0.f;
     float age_score = 0.f;
     float race_score = 0.f;
-    bool is_fairface = false;  // true=FairFace (age bins+race), false=InsightFace (continuous age)
+    bool is_fairface = false;  // true=FairFace (age bins+race), false=InsightFace/DEX (continuous age)
+    bool is_dex = false;       // true=DEX: continuous_age_float/age_variance are valid
 
     // Full softmax distributions, for temporal accumulation upstream (a single
     // frame's argmax is what made race/age flicker frame to frame).
@@ -29,8 +30,9 @@ struct AgeGenderRaceResult {
     float gender_probs[2] = {};
     float age_probs[9]    = {};
 
-    // Continuous DEX fields
+    // DEX only: expected age in years (unrounded).
     float continuous_age_float = 0.0f;
+    // Variance of the DEX age distribution (years^2). DEX only; 0 otherwise.
     float age_variance = 0.0f;
 };
 
@@ -47,6 +49,10 @@ public:
     bool init(const std::string& model_path);
 
     int inputSize() const { return input_size_; }
+
+    // DEX was trained on unaligned detector crops; callers skip landmark
+    // alignment for it.
+    bool isDex() const { return model_format_ == ModelFormat::DexAttribute; }
 
     void setPreprocess(float mean0, float mean1, float mean2, float scale0, float scale1, float scale2) {
         mean_[0] = mean0;

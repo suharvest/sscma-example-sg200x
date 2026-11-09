@@ -61,11 +61,13 @@ std::string buildResultJson(uint64_t timestamp_ms, uint32_t frame_id,
 
         json << "\"confidence\":" << face.face.score << ",";
 
-        // Age (format depends on model)
+        // Age (format depends on model). DEX publishes both: `age` in years and
+        // `age_bin` on the FairFace 9-bin scale, so FairFace consumers keep working.
         if (attrs.is_fairface) {
             json << "\"age_bin\":" << attrs.age_bin << ",";
         } else {
             json << "\"age\":" << attrs.age_continuous << ",";
+            if (attrs.is_dex) json << "\"age_bin\":" << attrs.age_bin << ",";
         }
         json << "\"age_label\":\"" << attrs.age_label << "\",";
         json << "\"age_confidence\":" << attrs.age_confidence << ",";

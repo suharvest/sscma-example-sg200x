@@ -617,7 +617,8 @@ bool AgeGenderRaceRunner::parseOutputsDex(AgeGenderRaceResult& out) {
 
     if (vals.size() < 103) return false;
 
-    // Gender: vals[0]=Male logit, vals[1]=Female logit
+    // Gender: vals[0]=Male logit, vals[1]=Female logit (training labels 0=Male,
+    // 1=Female, see recamera_dex_attribute/train/dataset.py)
     float g_m = vals[0];
     float g_f = vals[1];
     float g_max = std::max(g_m, g_f);
@@ -661,6 +662,7 @@ bool AgeGenderRaceRunner::parseOutputsDex(AgeGenderRaceResult& out) {
     out.race = -1;
     out.race_score = 0.0f;
     out.is_fairface = false;
+    out.is_dex = true;
     out.ok = (out.gender >= 0);
     return out.ok;
 }

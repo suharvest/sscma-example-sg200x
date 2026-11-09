@@ -61,6 +61,10 @@ static struct {
     int track_max_lost = 15;      // Frames a track survives without a match
     float evidence_decay = 1.0f;  // Per-frame decay on accumulated evidence; 1.0 = plain sum
 
+    // DEX age model only (ignored for FairFace / InsightFace)
+    float age_max_variance = 55.0f;  // Frames with a wider age distribution are not used
+    float age_ema_alpha = 0.75f;     // Weight of the previous smoothed age
+
     // Debug stream (H.264-over-WS + results JSON for the supervisor console)
     bool enable_debug = true;
     int debug_port = 8001;
@@ -105,6 +109,8 @@ static void print_usage(const char* prog) {
     printf("  --min-track-frames N      Frames of evidence before a verdict is stable (default: %d)\n", g_config.min_track_frames);
     printf("  --track-max-lost N        Frames a track survives unmatched (default: %d)\n", g_config.track_max_lost);
     printf("  --evidence-decay F        Per-frame decay on accumulated evidence (default: %.2f)\n", g_config.evidence_decay);
+    printf("  --age-max-variance F      DEX: skip frames whose age variance exceeds F (default: %.1f)\n", g_config.age_max_variance);
+    printf("  --age-ema-alpha F         DEX: weight of the previous smoothed age, 0..1 (default: %.2f)\n", g_config.age_ema_alpha);
     printf("  -v, --verbose             Enable verbose logging\n");
     printf("  -h, --help                Show this help message\n");
 }
@@ -129,6 +135,8 @@ static bool parse_args(int argc, char** argv) {
         {"min-track-frames", required_argument, 0, 9},
         {"track-max-lost", required_argument, 0, 10},
         {"evidence-decay", required_argument, 0, 11},
+        {"age-max-variance", required_argument, 0, 12},
+        {"age-ema-alpha", required_argument, 0, 13},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -191,6 +199,12 @@ static bool parse_args(int argc, char** argv) {
             case 11:
                 g_config.evidence_decay = std::stof(optarg);
                 break;
+            case 12:
+                g_config.age_max_variance = std::stof(optarg);
+                break;
+            case 13:
+                g_config.age_ema_alpha = std::min(1.0f, std::max(0.0f, std::stof(optarg)));
+                break;
             case 'v':
                 g_config.verbose = true;
                 break;
@@ -235,6 +249,10 @@ static bool init_models() {
     ev_cfg.min_track_frames = g_config.min_track_frames;
     ev_cfg.decay = g_config.evidence_decay;
     g_attribute_analyzer->setEvidenceConfig(ev_cfg);
+    DexAgeConfig dex_cfg;
+    dex_cfg.max_variance = g_config.age_max_variance;
+    dex_cfg.ema_alpha = g_config.age_ema_alpha;
+    g_attribute_analyzer->setDexAgeConfig(dex_cfg);
     MA_LOGI(TAG, "Tracking/evidence: min_face_px=%.0f min_track_frames=%d max_lost=%d decay=%.2f",
             ev_cfg.min_face_px, ev_cfg.min_track_frames, track_cfg.max_lost_frames, ev_cfg.decay);
     MA_LOGI(TAG, "Attribute analyzer initialized (GenderAge: %s, Emotion: %s)",
