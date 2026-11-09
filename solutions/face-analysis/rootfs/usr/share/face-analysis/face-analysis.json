@@ -25,9 +25,9 @@
       "task": "face-detect"
     },
     {
-      "name": "fairface",
-      "path": "/userdata/local/models/fairface_int8.cvimodel",
-      "task": "age-gender-race"
+      "name": "dex-mnv2",
+      "path": "/userdata/local/models/dex_age_gender_mnv2_160_int8.cvimodel",
+      "task": "age-gender"
     },
     {
       "name": "hsemotion",
@@ -35,6 +35,6 @@
       "task": "emotion"
     }
   ],
-  "version": "0.5.4",
+  "version": "0.6.0",
   "author": "Seeed Studio"
 }
