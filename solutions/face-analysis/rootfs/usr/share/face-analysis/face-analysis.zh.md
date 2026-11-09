@@ -60,9 +60,9 @@
 | `bbox.w` | number | 归一化 0–1 | 框宽（占帧宽的比例） |
 | `bbox.h` | number | 归一化 0–1 | 框高（占帧高的比例） |
 | `confidence` | number | 0–1 | 人脸检测得分 |
-| `age_bin` | integer | 0–8 | **仅 FairFace 模型。** 年龄区间索引 |
-| `age` | integer | 0–100 岁 | **仅 InsightFace 模型。** 连续年龄估计 |
-| `age_label` | string | — | 可读年龄：FairFace 区间标签（`"0-2"`、`"3-9"`、`"10-19"`、`"20-29"`、`"30-39"`、`"40-49"`、`"50-59"`、`"60-69"`、`"70+"`）或 InsightFace 年龄的字符串形式 |
+| `age_bin` | integer | 0–8 | FairFace 与 DEX 模型。年龄区间索引（DEX：由连续年龄映射到同一组 9 个区间） |
+| `age` | integer | 0–100 岁 | InsightFace 与 DEX 模型。连续年龄估计（DEX：按轨迹平滑） |
+| `age_label` | string | — | 可读年龄：FairFace 区间标签（`"0-2"`、`"3-9"`、`"10-19"`、`"20-29"`、`"30-39"`、`"40-49"`、`"50-59"`、`"60-69"`、`"70+"`）或 InsightFace/DEX 年龄的字符串形式 |
 | `age_confidence` | number | 0–1 | 年龄预测置信度 |
 | `gender` | string | `"male"` \| `"female"` | 性别预测 |
 | `gender_confidence` | number | 0–1 | 性别预测置信度 |
@@ -74,7 +74,7 @@
 
 说明：
 
-- `age_bin` / `age` 二者恰有其一，取决于部署了哪个属性模型变体（默认部署 FairFace，故应为 `age_bin`）。
+- 年龄字段取决于部署的属性模型：FairFace（默认）→ `age_bin`；InsightFace → `age`；DEX → 两者都有。DEX 在轨迹出现年龄分布方差 ≤ `AGE_MAX_VARIANCE` 的帧之前，两者均为 `-1`。
 - 数值序列化保留 3 位小数。
 
 ### 坐标约定（MQTT）

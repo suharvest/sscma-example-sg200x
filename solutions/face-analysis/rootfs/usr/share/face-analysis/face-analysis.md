@@ -60,9 +60,9 @@ Each element of `faces[]`:
 | `bbox.w` | number | normalized 0–1 | Box width (fraction of frame width) |
 | `bbox.h` | number | normalized 0–1 | Box height (fraction of frame height) |
 | `confidence` | number | 0–1 | Face detection score |
-| `age_bin` | integer | 0–8 | **FairFace model only.** Age bin index |
-| `age` | integer | 0–100 years | **InsightFace model only.** Continuous age estimate |
-| `age_label` | string | — | Human-readable age: FairFace bin label (`"0-2"`, `"3-9"`, `"10-19"`, `"20-29"`, `"30-39"`, `"40-49"`, `"50-59"`, `"60-69"`, `"70+"`) or InsightFace age as string |
+| `age_bin` | integer | 0–8 | FairFace and DEX models. Age bin index (DEX: its continuous age mapped onto the same 9 bins) |
+| `age` | integer | 0–100 years | InsightFace and DEX models. Continuous age estimate (DEX: smoothed over the track) |
+| `age_label` | string | — | Human-readable age: FairFace bin label (`"0-2"`, `"3-9"`, `"10-19"`, `"20-29"`, `"30-39"`, `"40-49"`, `"50-59"`, `"60-69"`, `"70+"`) or InsightFace/DEX age as string |
 | `age_confidence` | number | 0–1 | Age prediction confidence |
 | `gender` | string | `"male"` \| `"female"` | Gender prediction |
 | `gender_confidence` | number | 0–1 | Gender prediction confidence |
@@ -74,7 +74,7 @@ Each element of `faces[]`:
 
 Notes:
 
-- Exactly one of `age_bin` / `age` is present, depending on which attribute model variant is deployed (default deployment ships FairFace, so expect `age_bin`).
+- Which age keys are present depends on the deployed attribute model: FairFace (default) → `age_bin`; InsightFace → `age`; DEX → both. DEX reports `-1` for both until the track has a frame whose age-distribution variance is at or below `AGE_MAX_VARIANCE`.
 - Numbers are serialized with 3 decimal places.
 
 ### Coordinate convention (MQTT)
