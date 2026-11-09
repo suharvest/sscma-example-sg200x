@@ -631,7 +631,7 @@ ma_err_t CameraNode::onStart() {
         if (i == CHN_AUDIO) {
             continue;
         }
-        video_ch_param_t param;
+        video_ch_param_t param{};
         switch (channels_[i].format) {
             case MA_PIXEL_FORMAT_JPEG:
                 param.format = VIDEO_FORMAT_JPEG;

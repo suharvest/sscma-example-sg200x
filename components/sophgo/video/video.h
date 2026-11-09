@@ -30,6 +30,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint8_t fps;
+    uint8_t blkcnt; // vb pool block count override; 0 = keep default
 } video_ch_param_t;
 
 // typedef struct {

@@ -240,7 +240,7 @@ ma_err_t CameraSG200X::startStream(StreamMode mode) noexcept {
     }
     for (int i = 0; i < CHN_MAX; i++) {
         if (m_channels[i].enabled) {
-            video_ch_param_t param;
+            video_ch_param_t param{};
             param.width  = m_channels[i].width;
             param.height = m_channels[i].height;
             param.fps    = m_channels[i].fps;

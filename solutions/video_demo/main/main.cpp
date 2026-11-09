@@ -133,7 +133,7 @@ int main(int argc, char* argv[]) {
     if (initVideo())
         return -1;
 
-    video_ch_param_t param;
+    video_ch_param_t param{};
 
     // // ch0
     // param.format = VIDEO_FORMAT_RGB888;

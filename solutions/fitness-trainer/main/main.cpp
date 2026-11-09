@@ -243,7 +243,7 @@ static bool init_video_streaming() {
         return false;
     }
 
-    video_ch_param_t stream_param;
+    video_ch_param_t stream_param{};
     stream_param.format = VIDEO_FORMAT_H264;
     stream_param.width = g_config.stream_width;
     stream_param.height = g_config.stream_height;

@@ -11,7 +11,8 @@ static bool video_flip   = false;
  * frames in flight, so with the default 4 VPSS had one free block and the ISP
  * trigger for 2 of every 3 sensor frames was refused ("No sc-2 buffer
  * available"): every stream ran at 10 fps whatever it was configured to.
- * 6 leaves VPSS a spare block at 30 fps (measured MinFree 1). */
+ * 6 leaves VPSS a spare block at 30 fps (measured MinFree 1). A caller's
+ * blkcnt wins, e.g. to keep large-resolution pools within the ION budget. */
 #define VENC_CHN_VB_BLK_NUM 6
 
 static bool isEncoded(const video_ch_param_t* param) {
@@ -45,7 +46,9 @@ static int setVbPool(video_ch_index_t ch, const video_ch_param_t* param) {
     vb->width              = param->width;
     vb->height             = param->height;
     vb->fmt                = (param->format == VIDEO_FORMAT_RGB888) ? PIXEL_FORMAT_RGB_888 : PIXEL_FORMAT_NV21;
-    if (isEncoded(param)) {
+    if (param->blkcnt > 0) {
+        vb->vb_blk_num = param->blkcnt;
+    } else if (isEncoded(param)) {
         vb->vb_blk_num = VENC_CHN_VB_BLK_NUM;
     }
 
