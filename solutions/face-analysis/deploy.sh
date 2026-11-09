@@ -117,14 +117,14 @@ ok "Package installed"
 
 # --- Step 4: Start service ---
 log "Starting ${SOLUTION_NAME}..."
-run_sudo "/etc/init.d/S92face-analysis restart" || err "Service start failed"
+run_sudo "/etc/init.d/K92face-analysis restart" || err "Service start failed"
 ok "Service started"
 
 # --- Step 5: Verify ---
 sleep 8
 
 log "Checking service status..."
-run_ssh "/etc/init.d/S92face-analysis status" || warn "Status check failed"
+run_sudo "/etc/init.d/K92face-analysis status" || warn "Status check failed"
 
 # Detect SEGV from this deploy run (uptime in dmesg helps)
 SEGV_HIT=$(run_sudo 'dmesg | tail -50 | grep -c "face-analysis.*unhandled signal"' 2>/dev/null | tr -d '[:space:]')
