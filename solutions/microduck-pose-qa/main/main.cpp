@@ -140,7 +140,7 @@ struct LatencyTracker {
 static LatencyTracker g_perf_tracker;
 
 static void print_usage(const char* prog) {
-    printf("Microduck Pose QA for reCamera SG2002 (v1.0.7)\n\n");
+    printf("Microduck Pose QA for reCamera SG2002 (v1.0.12)\n\n");
     printf("Usage: %s [options]\n\n", prog);
     printf("Options:\n");
     printf("  -m, --model PATH        Pose model (default: /userdata/local/models/microduck_pose_17kpt_384_int8.cvimodel)\n");
@@ -275,7 +275,7 @@ static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
     const ActionState cur_state = g_state_machine.getState();
     const std::string cur_action = g_state_machine.getCurrentActionId();
     const bool is_collecting = (cur_state == ActionState::COLLECTING);
-    const bool is_pose_action = (is_collecting && cur_action == "stand");
+    const bool is_pose_action = (is_collecting && (cur_action == "stand" || cur_action == "calibrate_stand"));
     const bool is_optical_action = (is_collecting && cur_action == "face_led");
 
     // Lock detector thresholds with snapshot if COLLECTING, or watcher otherwise
@@ -318,7 +318,13 @@ static void on_frame(af::App& app, const af::VideoFrame& frame, af::Result& r) {
         // Face LED Optical Inspection Operator (action_id == "face_led")
         // No TPU inference! Uses OpenCV optical analysis
         const auto t_opt_start = std::chrono::steady_clock::now();
-        opt_res = inspectFaceLed(frame.planes[0].vir, frame.width, frame.height, cfg);
+        if (g_state_machine.getLedExpectation().active) {
+            // single-LED check only; the legacy whole-ROI metrics are skipped (cost)
+            opt_res.slots = inspectFaceLedSlots(frame.planes[0].vir, frame.width, frame.height, cfg);
+            opt_res.metrics.lit_pixels = opt_res.slots.valid ? 1 : 0;
+        } else {
+            opt_res = inspectFaceLed(frame.planes[0].vir, frame.width, frame.height, cfg);
+        }
         inference_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t_opt_start).count();
     }
     // else: IDLE or non-active state -- no TPU inference; the App keeps frame
@@ -432,7 +438,7 @@ int main(int argc, char** argv) {
     g_watcher = new ConfigWatcher(APP_CONFIG_PATH);
     const AppConfig& cfg = g_watcher->loadInitial();
 
-    MA_LOGI(TAG, "Starting Microduck Pose QA Service (v1.0.7)");
+    MA_LOGI(TAG, "Starting Microduck Pose QA Service (v1.0.12)");
 
     auto release = [] {
         delete g_detector;

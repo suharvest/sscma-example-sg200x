@@ -8,7 +8,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -304,6 +308,20 @@ void HttpControlServer::handleClient(int client_fd) {
                 force = req_json["force"].get<bool>();
             }
 
+            FaceLedExpectation expectation;
+            const json* exp_j = nullptr;
+            if (params.contains("expected")) exp_j = &params["expected"];
+            else if (req_json.contains("expected")) exp_j = &req_json["expected"];
+            if (exp_j && action_id == "face_led") {
+                std::string perr;
+                if (!parseFaceLedExpectation(*exp_j, expectation, perr)) {
+                    json err = {{"error", "INVALID_PARAMS"}, {"message", perr}};
+                    send_http_response(client_fd, 400, "Bad Request", err.dump());
+                    ::close(client_fd);
+                    return;
+                }
+            }
+
             if (sm_) {
                 if (sm_->getState() == ActionState::COLLECTING && !force) {
                     json err = {
@@ -321,13 +339,14 @@ void HttpControlServer::handleClient(int client_fd) {
                     snapshot = watcher_->createSnapshot();
                 }
 
-                bool ok = sm_->startAction(action_id, run_id, timeout_s, force, snapshot);
+                bool ok = sm_->startAction(action_id, run_id, timeout_s, force, snapshot, expectation);
                 if (ok) {
                     json resp = {
                         {"result", "ok"},
                         {"state", "COLLECTING"},
                         {"run_id", run_id}
                     };
+                    if (expectation.active) resp["expected_colour"] = expectation.colour;
                     send_http_response(client_fd, 200, "OK", resp.dump());
                 } else {
                     json err = {
@@ -339,6 +358,65 @@ void HttpControlServer::handleClient(int client_fd) {
             } else {
                 json err = {{"error", "STATE_MACHINE_UNAVAILABLE"}};
                 send_http_response(client_fd, 503, "Service Unavailable", err.dump());
+            }
+        } else if (method == "calibrate_stand") {
+            handleCalibrateStand(client_fd, req_json, params);
+            return;
+        } else if (method == "set_stand_nominal") {
+            handleSetStandNominal(client_fd, params);
+            return;
+        } else if (method == "set_face_led_layout") {
+            // params: {"layout": {"rgb": [u, v], ...}, "persist": true}; ring coordinates
+            if (!watcher_) {
+                send_http_response(client_fd, 503, "Service Unavailable", json({{"error", "CONFIG_UNAVAILABLE"}}).dump());
+            } else {
+                AppConfig next = watcher_->config();
+                std::vector<FaceLedSlotPos> lay;
+                bool ok = params.contains("layout") && params["layout"].is_object();
+                if (ok) {
+                    for (auto it = params["layout"].begin(); it != params["layout"].end(); ++it) {
+                        const auto& v = it.value();
+                        if (!v.is_array() || v.size() != 2 || !v[0].is_number() || !v[1].is_number() ||
+                            std::abs(v[0].get<float>()) > 10.0f || std::abs(v[1].get<float>()) > 10.0f) { ok = false; break; }
+                        lay.push_back({it.key(), v[0].get<float>(), v[1].get<float>()});
+                    }
+                }
+                if (!ok || lay.size() < 3) {
+                    send_http_response(client_fd, 400, "Bad Request",
+                                       json({{"error", "INVALID_PARAMS"}, {"message", "layout: {place: [u, v]} x >= 3, |u|,|v| <= 10"}}).dump());
+                } else {
+                    next.face_led_layout = lay;
+                    std::string err;
+                    const bool persist = params.value("persist", true);
+                    if (persist && !save_face_led_layout(watcher_->confPath(), next, &err)) {
+                        send_http_response(client_fd, 500, "Internal Server Error", json({{"error", "PERSIST_FAILED"}, {"message", err}}).dump());
+                    } else {
+                        watcher_->setConfig(next);
+                        json l = json::object();
+                        for (const auto& sl : lay) l[sl.place] = {sl.x, sl.y};
+                        send_http_response(client_fd, 200, "OK", json({{"result", "ok"}, {"layout", l}, {"persisted", persist},
+                                                                       {"conf_path", watcher_->confPath()}}).dump());
+                    }
+                }
+            }
+        } else if (method == "get_config") {
+            if (!watcher_) {
+                send_http_response(client_fd, 503, "Service Unavailable", json({{"error", "CONFIG_UNAVAILABLE"}}).dump());
+            } else {
+                const AppConfig c = watcher_->config();
+                json layout = json::object();
+                for (const auto& sl : c.face_led_layout) layout[sl.place] = {sl.x, sl.y};
+                json resp = {
+                    {"result", "ok"},
+                    {"conf_path", watcher_->confPath()},
+                    {"nominal", nominalJson(c)},
+                    {"tolerances", {{"gear_tooth_tolerance_deg", c.gear_tooth_tolerance_deg},
+                                    {"bilateral_height_tolerance_norm", c.bilateral_height_tolerance_norm},
+                                    {"spine_tilt_tolerance_deg", c.spine_tilt_tolerance_deg}}},
+                    {"face_led_layout", layout},
+                    {"config_version", c.config_version}
+                };
+                send_http_response(client_fd, 200, "OK", resp.dump());
             }
         } else if (method == "stop_action") {
             if (sm_) {
@@ -415,7 +493,8 @@ void HttpControlServer::handleClient(int client_fd) {
             json err = {
                 {"error", "UNKNOWN_METHOD"},
                 {"method", method},
-                {"supported_methods", json::array({"get_status", "start_action", "stop_action", "reset", "get_last_report"})}
+                {"supported_methods", json::array({"get_status", "start_action", "stop_action", "reset", "get_last_report",
+                                                    "calibrate_stand", "set_stand_nominal", "set_face_led_layout", "get_config"})}
             };
             send_http_response(client_fd, 400, "Bad Request", err.dump());
         }
@@ -432,6 +511,119 @@ void HttpControlServer::handleClient(int client_fd) {
         MA_LOGE(TAG, "Unknown fatal exception in handleClient");
         ::close(client_fd);
     }
+}
+
+json HttpControlServer::nominalJson(const AppConfig& c) {
+    return {
+        {"nominal_stand_theta_l_deg", c.nominal_stand_theta_l_deg},
+        {"nominal_stand_theta_r_deg", c.nominal_stand_theta_r_deg},
+        {"nominal_stand_disparity_deg", c.nominal_stand_disparity_deg},
+        {"nominal_stand_spine_tilt_deg", c.nominal_stand_spine_tilt_deg},
+        {"nominal_stand_knee_diff_norm", c.nominal_stand_knee_diff_norm}
+    };
+}
+
+// Apply a new stand standard: write the conf file first (when persisting), then swap the
+// in-memory config, so a failed write leaves both unchanged.
+bool HttpControlServer::applyNominal(const AppConfig& next, bool persist, std::string& err) {
+    if (persist && !save_stand_nominal(watcher_->confPath(), next, &err)) return false;
+    watcher_->setConfig(next);
+    return true;
+}
+
+// calibrate_stand: collect one stand window (same 30-frame window and per-frame evaluation as
+// start_action stand) on a golden sample, take the medians as the new standard, persist it and
+// answer with the values and frame counts. Blocks this (single) control connection until the
+// window closes: at most timeout_s + 2 s.
+void HttpControlServer::handleCalibrateStand(int client_fd, const json& req_json, const json& params) {
+    auto reply = [&](int code, const char* text, const json& body) {
+        send_http_response(client_fd, code, text, body.dump());
+        ::close(client_fd);
+    };
+    if (!sm_ || !watcher_) return reply(503, "Service Unavailable", {{"error", "STATE_MACHINE_UNAVAILABLE"}});
+
+    float timeout_s = 10.0f;
+    if (params.contains("timeout_s") && params["timeout_s"].is_number()) timeout_s = params["timeout_s"].get<float>();
+    timeout_s = std::clamp(timeout_s, 1.0f, 10.0f);
+    const bool persist = params.value("persist", true);
+    const bool force = params.value("force", false);
+    std::string run_id = params.value("run_id", req_json.value("run_id", std::string("calibrate_stand")));
+
+    if (sm_->getState() == ActionState::COLLECTING && !force) {
+        return reply(409, "Conflict", {{"error", "BUSY"}, {"current_run_id", sm_->getCurrentRunId()}});
+    }
+    const AppConfig before = watcher_->config();
+    if (!sm_->startAction("calibrate_stand", run_id, timeout_s, force, before)) {
+        return reply(500, "Internal Server Error", {{"error", "FAILED_TO_START"}});
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(static_cast<int>((timeout_s + 2.0f) * 1000));
+    while (std::chrono::steady_clock::now() < deadline) {
+        sm_->checkTimeout();
+        if (sm_->getState() != ActionState::COLLECTING) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (sm_->getState() == ActionState::COLLECTING) sm_->stopAction();
+
+    const ActionReport rep = sm_->getLastReport();
+    const StandCalibration& cal = rep.calibration;
+    json frames = {{"total", cal.total_frames}, {"valid", cal.valid_frames},
+                   {"spine", cal.spine_frames}, {"required", cal.required_frames}};
+    if (rep.action_id != "calibrate_stand" || !cal.ok) {
+        return reply(422, "Unprocessable Entity",
+                     {{"error", "INSUFFICIENT_VALID_FRAMES"},
+                      {"reason", cal.reason.empty() ? rep.status_code : cal.reason},
+                      {"frames", frames}, {"nominal", nominalJson(before)}});
+    }
+    AppConfig next = before;
+    next.nominal_stand_theta_l_deg = cal.theta_l_deg;
+    next.nominal_stand_theta_r_deg = cal.theta_r_deg;
+    next.nominal_stand_disparity_deg = cal.disparity_deg;
+    next.nominal_stand_spine_tilt_deg = cal.spine_tilt_deg;
+    next.nominal_stand_knee_diff_norm = cal.knee_diff_norm;
+    std::string err;
+    if (!applyNominal(next, persist, err)) {
+        return reply(500, "Internal Server Error", {{"error", "PERSIST_FAILED"}, {"message", err},
+                                                    {"measured", nominalJson(next)}, {"frames", frames}});
+    }
+    MA_LOGI(TAG, "Stand standard calibrated from %d frames: L=%.2f R=%.2f disp=%.2f spine=%.2f knee_diff=%.4f (persist=%d)",
+            cal.valid_frames, cal.theta_l_deg, cal.theta_r_deg, cal.disparity_deg, cal.spine_tilt_deg, cal.knee_diff_norm, persist);
+    reply(200, "OK", {{"result", "ok"}, {"run_id", run_id}, {"nominal", nominalJson(next)},
+                      {"previous", nominalJson(before)}, {"frames", frames}, {"persisted", persist},
+                      {"conf_path", watcher_->confPath()}});
+}
+
+void HttpControlServer::handleSetStandNominal(int client_fd, const json& params) {
+    auto reply = [&](int code, const char* text, const json& body) {
+        send_http_response(client_fd, code, text, body.dump());
+        ::close(client_fd);
+    };
+    if (!watcher_) return reply(503, "Service Unavailable", {{"error", "CONFIG_UNAVAILABLE"}});
+    const AppConfig before = watcher_->config();
+    AppConfig next = before;
+    struct Key { const char* name; float* dst; float lo; float hi; };
+    const Key keys[] = {
+        {"nominal_stand_theta_l_deg", &next.nominal_stand_theta_l_deg, -180.0f, 180.0f},
+        {"nominal_stand_theta_r_deg", &next.nominal_stand_theta_r_deg, -180.0f, 180.0f},
+        {"nominal_stand_disparity_deg", &next.nominal_stand_disparity_deg, 0.0f, 180.0f},
+        {"nominal_stand_spine_tilt_deg", &next.nominal_stand_spine_tilt_deg, 0.0f, 180.0f},
+        {"nominal_stand_knee_diff_norm", &next.nominal_stand_knee_diff_norm, -1.0f, 1.0f},
+    };
+    int n = 0;
+    for (const auto& k : keys) {
+        if (!params.contains(k.name)) continue;
+        if (!params[k.name].is_number()) return reply(400, "Bad Request", {{"error", "INVALID_PARAMS"}, {"key", k.name}});
+        const float v = params[k.name].get<float>();
+        if (v < k.lo || v > k.hi) return reply(400, "Bad Request", {{"error", "OUT_OF_RANGE"}, {"key", k.name}, {"min", k.lo}, {"max", k.hi}});
+        *k.dst = v;
+        n++;
+    }
+    if (n == 0) return reply(400, "Bad Request", {{"error", "INVALID_PARAMS"}, {"message", "no nominal_stand_* key given"}});
+    const bool persist = params.value("persist", true);
+    std::string err;
+    if (!applyNominal(next, persist, err)) return reply(500, "Internal Server Error", {{"error", "PERSIST_FAILED"}, {"message", err}});
+    reply(200, "OK", {{"result", "ok"}, {"nominal", nominalJson(next)}, {"previous", nominalJson(before)},
+                      {"persisted", persist}, {"conf_path", watcher_->confPath()}});
 }
 
 void HttpControlServer::serverLoop() {

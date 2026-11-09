@@ -36,6 +36,71 @@ static const char* kMicroduckJointNames[] = {
     "right_foot"       // 16
 };
 
+const char* const kFaceLedNames[12] = {
+    "face:rgb:red", "face:rgb:green", "face:rgb:blue", "face:cam:red",
+    "face:gr2:green", "face:gr2:red", "face:gb:green", "face:gb:blue",
+    "face:gr1:green", "face:gr1:red", "face:green2:green", "face:green1:green",
+};
+
+static bool splitLedName(const std::string& name, std::string& place, std::string& colour) {
+    const size_t a = name.find(':');
+    const size_t b = (a == std::string::npos) ? std::string::npos : name.find(':', a + 1);
+    if (a == std::string::npos || b == std::string::npos) return false;
+    place = name.substr(a + 1, b - a - 1);
+    colour = name.substr(b + 1);
+    return !place.empty() && !colour.empty();
+}
+
+static std::string colourOfRgb(int r, int g, int b) {
+    if (r >= 128 && g >= 128 && b >= 128) return "white";
+    if (r >= g && r >= b) return "red";
+    if (g >= r && g >= b) return "green";
+    return "blue";
+}
+
+bool parseFaceLedExpectation(const json& j, FaceLedExpectation& out, std::string& err) {
+    out = FaceLedExpectation{};
+    if (!j.is_object()) {
+        err = "expected must be an object";
+        return false;
+    }
+    if (j.contains("rgb")) {
+        const auto& v = j["rgb"];
+        if (!v.is_array() || v.size() != 3 || !v[0].is_number() || !v[1].is_number() || !v[2].is_number()) {
+            err = "expected.rgb must be [r, g, b]";
+            return false;
+        }
+        for (int i = 0; i < 3; ++i) out.rgb[i] = std::clamp(v[i].get<int>(), 0, 255);
+        out.has_rgb = true;
+    }
+    if (j.contains("led") && j["led"].is_string()) {
+        out.kind = "led";
+        out.led = j["led"].get<std::string>();
+        bool known = false;
+        for (const char* n : kFaceLedNames) known = known || (out.led == n);
+        if (!known) {
+            err = "unknown led '" + out.led + "'";
+            return false;
+        }
+        std::string place;
+        splitLedName(out.led, place, out.colour);
+        if (out.has_rgb) out.colour = colourOfRgb(out.rgb[0], out.rgb[1], out.rgb[2]);
+    } else if (j.contains("flashlight") && j["flashlight"].is_string()) {
+        out.kind = "flashlight";
+        out.flashlight = j["flashlight"].get<std::string>();
+        if (out.flashlight != "red" && out.flashlight != "green" && out.flashlight != "blue" && out.flashlight != "white") {
+            err = "flashlight must be red|green|blue|white";
+            return false;
+        }
+        out.colour = out.flashlight;
+    } else {
+        err = "expected needs 'led' or 'flashlight'";
+        return false;
+    }
+    out.active = true;
+    return true;
+}
+
 static void letterbox_to_display_pt(float& x, float& y,
                                     int inference_w, int inference_h,
                                     int display_w, int display_h) {
@@ -101,9 +166,46 @@ json ActionReport::toJson() const {
             met["spine_tilt_deg"] = nullptr;
         }
     }
+    if (action_id == "calibrate_stand") {
+        met = json::object();
+        json cal;
+        cal["ok"] = calibration.ok;
+        if (!calibration.reason.empty()) cal["reason"] = calibration.reason;
+        cal["total_frames"] = calibration.total_frames;
+        cal["valid_frames"] = calibration.valid_frames;
+        cal["spine_frames"] = calibration.spine_frames;
+        cal["required_frames"] = calibration.required_frames;
+        if (calibration.valid_frames > 0) {
+            cal["nominal_stand_theta_l_deg"] = std::round(calibration.theta_l_deg * 1000.0f) / 1000.0f;
+            cal["nominal_stand_theta_r_deg"] = std::round(calibration.theta_r_deg * 1000.0f) / 1000.0f;
+            cal["nominal_stand_disparity_deg"] = std::round(calibration.disparity_deg * 1000.0f) / 1000.0f;
+            cal["nominal_stand_knee_diff_norm"] = std::round(calibration.knee_diff_norm * 10000.0f) / 10000.0f;
+        }
+        if (calibration.spine_frames > 0) {
+            cal["nominal_stand_spine_tilt_deg"] = std::round(calibration.spine_tilt_deg * 1000.0f) / 1000.0f;
+        }
+        j["calibration"] = std::move(cal);
+    }
     j["metrics"] = met;
     if (action_id == "face_led") {
         j["optical_metrics"] = met;
+        if (led_expectation.active) {
+            json exp;
+            if (led_expectation.kind == "led") exp["led"] = led_expectation.led;
+            else exp["flashlight"] = led_expectation.flashlight;
+            if (led_expectation.has_rgb) exp["rgb"] = {led_expectation.rgb[0], led_expectation.rgb[1], led_expectation.rgb[2]};
+            exp["colour"] = led_expectation.colour;
+            j["expected"] = std::move(exp);
+            j["led_valid_frames"] = led_valid_frames;
+            json arr = json::array();
+            for (const auto& r : led_results) {
+                arr.push_back({{"led", r.led}, {"place", r.place}, {"colour", r.colour},
+                               {"expected_on", r.expected_on}, {"observed_on", r.observed_on},
+                               {"on_frames", r.on_frames}, {"ok", r.ok}});
+            }
+            j["led_results"] = std::move(arr);
+            j["registration"] = led_registration;
+        }
     }
     j["detected_defects"] = detected_defects;
     return j;
@@ -178,6 +280,8 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
     const float l_knee_y = kpts_raw[8].y_norm;
     const float r_knee_y = kpts_raw[14].y_norm;
     const float knee_height_diff = std::abs(l_knee_y - r_knee_y);
+    // Judged against the calibrated signed baseline (camera perspective), not against zero.
+    const float knee_height_dev = std::abs((l_knee_y - r_knee_y) - config.nominal_stand_knee_diff_norm);
     res.metrics.has_knee_diff = true;
     // Keep raw float precision throughout evaluation
     res.metrics.knee_height_diff_norm = knee_height_diff;
@@ -219,7 +323,7 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
         float frame_spline = 0.0f;
         if (max_dev >= config.gear_tooth_tolerance_deg) {
             frame_spline = max_dev;
-        } else if (knee_height_diff <= config.bilateral_height_tolerance_norm) {
+        } else if (knee_height_dev <= config.bilateral_height_tolerance_norm) {
             frame_spline = disp_dev;
         } else {
             frame_spline = max_dev;
@@ -229,7 +333,7 @@ FrameQAResult evaluateFrameFromNormKpts(const std::vector<KeypointRaw>& kpts_raw
         res.metrics.spline_offset_deg = frame_spline;
     }
 
-    if (knee_height_diff > config.bilateral_height_tolerance_norm) {
+    if (knee_height_dev > config.bilateral_height_tolerance_norm) {
         res.qa_status = "KNEE_ASYMMETRY";
         res.qa_passed = false;
         return res;
@@ -293,7 +397,8 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
                                                  const std::string& run_id,
                                                  const AppConfig& config,
                                                  const std::vector<CollectedFrame>& frames,
-                                                 bool timed_out) {
+                                                 bool timed_out,
+                                                 const FaceLedExpectation& expectation) {
     ActionReport rep;
     rep.action_id = action_id;
     rep.run_id = run_id;
@@ -310,7 +415,29 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
         rep.window_end_frame = 0;
     }
 
+    if (action_id == "calibrate_stand") {
+        // A timeout only ends the window early: whatever was collected is used if it suffices.
+        rep.calibration = computeStandCalibration(config, frames);
+        rep.valid_frames = rep.calibration.valid_frames;
+        rep.detected_frames = 0;
+        for (const auto& f : frames) {
+            if (f.robot_detected && f.count > 0) rep.detected_frames++;
+        }
+        rep.overall_passed = rep.calibration.ok;
+        rep.status_code = rep.calibration.ok ? "CALIBRATED" : "FAIL_INSUFFICIENT_FRAMES";
+        if (!rep.calibration.ok) {
+            rep.detected_defects.push_back({
+                {"type", "INSUFFICIENT_MEASUREMENTS"},
+                {"valid_frames", rep.calibration.valid_frames},
+                {"spine_frames", rep.calibration.spine_frames},
+                {"required_frames", rep.calibration.required_frames}
+            });
+        }
+        return rep;
+    }
+
     if (action_id == "face_led") {
+        rep.led_expectation = expectation;
         if (timed_out && frames.empty()) {
             rep.status_code = "FAIL_MOTION_TIMEOUT";
             rep.overall_passed = false;
@@ -387,7 +514,9 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
         rep.optical_metrics.dark_leakage_lux = agg_leak;
         rep.optical_metrics.uniformity_ratio = agg_unif;
 
-        if (timed_out && frames.size() < static_cast<size_t>(MIN_VALID_FRAMES)) {
+        const size_t min_frames = expectation.active ? static_cast<size_t>(FACE_LED_EXPECT_FRAMES / 2)
+                                                     : static_cast<size_t>(MIN_VALID_FRAMES);
+        if (timed_out && frames.size() < min_frames) {
             rep.status_code = "FAIL_MOTION_TIMEOUT";
             rep.overall_passed = false;
             rep.detected_defects.push_back({
@@ -395,6 +524,46 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
                 {"collected_frames", rep.total_frames},
                 {"required_frames", SETTLED_WINDOW_FRAMES}
             });
+            return rep;
+        }
+
+        if (expectation.active) {
+            rep.led_results = judgeFaceLeds(expectation, frames, &rep.led_valid_frames);
+            for (const auto& f : frames) {
+                const auto& sf = f.optical.slots;
+                json r = {{"valid", sf.valid}};
+                if (!sf.reason.empty()) r["reason"] = sf.reason;
+                if (sf.has_ring) r["ring"] = {std::round(sf.ring_x * 100) / 100, std::round(sf.ring_y * 100) / 100, std::round(sf.ring_r * 100) / 100};
+                if (sf.residual >= 0.0f) {
+                    r["scale_px"] = std::round(sf.scale_px * 1000) / 1000;
+                    r["rotation_deg"] = std::round(sf.rotation_deg * 100) / 100;
+                    r["residual"] = std::round(sf.residual * 10000) / 10000;
+                }
+                rep.led_registration.push_back(std::move(r));
+            }
+            const int need = std::max(1, (rep.total_frames + 1) / 2);
+            if (rep.led_valid_frames < need) {
+                rep.overall_passed = false;
+                rep.status_code = "FAIL_FACE_NOT_REGISTERED";
+                rep.detected_defects.push_back({
+                    {"type", "FACE_NOT_REGISTERED"},
+                    {"registered_frames", rep.led_valid_frames},
+                    {"required_frames", need}
+                });
+                return rep;
+            }
+            rep.overall_passed = true;
+            for (const auto& r : rep.led_results) {
+                if (r.ok) continue;
+                rep.overall_passed = false;
+                rep.detected_defects.push_back({
+                    {"type", r.expected_on ? "LED_NOT_LIT" : "LED_UNEXPECTED_LIT"},
+                    {"led", r.led},
+                    {"on_frames", r.on_frames},
+                    {"registered_frames", rep.led_valid_frames}
+                });
+            }
+            rep.status_code = rep.overall_passed ? "PASS" : "FAIL_LED_MISMATCH";
             return rep;
         }
 
@@ -480,7 +649,7 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
 
                         const float ly = kpts[8].y_norm;
                         const float ry = kpts[14].y_norm;
-                        const float knee_diff = std::abs(ly - ry);
+                        const float knee_diff = std::abs((ly - ry) - config.nominal_stand_knee_diff_norm);
 #ifndef HOST_CLI
                         const float dx_l_px = (x8 - x7) * 1280.0f;
                         const float dy_l_px = (y8 - y7) * 720.0f;
@@ -652,15 +821,111 @@ ActionReport ActionStateMachine::aggregateWindow(const std::string& action_id,
     return rep;
 }
 
+static float medianOf(std::vector<float> v) {
+    if (v.empty()) return 0.0f;
+    std::sort(v.begin(), v.end());
+    const size_t n = v.size();
+    return (n % 2) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+}
+
+StandCalibration ActionStateMachine::computeStandCalibration(const AppConfig& config,
+                                                             const std::vector<CollectedFrame>& frames,
+                                                             int min_valid) {
+    StandCalibration cal;
+    cal.total_frames = static_cast<int>(frames.size());
+    cal.required_frames = min_valid;
+    const float eval_thresh = (config.keypoint_confidence > 0.0f) ? config.keypoint_confidence : KPT_CONF_EVAL_THRESHOLD;
+    std::vector<float> tl, tr, disp, spine, knee;
+    for (const auto& f : frames) {
+        const auto& qa = f.qa;
+        if (qa.qa_status == "NO_ROBOT" || qa.qa_status == "OCCLUDED" || qa.qa_status == "SYS_ERROR") continue;
+        const auto& k = qa.kpts_raw_17;
+        if (k.size() < 17) continue;
+        if (k[7].conf >= eval_thresh && k[8].conf >= eval_thresh &&
+            k[13].conf >= eval_thresh && k[14].conf >= eval_thresh) {
+            const float l = static_cast<float>(std::atan2((k[8].x_norm - k[7].x_norm) * 1280.0f,
+                                                          (k[8].y_norm - k[7].y_norm) * 720.0f) * 180.0 / M_PI);
+            const float r = static_cast<float>(std::atan2((k[14].x_norm - k[13].x_norm) * 1280.0f,
+                                                          (k[14].y_norm - k[13].y_norm) * 720.0f) * 180.0 / M_PI);
+            tl.push_back(l);
+            tr.push_back(r);
+            disp.push_back(std::abs(static_cast<float>(std::remainder(l - r, 360.0))));
+        }
+        if (k[8].conf >= eval_thresh && k[14].conf >= eval_thresh) knee.push_back(k[8].y_norm - k[14].y_norm);
+        if (qa.metrics.has_spine_tilt) spine.push_back(qa.metrics.spine_tilt_deg);
+    }
+    cal.valid_frames = static_cast<int>(tl.size());
+    cal.spine_frames = static_cast<int>(spine.size());
+    cal.theta_l_deg = medianOf(tl);
+    cal.theta_r_deg = medianOf(tr);
+    cal.disparity_deg = medianOf(disp);
+    cal.spine_tilt_deg = medianOf(spine);
+    cal.knee_diff_norm = medianOf(knee);
+    if (cal.valid_frames < min_valid) {
+        cal.reason = "INSUFFICIENT_VALID_FRAMES";
+    } else if (cal.spine_frames < min_valid) {
+        cal.reason = "INSUFFICIENT_SPINE_FRAMES";
+    } else {
+        cal.ok = true;
+    }
+    return cal;
+}
+
+std::vector<FaceLedLedResult> ActionStateMachine::judgeFaceLeds(const FaceLedExpectation& expectation,
+                                                                const std::vector<CollectedFrame>& frames,
+                                                                int* valid_frames) {
+    int valid = 0;
+    std::vector<int> on_count(12, 0);
+    for (const auto& f : frames) {
+        const auto& sf = f.optical.slots;
+        if (!sf.valid) continue;
+        valid++;
+        for (int i = 0; i < 12; ++i) {
+            std::string place, colour;
+            splitLedName(kFaceLedNames[i], place, colour);
+            for (const auto& o : sf.slots) {
+                if (o.place != place) continue;
+                if (o.colour == colour || (place == "rgb" && o.colour == "white")) on_count[i]++;
+            }
+        }
+    }
+    if (valid_frames) *valid_frames = valid;
+
+    std::vector<FaceLedLedResult> out;
+    for (int i = 0; i < 12; ++i) {
+        FaceLedLedResult r;
+        r.led = kFaceLedNames[i];
+        splitLedName(r.led, r.place, r.colour);
+        if (expectation.kind == "led") {
+            std::string place, colour;
+            splitLedName(expectation.led, place, colour);
+            if (expectation.colour == "white") {
+                r.expected_on = (r.place == place);  // a white request on a multi-colour place lights all of it
+            } else {
+                r.expected_on = (r.place == place && r.colour == expectation.colour);
+            }
+        } else if (expectation.kind == "flashlight") {
+            r.expected_on = (r.place == "rgb") && (expectation.colour == "white" || r.colour == expectation.colour);
+        }
+        r.on_frames = on_count[i];
+        r.observed_on = valid > 0 && 2 * on_count[i] > valid;
+        r.ok = (r.expected_on == r.observed_on);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 bool ActionStateMachine::startAction(const std::string& action_id,
                                      const std::string& run_id,
                                      float timeout_s,
                                      bool force,
-                                     const AppConfig& config_snapshot) {
+                                     const AppConfig& config_snapshot,
+                                     const FaceLedExpectation& expectation) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_ == ActionState::COLLECTING && !force) {
         return false;
     }
+    led_expectation_ = expectation;
 
     current_action_id_ = action_id;
     current_run_id_ = run_id;
@@ -698,7 +963,8 @@ bool ActionStateMachine::stopAction() {
 }
 
 void ActionStateMachine::finalizeReportLocked(bool timed_out) {
-    last_report_ = aggregateWindow(current_action_id_, current_run_id_, config_snapshot_, window_frames_, timed_out);
+    last_report_ = aggregateWindow(current_action_id_, current_run_id_, config_snapshot_, window_frames_, timed_out,
+                                   led_expectation_);
     has_report_ = true;
     state_ = ActionState::REPORT_FROZEN;
     broadcast_pending_ = true;
@@ -753,7 +1019,9 @@ bool ActionStateMachine::addFrame(uint32_t frame_id,
     cf.optical = optical;
     window_frames_.push_back(std::move(cf));
 
-    if (window_frames_.size() >= static_cast<size_t>(SETTLED_WINDOW_FRAMES)) {
+    const size_t window = (current_action_id_ == "face_led" && led_expectation_.active)
+                              ? static_cast<size_t>(FACE_LED_EXPECT_FRAMES) : static_cast<size_t>(SETTLED_WINDOW_FRAMES);
+    if (window_frames_.size() >= window) {
         finalizeReportLocked(false);
         return true;
     }
@@ -768,7 +1036,8 @@ void ActionStateMachine::setSysError(const std::string& reason, uint64_t gen) {
     }
 
     // In COLLECTING: retain existing valid frame measurement averages
-    ActionReport rep = aggregateWindow(current_action_id_, current_run_id_, config_snapshot_, window_frames_, false);
+    ActionReport rep = aggregateWindow(current_action_id_, current_run_id_, config_snapshot_, window_frames_, false,
+                                       led_expectation_);
     rep.overall_passed = false;
     rep.status_code = "FAIL_SYS_ERROR";
     rep.detected_defects = {

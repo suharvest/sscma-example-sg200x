@@ -17,22 +17,13 @@
 
 namespace microduck {
 
-#ifdef HOST_CLI
-constexpr float NOMINAL_STAND_HIP_PITCH_DEG = 26.237f;
-constexpr float NOMINAL_STAND_SPINE_TILT_DEG = 14.82f;
-constexpr float NOMINAL_STAND_THETA_L_DEG = -20.40f;
-constexpr float NOMINAL_STAND_THETA_R_DEG = -55.59f;
-constexpr float NOMINAL_STAND_DISPARITY_DEG = 35.19f;
-#else
-// Live physical reCamera observing display screen
-constexpr float NOMINAL_STAND_HIP_PITCH_DEG = 26.237f;
-constexpr float NOMINAL_STAND_SPINE_TILT_DEG = 0.75f;
-constexpr float NOMINAL_STAND_THETA_L_DEG = -26.0f;
-constexpr float NOMINAL_STAND_THETA_R_DEG = -66.9f;
-constexpr float NOMINAL_STAND_DISPARITY_DEG = 40.9f;
-#endif
+// The stand-pose standard (nominal thigh angles, disparity, spine tilt) lives in AppConfig:
+// compiled defaults, overridden by /etc/microduck-pose-qa.conf and by calibrate_stand.
 
 constexpr int SETTLED_WINDOW_FRAMES = 30;
+// face_led with params.expected: each frame is registered on its own, a short window suffices
+// (the face check costs ~0.1-0.4 s per frame on the SG2002).
+constexpr int FACE_LED_EXPECT_FRAMES = 8;
 constexpr int MIN_VALID_FRAMES = 15;
 constexpr int MIN_DETECTED_FRAMES = 5;
 constexpr float OCCLUSION_RATIO_THRESHOLD = 0.20f;
@@ -83,9 +74,75 @@ struct FaceLedMetrics {
     float uniformity_ratio = 0.0f;
 };
 
+// ---- Single-LED face check (start_action face_led with params.expected) ----
+
+// The 12 face LEDs as the firmware names them: face:<place>:<colour>.
+extern const char* const kFaceLedNames[12];
+
+// What one frame shows at one LED place after the layout is registered on the frame.
+// colour: "" (no lit spot), "red", "green", "blue" or "white" (rgb place only).
+struct FaceLedSlotObs {
+    std::string place;
+    std::string colour;
+    float x = 0.0f;  // registered slot position, pixels
+    float y = 0.0f;
+    int area = 0;    // pixels of the matched lit spot
+};
+
+struct FaceLedSlotFrame {
+    bool valid = false;          // layout registered on this frame
+    std::string reason;          // RING_NOT_FOUND | RESIDUAL_TOO_HIGH when not valid
+    bool has_ring = false;
+    float ring_x = 0.0f, ring_y = 0.0f, ring_r = 0.0f;  // lens ring, pixels
+    float scale_px = 0.0f;       // similarity scale: pixels per ring-radius unit
+    float rotation_deg = 0.0f;
+    float residual = -1.0f;      // RMS of the LS fit, ring radii
+    std::vector<FaceLedSlotObs> slots;
+};
+
+struct FaceLedExpectation {
+    bool active = false;
+    std::string kind;        // "led" | "flashlight"
+    std::string led;         // face:<place>:<colour> when kind == "led"
+    std::string flashlight;  // red | green | blue | white when kind == "flashlight"
+    std::string colour;      // expected colour class at the expected place
+    bool has_rgb = false;
+    int rgb[3] = {0, 0, 0};
+};
+
+// Parse params.expected: {"led": "face:gr2:red", "rgb": [255, 0, 0]} or {"flashlight": "red"}.
+bool parseFaceLedExpectation(const nlohmann::json& j, FaceLedExpectation& out, std::string& err);
+
+struct FaceLedLedResult {
+    std::string led;
+    std::string place;
+    std::string colour;
+    bool expected_on = false;
+    bool observed_on = false;
+    int on_frames = 0;
+    bool ok = false;
+};
+
 struct FaceLedFrameResult {
     bool ok = false;
     FaceLedMetrics metrics;
+    FaceLedSlotFrame slots;  // filled when the action carries an expectation
+};
+
+// ---- Stand-pose calibration (calibrate_stand) ----
+
+struct StandCalibration {
+    bool ok = false;
+    std::string reason;
+    int total_frames = 0;
+    int valid_frames = 0;   // frames with both thighs measured
+    int spine_frames = 0;   // frames with the spine measured
+    int required_frames = 0;
+    float theta_l_deg = 0.0f;
+    float theta_r_deg = 0.0f;
+    float disparity_deg = 0.0f;
+    float spine_tilt_deg = 0.0f;
+    float knee_diff_norm = 0.0f;  // signed median of (left knee y - right knee y)
 };
 
 struct ActionReport {
@@ -104,6 +161,13 @@ struct ActionReport {
     ActionMetrics metrics;
     FaceLedMetrics optical_metrics;
     std::vector<nlohmann::json> detected_defects;
+    // face_led with an expectation
+    FaceLedExpectation led_expectation;
+    std::vector<FaceLedLedResult> led_results;
+    int led_valid_frames = 0;
+    std::vector<nlohmann::json> led_registration;  // per frame: ring, scale, rotation, residual
+    // calibrate_stand
+    StandCalibration calibration;
 
     nlohmann::json toJson() const;
 };
@@ -133,7 +197,18 @@ public:
                      const std::string& run_id,
                      float timeout_s,
                      bool force,
-                     const AppConfig& config_snapshot);
+                     const AppConfig& config_snapshot,
+                     const FaceLedExpectation& expectation = FaceLedExpectation{});
+
+    FaceLedExpectation getLedExpectation() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return led_expectation_;
+    }
+
+    ActionReport getLastReport() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_report_;
+    }
 
     void reset();
     bool stopAction();
@@ -232,7 +307,19 @@ public:
                                         const std::string& run_id,
                                         const AppConfig& config,
                                         const std::vector<CollectedFrame>& frames,
-                                        bool timed_out = false);
+                                        bool timed_out = false,
+                                        const FaceLedExpectation& expectation = FaceLedExpectation{});
+
+    // Median thigh angles / disparity / spine tilt over a window of golden-sample stand frames.
+    // Rejected (ok == false) with fewer than min_valid measured frames.
+    static StandCalibration computeStandCalibration(const AppConfig& config,
+                                                    const std::vector<CollectedFrame>& frames,
+                                                    int min_valid = MIN_VALID_FRAMES);
+
+    // Per-LED verdicts from per-frame slot observations (majority over registered frames).
+    static std::vector<FaceLedLedResult> judgeFaceLeds(const FaceLedExpectation& expectation,
+                                                       const std::vector<CollectedFrame>& frames,
+                                                       int* valid_frames = nullptr);
 
 private:
     void finalizeReportLocked(bool timed_out);
@@ -245,6 +332,7 @@ private:
     uint64_t start_time_ms_ = 0;
     uint64_t action_generation_ = 0;
     AppConfig config_snapshot_;
+    FaceLedExpectation led_expectation_;
 
     std::vector<CollectedFrame> window_frames_;
     bool has_report_ = false;

@@ -3,9 +3,11 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include "app_config.h"
+#include "json.hpp"
 #include "result_payload.h"
 
 namespace microduck {
@@ -21,6 +23,10 @@ public:
 private:
     void serverLoop();
     void handleClient(int client_fd);
+    void handleCalibrateStand(int client_fd, const nlohmann::json& req_json, const nlohmann::json& params);
+    void handleSetStandNominal(int client_fd, const nlohmann::json& params);
+    bool applyNominal(const AppConfig& next, bool persist, std::string& err);
+    static nlohmann::json nominalJson(const AppConfig& c);
 
     int port_ = 8082;
     int server_fd_ = -1;

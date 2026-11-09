@@ -1,0 +1,12 @@
+#!/bin/sh
+
+echo "Stopping Microduck Pose QA service..."
+
+if [ -x /etc/init.d/K92microduck-pose-qa ]; then
+    /etc/init.d/K92microduck-pose-qa stop 2>/dev/null || true
+fi
+
+pkill -f microduck-pose-qa 2>/dev/null || true
+rm -f /var/run/microduck-pose-qa.pid 2>/dev/null || true
+
+exit 0

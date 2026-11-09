@@ -1,0 +1,189 @@
+#!/bin/sh
+
+### BEGIN INIT INFO
+# Provides:          microduck-pose-qa
+# Required-Start:    $network $local_fs
+# Required-Stop:     $network $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Microduck 17-Keypoint Robot Pose Estimation & QA Service
+### END INIT INFO
+
+# K-prefixed on purpose: gallery apps must NOT start at boot. Only the
+# supervisor's app_restore starts the active application to prevent
+# camera VPSS contention.
+
+NAME=microduck-pose-qa
+PIDFILE=/var/run/$NAME.pid
+LOGFILE=/var/log/$NAME.log
+
+# Library paths required for CVI SDK
+export LD_LIBRARY_PATH=/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/system/lib/3rd:/lib:/usr/lib
+
+# Dedicated daemon binary
+DAEMON=/usr/local/bin/microduck-pose-qa
+[ ! -x "$DAEMON" ] && [ -x /usr/bin/microduck-pose-qa ] && DAEMON=/usr/bin/microduck-pose-qa
+
+DAEMON_OPTS=""
+
+# Load global reCamera config
+[ -f /etc/recamera.conf ] && . /etc/recamera.conf
+
+# Load solution-specific config
+[ -f /etc/microduck-pose-qa.conf ] && . /etc/microduck-pose-qa.conf
+
+# MQTT settings
+[ -n "$MQTT_HOST" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-host $MQTT_HOST"
+[ -n "$MQTT_PORT" ] && DAEMON_OPTS="$DAEMON_OPTS --mqtt-port $MQTT_PORT"
+
+MQTT_TOPIC="${MQTT_TOPIC:-recamera/microduck-pose-qa/results}"
+DAEMON_OPTS="$DAEMON_OPTS --mqtt-topic $MQTT_TOPIC"
+
+# Debug WebSocket settings (default: 8001)
+DEBUG_PORT="${DEBUG_PORT:-8001}"
+if [ "$DEBUG_ENABLED" = "0" ]; then
+    DAEMON_OPTS="$DAEMON_OPTS --no-debug"
+else
+    DAEMON_OPTS="$DAEMON_OPTS --debug-port $DEBUG_PORT"
+fi
+
+# HTTP Control service settings (default: 8082)
+CONTROL_PORT="${CONTROL_PORT:-8082}"
+DAEMON_OPTS="$DAEMON_OPTS --control-port $CONTROL_PORT"
+
+# Model selection and override
+DEFAULT_MODEL="/userdata/local/models/microduck_pose_17kpt_384_int8.cvimodel"
+MODEL_OVERRIDE_FILE="/userdata/local/apps/microduck-pose-qa.model"
+MODEL_PATH="${MODEL_PATH:-$DEFAULT_MODEL}"
+if [ -f "$MODEL_OVERRIDE_FILE" ]; then
+    OVERRIDE=$(head -n 1 "$MODEL_OVERRIDE_FILE" 2>/dev/null)
+    if [ -n "$OVERRIDE" ] && [ -f "$OVERRIDE" ]; then
+        echo "Using model override: $OVERRIDE"
+        MODEL_PATH="$OVERRIDE"
+    fi
+fi
+[ -n "$MODEL_PATH" ] && DAEMON_OPTS="$DAEMON_OPTS -m $MODEL_PATH"
+[ -n "$CONFIDENCE" ] && DAEMON_OPTS="$DAEMON_OPTS -c $CONFIDENCE"
+[ -n "$KEYPOINT_CONFIDENCE" ] && DAEMON_OPTS="$DAEMON_OPTS -k $KEYPOINT_CONFIDENCE"
+
+# Microphone gain (ALSA card 0 'ADC Capture Volume', 0-24, factory 0). Upgrades keep an older
+# conffile without MIC_CAPTURE_VOLUME, hence the default here. Failure is logged, never fatal.
+MIC_CAPTURE_VOLUME="${MIC_CAPTURE_VOLUME:-12}"
+set_mic_gain() {
+    if amixer -q -c 0 cset name='ADC Capture Volume' "$MIC_CAPTURE_VOLUME,$MIC_CAPTURE_VOLUME" >/dev/null 2>&1; then
+        echo "$(date '+%F %T') mic gain: ADC Capture Volume=$MIC_CAPTURE_VOLUME" >> $LOGFILE
+    else
+        echo "$(date '+%F %T') mic gain: amixer cset ADC Capture Volume=$MIC_CAPTURE_VOLUME failed (ignored)" >> $LOGFILE
+        echo "warning: could not set mic gain to $MIC_CAPTURE_VOLUME"
+    fi
+}
+
+stop_conflicting_services() {
+    echo "Stopping conflicting camera services..."
+    for prefix in S K; do
+        [ -x /etc/init.d/${prefix}91sscma-node ] && /etc/init.d/${prefix}91sscma-node stop 2>/dev/null || true
+        [ -x /etc/init.d/${prefix}03node-red ] && /etc/init.d/${prefix}03node-red stop 2>/dev/null || true
+    done
+    for svc in face-analysis detection-blur ppocr-reader retail-vision yolo-detector fall-detection fitness-trainer facemesh-reader weather-classifier optical-inspector; do
+        for script in /etc/init.d/[SK]*${svc}; do
+            [ -x "$script" ] && "$script" stop 2>/dev/null || true
+        done
+    done
+    sleep 2
+}
+
+start() {
+    echo "Starting $NAME..."
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is already running (PID: $PID)"
+            return 1
+        fi
+        rm -f $PIDFILE
+    fi
+
+    stop_conflicting_services
+    set_mic_gain
+
+    start-stop-daemon -S -b -m -p $PIDFILE -a /bin/sh -- -c "exec $DAEMON $DAEMON_OPTS >> $LOGFILE 2>&1"
+    if [ $? -ne 0 ]; then
+        echo "$NAME failed to start (start-stop-daemon error)"
+        rm -f $PIDFILE
+        return 1
+    fi
+
+    sleep 1
+    i=0
+    while [ $i -lt 3 ]; do
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+            echo "$NAME exited immediately after start"
+            rm -f $PIDFILE
+            return 1
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+    echo "OK"
+    return 0
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    if [ ! -f $PIDFILE ]; then
+        echo "$NAME is not running"
+        return 0
+    fi
+    PID=$(cat $PIDFILE 2>/dev/null)
+    if [ -z "$PID" ]; then
+        rm -f $PIDFILE
+        echo "$NAME is not running"
+        return 0
+    fi
+    start-stop-daemon -K -p $PIDFILE -s TERM 2>/dev/null || true
+    i=0
+    while [ $i -lt 16 ]; do
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        i=$((i + 1))
+    done
+    kill -KILL "$PID" 2>/dev/null || true
+    j=0
+    while [ $j -lt 6 ]; do
+        [ -d "/proc/$PID" ] || { rm -f $PIDFILE; echo "OK"; return 0; }
+        sleep 0.5
+        j=$((j + 1))
+    done
+    echo "$NAME failed to stop (PID $PID still alive)"
+    return 1
+}
+
+restart() {
+    stop
+    sleep 2
+    start
+}
+
+status() {
+    if [ -f $PIDFILE ]; then
+        PID=$(cat $PIDFILE 2>/dev/null)
+        if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+            echo "$NAME is running (PID: $PID)"
+            return 0
+        fi
+        rm -f $PIDFILE
+    fi
+    echo "$NAME is not running"
+    return 1
+}
+
+case "$1" in
+    start) start; exit $? ;;
+    stop) stop; exit $? ;;
+    restart) restart; exit $? ;;
+    status) status; exit $? ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+
+exit 0
