@@ -16,6 +16,9 @@ readonly USERDATA_DIR="/userdata"
 readonly MODEL_DIR="$USERDATA_DIR/Models"
 readonly MODELS_PRESET="/usr/share/supervisor/models"
 
+# init.d (overridable by SV_INIT_D for tests)
+INIT_D="${SV_INIT_D:-/etc/init.d}"
+
 # flow
 _check_flow() {
     local src_flow="/usr/share/supervisor/flows.json"
@@ -1162,10 +1165,12 @@ function ctrl_flow() {
 
 function start_service() {
     local service="$2"
+    local nr_base sscma_base
     case "$service" in
     "sscma")
         # Watchdog auto-restart: keep the #19 memory cap on the relaunch too.
-        _svc_run_limited "/etc/init.d/S91sscma-node" restart
+        sscma_base="$(_svc_base "sscma-node" "91sscma-node")"
+        _svc_run_limited "${SV_INIT_D:-$INIT_D}/S$sscma_base" restart
         [ $? -ne 0 ] && {
             echo "$STR_FAILED"
             return
@@ -1175,7 +1180,8 @@ function start_service() {
     "nodered")
         _stop_pidname "sscma-node" 1
         _stop_pidname "node"
-        _svc_run_limited "/etc/init.d/S03node-red" restart
+        nr_base="$(_svc_base "node-red" "03node-red")"
+        _svc_run_limited "${SV_INIT_D:-$INIT_D}/S$nr_base" restart
         [ $? -ne 0 ] && {
             echo "$STR_FAILED"
             return
@@ -1721,15 +1727,56 @@ function getRunMode() {
     printf '{"mode": "%s"}' "$(_run_mode_read)"
 }
 
+# _svc_base <name> <default> : look in $INIT_D for [SK][0-9][0-9]<name>.
+# If exactly one base exists return it (e.g. 92node-red); if both an S and a K
+# file with different numbers exist prefer the S one; if none, return <default>.
+_svc_base() {
+    local name="$1" default="$2"
+    [ "$name" = "_svc_base" ] && { name="$2"; default="$3"; }
+    name="${name#[0-9][0-9]}"
+    default="${default:-$name}"
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    local f b s_base="" k_base=""
+
+    for f in "$init_d"/S[0-9][0-9]"$name"; do
+        if [ -f "$f" ]; then
+            b="${f##*/}"
+            s_base="${b#S}"
+            break
+        fi
+    done
+    if [ -n "$s_base" ]; then
+        echo "$s_base"
+        return 0
+    fi
+
+    for f in "$init_d"/K[0-9][0-9]"$name"; do
+        if [ -f "$f" ]; then
+            b="${f##*/}"
+            k_base="${b#K}"
+            break
+        fi
+    done
+    if [ -n "$k_base" ]; then
+        echo "$k_base"
+        return 0
+    fi
+
+    echo "$default"
+    return 0
+}
+
 # _svc_enable <base> : /etc/init.d/K<base> -> S<base> (idempotent: only moves
 # when the K file exists and the S file does not). Prints the S path when the
 # service script exists in enabled position, nothing otherwise.
 _svc_enable() {
     local base="$1" # e.g. 03node-red
-    if [ -f "/etc/init.d/K$base" ] && [ ! -f "/etc/init.d/S$base" ]; then
-        mv "/etc/init.d/K$base" "/etc/init.d/S$base"
+    [ "$base" = "_svc_enable" ] && base="$2"
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    if [ -f "$init_d/K$base" ] && [ ! -f "$init_d/S$base" ]; then
+        mv "$init_d/K$base" "$init_d/S$base"
     fi
-    [ -f "/etc/init.d/S$base" ] && echo "/etc/init.d/S$base"
+    [ -f "$init_d/S$base" ] && echo "$init_d/S$base"
     return 0
 }
 
@@ -1740,8 +1787,10 @@ _svc_enable() {
 # app is about to grab the camera).
 _svc_disable() {
     local base="$1"
-    if [ -f "/etc/init.d/S$base" ]; then
-        _app_run_timeout 10 "/etc/init.d/S$base" stop >/dev/null 2>&1
+    [ "$base" = "_svc_disable" ] && base="$2"
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    if [ -f "$init_d/S$base" ]; then
+        _app_run_timeout 10 "$init_d/S$base" stop >/dev/null 2>&1
         # The service is being released, not grabbed. The caller (setRunMode
         # ->console / forceConsole) has ALREADY torn down the serviced watchdog
         # before invoking us, so nothing respawns node-red during teardown and
@@ -1755,16 +1804,16 @@ _svc_disable() {
         # "status" action return non-zero (treated as stopped) and break early.
         local i=0
         while [ "$i" -lt 5 ]; do
-            _app_run_timeout 5 "/etc/init.d/S$base" status >/dev/null 2>&1 || break
+            _app_run_timeout 5 "$init_d/S$base" status >/dev/null 2>&1 || break
             i=$((i + 1))
             sleep 1
         done
-        if _app_run_timeout 5 "/etc/init.d/S$base" status >/dev/null 2>&1; then
+        if _app_run_timeout 5 "$init_d/S$base" status >/dev/null 2>&1; then
             # Still alive after the grace period: escalate rather than abort.
-            _app_run_timeout 10 "/etc/init.d/S$base" stop >/dev/null 2>&1
+            _app_run_timeout 10 "$init_d/S$base" stop >/dev/null 2>&1
             killall -9 node-red node sscma-node 2>/dev/null || true
         fi
-        mv "/etc/init.d/S$base" "/etc/init.d/K$base" || return 1
+        mv "$init_d/S$base" "$init_d/K$base" || return 1
     fi
     return 0
 }
@@ -1781,17 +1830,21 @@ _svc_disable() {
 # result and leaves _gallery_mode / the watchdog at their console values.
 _setrunmode_nodered_rollback() {
     local nr_was_parked="$1" sscma_was_parked="$2" orig_app="$3"
+    local nr_base="$4" sscma_base="$5"
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    [ -z "$nr_base" ] && nr_base="$(_svc_base "node-red" "03node-red")"
+    [ -z "$sscma_base" ] && sscma_base="$(_svc_base "sscma-node" "91sscma-node")"
     # 1. Tear down anything we may have started.
     nr_memguard_stop >/dev/null 2>&1 || true
-    [ -f /etc/init.d/S03node-red ] && _app_run_timeout 10 /etc/init.d/S03node-red stop >/dev/null 2>&1
-    [ -f /etc/init.d/S91sscma-node ] && _app_run_timeout 10 /etc/init.d/S91sscma-node stop >/dev/null 2>&1
+    [ -f "$init_d/S$nr_base" ] && _app_run_timeout 10 "$init_d/S$nr_base" stop >/dev/null 2>&1
+    [ -f "$init_d/S$sscma_base" ] && _app_run_timeout 10 "$init_d/S$sscma_base" stop >/dev/null 2>&1
     killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
     # 2. Restore original prefixes (only re-park what WAS parked before).
-    if [ "$nr_was_parked" = "1" ] && [ -f /etc/init.d/S03node-red ]; then
-        mv /etc/init.d/S03node-red /etc/init.d/K03node-red 2>/dev/null || true
+    if [ "$nr_was_parked" = "1" ] && [ -f "$init_d/S$nr_base" ]; then
+        mv "$init_d/S$nr_base" "$init_d/K$nr_base" 2>/dev/null || true
     fi
-    if [ "$sscma_was_parked" = "1" ] && [ -f /etc/init.d/S91sscma-node ]; then
-        mv /etc/init.d/S91sscma-node /etc/init.d/K91sscma-node 2>/dev/null || true
+    if [ "$sscma_was_parked" = "1" ] && [ -f "$init_d/S$sscma_base" ]; then
+        mv "$init_d/S$sscma_base" "$init_d/K$sscma_base" 2>/dev/null || true
     fi
     # 3. Restore the original gallery app (camera is free now; best-effort).
     if [ -n "$orig_app" ] && _app_check_script "$orig_app"; then
@@ -1827,9 +1880,13 @@ function setRunMode() {
         # return Failed WITHOUT writing the mode file, so no two subsystems ever
         # disagree about who owns the camera.
         local orig_app nr_was_parked=0 sscma_was_parked=0
+        local nr_base sscma_base
+        local init_d="${SV_INIT_D:-$INIT_D}"
+        nr_base="$(_svc_base "node-red" "03node-red")"
+        sscma_base="$(_svc_base "sscma-node" "91sscma-node")"
         orig_app=$(_app_active_script)
-        [ -f /etc/init.d/K03node-red ] && nr_was_parked=1
-        [ -f /etc/init.d/K91sscma-node ] && sscma_was_parked=1
+        [ -f "$init_d/K$nr_base" ] && nr_was_parked=1
+        [ -f "$init_d/K$sscma_base" ] && sscma_was_parked=1
 
         # --- confirm the gallery app is gone BEFORE the node stack grabs the
         # camera. state.json is advisory (missing/empty/corrupt => nothing to
@@ -1857,25 +1914,25 @@ function setRunMode() {
         # watchdog is armed after both are up, below). From here on every
         # failure path rolls back before returning.
         local s
-        s=$(_svc_enable "03node-red")
+        s=$(_svc_enable "$nr_base")
         if [ -z "$s" ]; then
-            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app" "$nr_base" "$sscma_base"
             echo "$STR_FAILED"
             return 1
         fi
         if ! _svc_run_limited "$s" start; then
-            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app" "$nr_base" "$sscma_base"
             echo "$STR_FAILED"
             return 1
         fi
-        s=$(_svc_enable "91sscma-node")
+        s=$(_svc_enable "$sscma_base")
         if [ -z "$s" ]; then
-            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app" "$nr_base" "$sscma_base"
             echo "$STR_FAILED"
             return 1
         fi
         if ! _svc_run_limited "$s" start; then
-            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app" "$nr_base" "$sscma_base"
             echo "$STR_FAILED"
             return 1
         fi
@@ -1885,7 +1942,7 @@ function setRunMode() {
         # A mode-write failure is still rolled back (never a half-commit).
         rm -f "$FORCE_CONSOLE_FLAG" 2>/dev/null || true
         _run_mode_write "$mode" || {
-            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app"
+            _setrunmode_nodered_rollback "$nr_was_parked" "$sscma_was_parked" "$orig_app" "$nr_base" "$sscma_base"
             echo "$STR_FAILED"
             return 1
         }
@@ -1899,9 +1956,11 @@ function setRunMode() {
         # app); if it won't die, abort and do NOT start the gallery app.
         # Stop the RSS watchdog FIRST so it cannot kill node during teardown.
         nr_memguard_stop >/dev/null 2>&1 || true
-        local svc_err=0
-        _svc_disable "91sscma-node" || svc_err=1
-        _svc_disable "03node-red" || svc_err=1
+        local nr_base sscma_base svc_err=0
+        nr_base="$(_svc_base "node-red" "03node-red")"
+        sscma_base="$(_svc_base "sscma-node" "91sscma-node")"
+        _svc_disable "$sscma_base" || svc_err=1
+        _svc_disable "$nr_base" || svc_err=1
         sleep 2 # camera release before the gallery app comes back
         if [ "$svc_err" -ne 0 ]; then
             echo "$STR_FAILED"
@@ -1924,9 +1983,11 @@ function setRunMode() {
 # where the node stack may already be wedged). Idempotent.
 _svc_park_now() {
     local base="$1"
-    if [ -f "/etc/init.d/S$base" ]; then
-        "/etc/init.d/S$base" stop >/dev/null 2>&1 || true
-        mv "/etc/init.d/S$base" "/etc/init.d/K$base" 2>/dev/null || true
+    [ "$base" = "_svc_park_now" ] && base="$2"
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    if [ -f "$init_d/S$base" ]; then
+        "$init_d/S$base" stop >/dev/null 2>&1 || true
+        mv "$init_d/S$base" "$init_d/K$base" 2>/dev/null || true
     fi
     return 0
 }
@@ -1949,9 +2010,12 @@ function forceConsole() {
     #    watchdog first so it does not race the kill / relaunch churn.
     nr_memguard_stop >/dev/null 2>&1 || true
     killall -9 node-red node-red-pi node sscma-node 2>/dev/null || true
+    local nr_base sscma_base
+    nr_base="$(_svc_base "node-red" "03node-red")"
+    sscma_base="$(_svc_base "sscma-node" "91sscma-node")"
     # 3. Park both init scripts as K (idempotent).
-    _svc_park_now "03node-red"
-    _svc_park_now "91sscma-node"
+    _svc_park_now "$nr_base"
+    _svc_park_now "$sscma_base"
     # 4. Persist console mode.
     _run_mode_write console || true
     echo "$STR_OK"

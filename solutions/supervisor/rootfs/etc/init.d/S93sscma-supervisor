@@ -3,10 +3,11 @@
 DAEMON=supervisor
 DAEMON_PATH=/usr/local/bin
 
-APPS_DIR=/userdata/local/apps
+APPS_DIR="${SV_APPS_DIR:-/userdata/local/apps}"
 MODE_FILE="$APPS_DIR/mode"
 FORCE_CONSOLE_FLAG="$APPS_DIR/.force_console"
-MAIN_SH=/usr/share/supervisor/scripts/main.sh
+MAIN_SH="${SV_MAIN_SH:-/usr/share/supervisor/scripts/main.sh}"
+INIT_D="${SV_INIT_D:-/etc/init.d}"
 
 # --- #18 boot reconciliation ------------------------------------------------
 # The exit path must be independent of mode health: whatever state the previous
@@ -20,15 +21,55 @@ MAIN_SH=/usr/share/supervisor/scripts/main.sh
 # S93 here, so a stale S prefix in console mode means those services already
 # started and grabbed the camera; parking them here stops+releases them before
 # the gallery app is restored.
+
+# _svc_base <name> <default> : look in $INIT_D for [SK][0-9][0-9]<name>.
+# If exactly one base exists return it (e.g. 92node-red); if both an S and a K
+# file with different numbers exist prefer the S one; if none, return <default>.
+_svc_base() {
+    local name="${1#[0-9][0-9]}"
+    local default="${2:-$1}"
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    local f b s_base="" k_base=""
+
+    for f in "$init_d"/S[0-9][0-9]"$name"; do
+        if [ -f "$f" ]; then
+            b="${f##*/}"
+            s_base="${b#S}"
+            break
+        fi
+    done
+    if [ -n "$s_base" ]; then
+        echo "$s_base"
+        return 0
+    fi
+
+    for f in "$init_d"/K[0-9][0-9]"$name"; do
+        if [ -f "$f" ]; then
+            b="${f##*/}"
+            k_base="${b#K}"
+            break
+        fi
+    done
+    if [ -n "$k_base" ]; then
+        echo "$k_base"
+        return 0
+    fi
+
+    echo "$default"
+    return 0
+}
+
 _svc_park() { # base e.g. 03node-red : stop S<base>, rename S<base> -> K<base>
-    if [ -f "/etc/init.d/S$1" ]; then
-        "/etc/init.d/S$1" stop >/dev/null 2>&1 || true
-        mv "/etc/init.d/S$1" "/etc/init.d/K$1" 2>/dev/null || true
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    if [ -f "$init_d/S$1" ]; then
+        "$init_d/S$1" stop >/dev/null 2>&1 || true
+        mv "$init_d/S$1" "$init_d/K$1" 2>/dev/null || true
     fi
 }
 _svc_arm() { # base : rename K<base> -> S<base> (init/setRunMode does the start)
-    if [ -f "/etc/init.d/K$1" ] && [ ! -f "/etc/init.d/S$1" ]; then
-        mv "/etc/init.d/K$1" "/etc/init.d/S$1" 2>/dev/null || true
+    local init_d="${SV_INIT_D:-$INIT_D}"
+    if [ -f "$init_d/K$1" ] && [ ! -f "$init_d/S$1" ]; then
+        mv "$init_d/K$1" "$init_d/S$1" 2>/dev/null || true
     fi
 }
 
@@ -60,6 +101,10 @@ reconcile_run_mode() {
         fi
     fi
 
+    local nr_base sscma_base
+    nr_base="$(_svc_base "node-red" "03node-red")"
+    sscma_base="$(_svc_base "sscma-node" "91sscma-node")"
+
     # Repair prefix drift so the actual init state matches the intent.
     if [ "$RUN_MODE" = "nodered" ]; then
         # A cold boot directly into Node-RED launches the stock init scripts
@@ -67,11 +112,11 @@ reconcile_run_mode() {
         # choom below, the RSS watchdog is armed from start() once node-red is
         # up (#19 Method A), and the serviced watchdog relaunches a failed node
         # stack.
-        _svc_arm 03node-red
-        _svc_arm 91sscma-node
+        _svc_arm "$nr_base"
+        _svc_arm "$sscma_base"
     else
-        _svc_park 03node-red
-        _svc_park 91sscma-node
+        _svc_park "$nr_base"
+        _svc_park "$sscma_base"
     fi
 }
 
@@ -85,7 +130,8 @@ fi
 
 check_avahi() {
     local service_file="/etc/avahi/services/sscma.service"
-    local sn_value=$(fw_printenv sn | awk -F'=' '{print $NF}')
+    [ -f "$service_file" ] || return 0
+    local sn_value=$(fw_printenv sn 2>/dev/null | awk -F'=' '{print $NF}')
     if [ -z "$sn_value" ]; then
         sn_value="0000000000000000"
     fi
@@ -196,8 +242,13 @@ case "$1" in
 start | stop | restart)
     "$1"
     ;;
+reconcile)
+    reconcile_run_mode
+    ;;
 *)
-    echo "Usage: $0 {start|stop|restart}"
-    exit 1
+    if [ -n "$1" ]; then
+        echo "Usage: $0 {start|stop|restart|reconcile}"
+        exit 1
+    fi
     ;;
 esac
