@@ -107,14 +107,25 @@ bool CameraHub::open_venc() {
     if (venc != nullptr && VIDEO_CH2 < venc->s32VencChnCnt) {
         APP_VENC_CHN_CFG_S& ch = venc->astVencChnCfg[VIDEO_CH2];
         if (so.gop != 0) ch.u32Gop = so.gop;
-        if (so.bitrate_kbps != 0) ch.u32BitRate = so.bitrate_kbps;
+        if (so.bitrate_kbps != 0) {
+            ch.u32BitRate = so.bitrate_kbps;
+            // The ipcam defaults cap QP at 35 (video_paramparse.c h264/h265_stRcParam).
+            // The driver RC clips every frame's QP to that ceiling (cvi_enc_rc.c
+            // CLIP3(minQp, maxQp, qp)), so once QP 35 already costs more than the
+            // target the stream overshoots it (measured 9 Mbps for a 1.2 Mbps CBR
+            // target at 720p30). Lift the ceiling to the SDK default (DEF_264_MAXQP
+            // = 51) so the requested bitrate is what the encoder converges to.
+            ch.stRcParam.u32MaxQp = 51;
+            ch.stRcParam.u32MaxIQp = 51;
+        }
         if (so.max_bitrate_kbps != 0) ch.u32MaxBitRate = so.max_bitrate_kbps;
         if (so.low_latency) {
             // No B-frames: every encoded frame can be sent as soon as it is produced.
             ch.enGopMode = VENC_GOPMODE_NORMALP;
             ch.enRcMode = VENC_RC_MODE_H264CBR;
         }
-        MA_LOGI(TAG, "Stream CH2 %ux%u @ %ufps, GOP=%u, bitrate=%u/%u kbps%s", so.width, so.height, so.fps, ch.u32Gop, ch.u32BitRate, ch.u32MaxBitRate,
+        MA_LOGI(TAG, "Stream CH2 %ux%u @ %ufps, GOP=%u, bitrate=%u/%u kbps, QP %u-%u (I %u-%u)%s", so.width, so.height, so.fps, ch.u32Gop, ch.u32BitRate,
+                ch.u32MaxBitRate, ch.stRcParam.u32MinQp, ch.stRcParam.u32MaxQp, ch.stRcParam.u32MinIQp, ch.stRcParam.u32MaxIQp,
                 so.low_latency ? ", low-latency (P-only, CBR)" : "");
     }
     return true;
