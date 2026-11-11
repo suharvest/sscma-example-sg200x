@@ -666,7 +666,7 @@ const Live = () => {
           ? t("live.fallbackDebugUnavailable")
           : t("live.fallbackNoDebug")}
       </div>
-      {rtspOff && (
+      {rtspOffHint && (
         <div className="text-13 text-muted mb-8">{t("live.rtspOffHint")}</div>
       )}
       {rtspUrl ? (

@@ -42,7 +42,9 @@ const App = () => {
       const deviceInfo = response.data;
       // 查询设备信息，获取sn
       updateDeviceInfo(deviceInfo);
-      const sn = deviceInfo.sn;
+      // A unit without a factory SN reports sn "": the login token is stored per SN, so an empty
+      // key would leave the console stuck on the login page. Use a fixed placeholder instead.
+      const sn = deviceInfo.sn || "default";
       setCurrentSn(sn);
       if (sn) {
         // 查询设备是否第一次登录，第一次登录，直接进登录页

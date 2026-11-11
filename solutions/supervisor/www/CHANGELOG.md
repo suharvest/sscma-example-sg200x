@@ -1,3 +1,11 @@
+# Changelog
+
+## 0.5.10
+
+### Fixed
+- Fix Live page crash: `rtspOff is not defined` (renamed to `rtspOffHint` in e911d74; one usage at views/live/index.tsx was missed).
+- Fix login stuck on units without SN (`initUserData` now falls back to SN `"default"`).
+
 # Changelog (0.2.2 -> feature/sensecraft-classify-dashboard)
 
 ## English
