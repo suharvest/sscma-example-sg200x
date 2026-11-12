@@ -39,7 +39,43 @@ int CameraHub::open(const HubConfig& cfg) {
             MA_LOGW(TAG, "WebSocket stream unavailable, continuing without it");
         }
     }
+    if (cfg_.raw_fn) {
+        open_raw();
+    }
     return kExitOk;
+}
+
+void CameraHub::open_raw() {
+    const RawChannelOptions& ro = cfg_.raw;
+    video_ch_param_t p{};
+    p.format = VIDEO_FORMAT_NV21;
+    p.width = ro.width;
+    p.height = ro.height;
+    p.fps = ro.fps;
+    p.blkcnt = ro.blocks;
+    setupVideo(VIDEO_CH1, &p);
+    registerVideoFrameHandler(VIDEO_CH1, 0, raw_stub, this);
+    MA_LOGI(TAG, "Raw CH1 NV21 %ux%u @ %ufps, %u VB blocks", ro.width, ro.height, ro.fps, ro.blocks);
+}
+
+int CameraHub::raw_stub(void* pData, void* /*pArgs*/, void* pUserData) {
+    auto* self = static_cast<CameraHub*>(pUserData);
+    const auto* info = static_cast<const VIDEO_FRAME_INFO_S*>(pData);
+    if (self == nullptr || info == nullptr || !self->cfg_.raw_fn) {
+        return 0;
+    }
+    const VIDEO_FRAME_S& f = info->stVFrame;
+    VideoFrame v;
+    v.width = static_cast<uint16_t>(f.u32Width);
+    v.height = static_cast<uint16_t>(f.u32Height);
+    v.format = PixelFormat::NV21;
+    v.planes[0] = Plane(nullptr, f.u64PhyAddr[0], f.u32Stride[0]);
+    v.planes[1] = Plane(nullptr, f.u64PhyAddr[1], f.u32Stride[1]);
+    v.channel = 1;
+    v.seq = ++self->raw_seq_;
+    v.ts_ms = static_cast<uint32_t>(monotonic_us() / 1000u);
+    self->cfg_.raw_fn(v);
+    return 0;
 }
 
 bool CameraHub::open_camera() {

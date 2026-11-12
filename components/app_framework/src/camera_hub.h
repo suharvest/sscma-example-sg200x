@@ -14,6 +14,8 @@
  *      enabled; otherwise the RTSP server is never initialised.
  *   5. debug_stream (WebSocket): server, plus consumer index 1 on CH2 when it
  *      carries video. The VENC callback hands H.264 straight to it.
+ *   5b. Raw channel (App::with_raw_channel): setupVideo(CH1, NV21) + consumer
+ *      index 0 on CH1. After step 2 (initVideo reloads the parameter set).
  *   6. Camera::startStream()         -- sets up CH0, registers the camera callback, startVideo().
  *   7. startVideo()                  -- idempotent guard; kept for parity with the solutions.
  *
@@ -39,6 +41,8 @@ namespace af {
 struct HubConfig {
     CameraOptions camera;
     StreamConfig streams;  ///< H.264 channel + which endpoints publish it
+    RawChannelOptions raw;
+    RawFrameHandler raw_fn;  ///< empty: no raw channel
 };
 
 class CameraHub {
@@ -98,6 +102,8 @@ private:
     bool open_venc();
     bool open_rtsp();
     bool open_ws();
+    void open_raw();
+    static int raw_stub(void* pData, void* pArgs, void* pUserData);
 
     HubConfig cfg_;
     ma::Camera* camera_ = nullptr;
@@ -108,6 +114,7 @@ private:
     bool debug_ = false;
     bool streaming_ = false;
     uint32_t seq_ = 0;
+    uint32_t raw_seq_ = 0;
 };
 
 }  // namespace af

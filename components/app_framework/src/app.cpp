@@ -479,6 +479,12 @@ App& App::with_camera(const CameraOptions& opt) {
     return *this;
 }
 
+App& App::with_raw_channel(const RawChannelOptions& opt, RawFrameHandler fn) {
+    impl_->hub_cfg.raw = opt;
+    impl_->hub_cfg.raw_fn = std::move(fn);
+    return *this;
+}
+
 App& App::with_live_view(int port) {
     return with_stream_mode(StreamMode::WsOnly, StreamOptions{}, port);
 }

@@ -73,6 +73,28 @@ struct CameraOptions {
 };
 
 /**
+ * Optional raw channel (VPSS CH1, NV21, not encoded) next to the inference
+ * channel, e.g. full-resolution stills while CH0 runs at the model size. It
+ * shows the same sensor picture as CH0 (both fitted with ASPECT_RATIO_AUTO).
+ * Costs one VB pool of `blocks` x width*height*3/2 bytes (1920x1080: 3.1 MB
+ * per block) and VPSS bandwidth at `fps`.
+ */
+struct RawChannelOptions {
+    uint16_t width = 1920;
+    uint16_t height = 1080;
+    uint8_t fps = 5;
+    uint8_t blocks = 3;
+};
+
+/**
+ * Raw channel frame: NV21, planes 0 (Y) and 1 (VU) with physical address and
+ * stride only (vir == nullptr; map with CVI_SYS_Mmap*). Called on the
+ * channel's VPSS thread for every frame; the buffer goes back to VPSS when the
+ * handler returns, so keep it short.
+ */
+using RawFrameHandler = std::function<void(const VideoFrame&)>;
+
+/**
  * H.264 stream channel (VENC CH2) geometry and encoder settings, shared by
  * every network endpoint (RTSP, WebSocket). Configuring it does not start any
  * endpoint; the channel is only set up when at least one endpoint that needs
@@ -191,6 +213,8 @@ public:
     App& operator=(const App&) = delete;
 
     App& with_camera(const CameraOptions& opt = CameraOptions{});
+    /** Open the raw channel CH1 (see RawChannelOptions); @p fn gets its frames. */
+    App& with_raw_channel(const RawChannelOptions& opt, RawFrameHandler fn);
 
     /**
      * Live view for teleoperation: 720p@30 H.264 over WebSocket on @p port,
